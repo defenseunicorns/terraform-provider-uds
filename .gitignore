@@ -1,0 +1,22 @@
+*.dll
+*.exe
+.DS_Store
+example.tf
+terraform.tfplan
+terraform.tfstate
+bin/
+dist/
+modules-dev/
+/pkg/
+*.backup
+./*.tfstate
+.terraform/
+*.log
+*.bak
+*~
+*.test
+*.iml
+
+# Test exclusions
+!command/test-fixtures/**/*.tfstate
+!command/test-fixtures/**/.terraform/
