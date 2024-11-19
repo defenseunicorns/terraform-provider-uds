@@ -14,7 +14,7 @@ import (
 
 var (
 	// set by goreleaser at build time
-	version string = "dev"
+	version = "dev"
 )
 
 func main() {
