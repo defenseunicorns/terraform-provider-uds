@@ -11,7 +11,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 )
 
-
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
 		return &udsProvider{
@@ -22,7 +21,7 @@ func New(version string) func() provider.Provider {
 
 var _ provider.Provider = (*udsProvider)(nil)
 
-type udsProvider struct{
+type udsProvider struct {
 	// version is set to the provider version on release, "dev" when the
 	// provider is built and ran locally, and "test" when running acceptance
 	// testing.
@@ -42,9 +41,7 @@ func (p *udsProvider) Resources(context.Context) []func() resource.Resource {
 }
 
 func (p *udsProvider) DataSources(context.Context) []func() datasource.DataSource {
-	return []func() datasource.DataSource{
-		NewPackageDataSource,
-	}
+	return []func() datasource.DataSource{}
 }
 
 func (p *udsProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
