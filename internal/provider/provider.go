@@ -43,7 +43,6 @@ func (p *udsProvider) Resources(context.Context) []func() resource.Resource {
 
 func (p *udsProvider) DataSources(context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
-		NewPackageDataSource,
 	}
 }
 
