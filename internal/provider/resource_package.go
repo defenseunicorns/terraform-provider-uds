@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
@@ -35,14 +36,14 @@ func NewPackageResource() resource.Resource {
 }
 
 // PackageResource defines the resource implementation.
-type PackageResource struct {
-}
+type PackageResource struct{}
 
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
-	ConfigurableAttribute types.String `tfsdk:"configurable_attribute"`
-	ID                    types.String `tfsdk:"id"`
-	Name                  types.String `tfsdk:"name"`
+	ID         types.String `tfsdk:"id"`
+	Name       types.String `tfsdk:"name"`
+	Components types.List   `tfsdk:"components"`
+	Timeout    types.String `tfsdk:"timeout"`
 }
 
 func (r *PackageResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -55,10 +56,6 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 		MarkdownDescription: "UDS Package resource",
 
 		Attributes: map[string]schema.Attribute{
-			"configurable_attribute": schema.StringAttribute{
-				MarkdownDescription: "Example configurable attribute",
-				Optional:            true,
-			},
 			"id": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "Example identifier",
@@ -69,6 +66,20 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"name": schema.StringAttribute{
 				Required:            true,
 				MarkdownDescription: "File name of the package",
+			},
+			"components": schema.ListAttribute{
+				Optional:            true,
+				MarkdownDescription: "Explicit list of components to include in the package, if empty, all default components are included",
+				ElementType: types.ListType{
+					ElemType: types.StringType,
+				},
+			},
+			// Set the default value to "30m" vs the default of "15m" since this runs in automation
+			"timeout": schema.StringAttribute{
+				Optional:            true,
+				Computed:            true,
+				Default:             stringdefault.StaticString("30m"),
+				MarkdownDescription: "Timeout for the deploy operation",
 			},
 		},
 	}
@@ -91,14 +102,47 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	// Set the prefix for `./zarf` actions since we have to vendor zarf
+	zarfConfig.ActionsCommandZarfPrefix = "zarf"
+
+	// Confirm `zarf package deploy` since we're running in automation
 	zarfConfig.CommonOptions.Confirm = true
-	pkgConfig := zarfTypes.PackagerConfig{}
+
+	// convert the terraform timeout to a time.Duration
+	timeout, err := time.ParseDuration(data.Timeout.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Invalid timeout value",
+			"Could not parse timeout duration: "+err.Error(),
+		)
+		return
+	}
+
+	deployOpts := zarfTypes.ZarfDeployOptions{
+		Timeout: timeout,
+	}
+
+	pkgOpts := zarfTypes.ZarfPackageOptions{
+		// Load the package path from the terraform plan
+		PackageSource: data.Name.ValueString(),
+
+		// Explicitly set the components to deploy if specified
+		// OptionalComponents: strings.Join(data.Components.Elements(), ","),
+	}
+
+	// Initialize the package config
+	pkgConfig := zarfTypes.PackagerConfig{
+		DeployOpts: deployOpts,
+		PkgOpts:    pkgOpts,
+	}
+
 	// read the zarf package name from the terraform plan. Right now this
 	// expects a local file name, ex: "zarf-init-arm64-v0.43.0.tar.zst".
 	// TODO(clint): make this more flexible so we detect if it's a zarf init
 	// package or not, and only add the init opts if needed. Right now it's just
 	// a spike that got me through the first hurdle.
 	pkgConfig.PkgOpts.PackageSource = data.Name.ValueString()
+
 	// default zarf init opts
 	pkgConfig.InitOpts = zarfTypes.ZarfInitOptions{
 		GitServer: zarfTypes.GitServerInfo{
@@ -109,28 +153,24 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		},
 	}
 
-	pkgConfig.DeployOpts = zarfTypes.ZarfDeployOptions{
-		Timeout: 15 * time.Minute,
-	}
-
-	// Tell Zarf to confirm all actions. It feels weird/wrong to do this here,
-	// but I'm not sure what the best way to do this is. It's what uds-cli does
-	// as well: https://github.com/defenseunicorns/uds-cli/blob/1ccbb716831b73b05f74acd067be29d6f69f1733/src/pkg/bundle/deploy.go#L126
-	zarfConfig.CommonOptions.Confirm = true
+	// Create the package client
 	pkgClient, err := zarfPackager.New(&pkgConfig)
+	// Always clear the temp paths since we're running in automation
+	defer pkgClient.ClearTempPaths()
+	// Abort if we can't create the package client
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error creating package client",
-			"Could create client: "+err.Error(),
+			"Could not create client: "+err.Error(),
 		)
 		return
 	}
-	defer pkgClient.ClearTempPaths()
+
 	tflog.Debug(ctx, "starting deploy")
 	if err := pkgClient.Deploy(ctx); err != nil {
 		resp.Diagnostics.AddError(
-			"failed to deploy package",
-			"failed to deploy package: "+err.Error(),
+			"Error deploying package",
+			"Could not deploy package: "+err.Error(),
 		)
 		return
 	}
@@ -138,8 +178,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 
 	// For the purposes of this example code, hardcoding a response value to
 	// save into the Terraform state.
-	// TODO(clint): don't hardcode the zarf-init-id
-	data.ID = types.StringValue("zarf-init-id")
+	data.ID = types.StringValue(data.Name.ValueString())
 
 	// Write logs using the tflog package
 	// Documentation: https://terraform.io/plugin/log

@@ -1,3 +1,2 @@
-resource "uds_example" "example" {
-  configurable_attribute = "some-value"
+resource "uds_example" "package-name" {
 }

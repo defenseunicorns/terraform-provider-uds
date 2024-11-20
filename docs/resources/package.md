@@ -21,7 +21,8 @@ UDS Package resource
 
 ### Optional
 
-- `configurable_attribute` (String) Example configurable attribute
+- `components` (List of List of String) Explicit list of components to include in the package, if empty, all default components are included
+- `timeout` (String) Timeout for the deploy operation
 
 ### Read-Only
 
