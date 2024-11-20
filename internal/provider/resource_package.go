@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -23,6 +24,7 @@ import (
 	// zarfTypes "github.com/zarf-dev/zarf/src/types"
 
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
+	"github.com/zarf-dev/zarf/src/pkg/cluster"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	zarfTypes "github.com/zarf-dev/zarf/src/types"
 )
@@ -198,13 +200,50 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	// If applicable, this is a great opportunity to initialize any necessary
-	// provider client data and make a call using it.
-	// httpResp, err := r.client.Do(httpReq)
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	// c, err := cluster.NewClusterWithWait(timeoutCtx)
+	c, _ := cluster.NewClusterWithWait(timeoutCtx)
 	// if err != nil {
-	//     resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read example, got error: %s", err))
-	//     return
+	// TODO(clint): handle error here
 	// }
+
+	deployedZarfPackages, err := c.GetDeployedZarfPackages(timeoutCtx)
+	// if err != nil && len(deployedZarfPackages) == 0 {
+	if err != nil && len(deployedZarfPackages) == 0 {
+		// TODO(clint): handle the nil/zero
+		return
+	}
+
+	// Populate a matrix of all the deployed packages
+	packageData := [][]string{}
+
+	for _, pkg := range deployedZarfPackages {
+		var components []string
+
+		for _, component := range pkg.DeployedComponents {
+			components = append(components, component.Name)
+		}
+
+		packageData = append(packageData, []string{
+			pkg.Name, pkg.Data.Metadata.Version, fmt.Sprintf("%v", components),
+		})
+	}
+
+	// TODO(clint): verify the package name is in this list. Right now the
+	// results here are things like "init" instead of the name we supplied, so
+	// we need to either dig into the package and find the metadata name, or
+	// find another way to identify and ask Zarf/Kubernetes to give us the
+	// package name.
+	if len(packageData) == 0 {
+		resp.Diagnostics.AddWarning(
+			"Package not found",
+			"Could not find package in deployed packages; removing resource",
+		)
+		resp.State.RemoveResource(ctx)
+		return
+	}
 
 	// Save updated data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
