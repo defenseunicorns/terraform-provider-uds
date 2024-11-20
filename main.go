@@ -22,7 +22,6 @@ var (
 )
 
 func main() {
-
 	// Check if the zarf command is being run
 	if len(os.Args) > 1 && os.Args[1] == "zarf" {
 		zarfCmd()

@@ -229,6 +229,30 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	opts := zarfTypes.ZarfPackageOptions{
+		PackageSource: data.Name.ValueString(),
+	}
+	pkgConfig := zarfTypes.PackagerConfig{
+		PkgOpts: opts,
+	}
+
+	pkgClient, err := zarfPackager.New(&pkgConfig)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error creating package client",
+			"Could not create package client: "+err.Error(),
+		)
+		return
+	}
+	defer pkgClient.ClearTempPaths()
+
+	if err := pkgClient.Remove(context.TODO()); err != nil {
+		resp.Diagnostics.AddError(
+			"Error removing package",
+			"Could not remove package: "+err.Error(),
+		)
+		return
+	}
 
 	if resp.Diagnostics.HasError() {
 		return
