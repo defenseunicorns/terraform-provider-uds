@@ -7,13 +7,13 @@ import (
 	"context"
 	"flag"
 	"log"
-	"os"
-	"runtime/debug"
 
+	// Must be imported before Zarf to avoid init() ordering issues
+	// todo(jeff-mccoy): this is kind of gross and should be revisited
+	"github.com/defenseunicorns/terraform-provider-uds/internal/fix_zarf"
 	"github.com/defenseunicorns/terraform-provider-uds/internal/provider"
 	server "github.com/hashicorp/terraform-plugin-framework/providerserver"
 	zarfCLI "github.com/zarf-dev/zarf/src/cmd"
-	zarfConfig "github.com/zarf-dev/zarf/src/config"
 )
 
 var (
@@ -23,8 +23,8 @@ var (
 
 func main() {
 	// Check if the zarf command is being run
-	if len(os.Args) > 1 && os.Args[1] == "zarf" {
-		zarfCmd()
+	if fix_zarf.IsZarf() {
+		zarfCLI.Execute(context.TODO())
 		return
 	}
 
@@ -43,18 +43,4 @@ func main() {
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-}
-
-func zarfCmd() {
-	// grab Zarf version to make Zarf library checks happy
-	if buildInfo, ok := debug.ReadBuildInfo(); ok {
-		for _, dep := range buildInfo.Deps {
-			if dep.Path == "github.com/zarf-dev/zarf" {
-				zarfConfig.CLIVersion = dep.Version
-			}
-		}
-	}
-
-	os.Args = os.Args[1:] // grab 'zarf' and onward from the CLI args
-	zarfCLI.Execute(context.TODO())
 }
