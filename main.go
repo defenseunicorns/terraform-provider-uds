@@ -10,7 +10,7 @@ import (
 
 	// Must be imported before Zarf to avoid init() ordering issues
 	// todo(jeff-mccoy): this is kind of gross and should be revisited
-	"github.com/defenseunicorns/terraform-provider-uds/internal/fix_zarf"
+	"github.com/defenseunicorns/terraform-provider-uds/internal/fixzarf"
 	"github.com/defenseunicorns/terraform-provider-uds/internal/provider"
 	server "github.com/hashicorp/terraform-plugin-framework/providerserver"
 	zarfCLI "github.com/zarf-dev/zarf/src/cmd"
@@ -23,7 +23,7 @@ var (
 
 func main() {
 	// Check if the zarf command is being run
-	if fix_zarf.IsZarf() {
+	if fixzarf.IsZarf() {
 		zarfCLI.Execute(context.TODO())
 		return
 	}

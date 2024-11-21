@@ -1,4 +1,4 @@
-package fix_zarf
+package fixzarf
 
 import (
 	"os"
