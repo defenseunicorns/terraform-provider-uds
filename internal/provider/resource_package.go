@@ -121,14 +121,6 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						Computed:    true,
 						Description: "Version of the zarf package, from the zarf.yaml file",
 					},
-					"url": &schema.StringAttribute{
-						Computed:    true,
-						Description: "URL of the zarf package, if any, from the zarf.yaml file",
-					},
-					"image": &schema.StringAttribute{
-						Computed:    true,
-						Description: "Image of the zarf package, from the zarf.yaml file",
-					},
 				},
 			},
 		},
@@ -248,15 +240,11 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		"name":        types.StringType,
 		"description": types.StringType,
 		"version":     types.StringType,
-		"url":         types.StringType,
-		"image":       types.StringType,
 	}
 	elements := map[string]attr.Value{
 		"name":        types.StringValue(layout.Pkg.Metadata.Name),
 		"description": types.StringValue(layout.Pkg.Metadata.Description),
 		"version":     types.StringValue(layout.Pkg.Metadata.Version),
-		"url":         types.StringValue(layout.Pkg.Metadata.URL),
-		"image":       types.StringValue(layout.Pkg.Metadata.Image),
 	}
 	objectValue, diags := types.ObjectValue(elementTypes, elements)
 
