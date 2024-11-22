@@ -51,9 +51,11 @@ type PackageResourceModel struct {
 	Name       types.String `tfsdk:"name"`
 	Components types.List   `tfsdk:"components"`
 	Timeout    types.String `tfsdk:"timeout"`
+	// Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
+	Kind types.String `tfsdk:"kind"`
+
 	// readonly metadata
-	Kind            types.String `tfsdk:"kind"`
-	PackageMetadata types.Object `tfsdk:"package_metadata"`
+	Metadata types.Object `tfsdk:"metadata"`
 	// others, probably read-only as well, from the ZarfPackage type:
 	// Variables
 	// Components
@@ -101,7 +103,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				MarkdownDescription: "Kind of Zarf package; ZarfInitConfig or ZarfPackageConfig",
 			},
 
-			"package_metadata": &schema.SingleNestedAttribute{
+			"metadata": &schema.SingleNestedAttribute{
 				Optional:    true,
 				Computed:    true,
 				Description: "Metadata retrieved from the zarf.yaml in the package",
@@ -112,20 +114,20 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						Description: "Name of the zarf package. Used to identify the installed package",
 					},
 					"description": &schema.StringAttribute{
-						Computed: true,
-						// Description: "Name of the zarf package. Used to identify the installed package",
+						Computed:    true,
+						Description: "Description of the zarf package, from the zarf.yaml file",
 					},
 					"version": &schema.StringAttribute{
-						Computed: true,
-						// Description: "Name of the zarf package. Used to identify the installed package",
+						Computed:    true,
+						Description: "Version of the zarf package, from the zarf.yaml file",
 					},
 					"url": &schema.StringAttribute{
-						Computed: true,
-						// Description: "Name of the zarf package. Used to identify the installed package",
+						Computed:    true,
+						Description: "URL of the zarf package, if any, from the zarf.yaml file",
 					},
 					"image": &schema.StringAttribute{
-						Computed: true,
-						// Description: "Name of the zarf package. Used to identify the installed package",
+						Computed:    true,
+						Description: "Image of the zarf package, from the zarf.yaml file",
 					},
 				},
 			},
@@ -134,10 +136,6 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 }
 
 func (r *PackageResource) Configure(_ context.Context, _ resource.ConfigureRequest, _ *resource.ConfigureResponse) {
-	// Prevent panic if the provider has not been configured.
-	// if req.ProviderData == nil {
-	// 	return
-	// }
 }
 
 func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -166,19 +164,11 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-	// load package for metadata
-	// - determine source
-	// - - packager2 - identify source
-	// - "layout.LoadFromTar" from Zarf
-	// -   - needs tmp dir
-
+	// load package metadata so we know what kind of package to create
 	loadOpt := loadOptions{
 		Source: data.Name.String(),
-		// Source: opt.Source,
-		// SkipSignatureValidation: opt.SkipSignatureValidation,
-		// Filter:                  filters.Empty(),
-		// PublicKeyPath:           opt.PublicKeyPath,
 	}
+
 	layout, err := loadPackage(ctx, loadOpt)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -187,7 +177,6 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		)
 		return
 	}
-	// end load package meta
 
 	deployOpts := zarfTypes.ZarfDeployOptions{
 		Timeout: timeout,
@@ -249,13 +238,12 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 	tflog.Debug(ctx, "ending deploy")
 
-	// For the purposes of this example code, hardcoding a response value to
-	// save into the Terraform state.
 	data.ID = types.StringValue(data.Name.ValueString())
 	data.Kind = types.StringValue(string(layout.Pkg.Kind))
 
 	// populate the package metadata type.
 	// TODO(clint): this is ugly and I got it from https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/custom
+	// There are probably a few optimizations or cleanups to be done here.
 	elementTypes := map[string]attr.Type{
 		"name":        types.StringType,
 		"description": types.StringType,
@@ -279,19 +267,10 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		)
 		return
 	}
-	data.PackageMetadata = objectValue
+	data.Metadata = objectValue
 
-	// data.PackageMetadata = &PackageMetadata{
-	// 	Name: types.StringValue(layout.Pkg.Metadata.Name),
-	// 	// Description: types.StringValue(layout.Pkg.Metadata.Description),
-	// 	// Version:     types.StringValue(layout.Pkg.Metadata.Version),
-	// 	// Url:         types.StringValue(layout.Pkg.Metadata.URL),
-	// 	// Image:       types.StringValue(layout.Pkg.Metadata.Image),
-	// }
-
-	// Write logs using the tflog package
 	// Documentation: https://terraform.io/plugin/log
-	tflog.Trace(ctx, "created a resource")
+	tflog.Trace(ctx, "created zarf package resource")
 
 	// Save data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -310,19 +289,38 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	// c, err := cluster.NewClusterWithWait(timeoutCtx)
-	c, _ := zarfCluster.NewClusterWithWait(timeoutCtx)
-	// if err != nil {
-	// TODO(clint): handle error here
-	// }
+	c, err := zarfCluster.NewClusterWithWait(timeoutCtx)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Could not connect to cluster",
+			"Error connecting to cluster:"+err.Error(),
+		)
+		resp.State.RemoveResource(ctx)
+		return
+	}
 
 	deployedZarfPackages, err := c.GetDeployedZarfPackages(timeoutCtx)
-	if err != nil && len(deployedZarfPackages) == 0 {
-		// TODO(clint): handle the nil/zero
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Deployed packages could not be retrieved",
+			"Error getting deployed packages:"+err.Error(),
+		)
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
+	if len(deployedZarfPackages) == 0 {
+		resp.Diagnostics.AddWarning(
+			"No Packages found",
+			"Could not find any packages deployed; removing resource",
+		)
+		resp.State.RemoveResource(ctx)
 		return
 	}
 
 	// Populate a matrix of all the deployed packages
+	// TODO(clint): use this information to update our local state with the
+	// metadata from the package we're managing
 	packageData := [][]string{}
 
 	for _, pkg := range deployedZarfPackages {
@@ -355,7 +353,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	// TODO(clint): solve the mystery of why does the attribute come back with
 	// extra quotes in the string?
 	foundPackage := slices.ContainsFunc(deployedZarfPackages, func(zarfPackage zarfTypes.DeployedPackage) bool {
-		return zarfPackage.Name == strings.Trim(data.PackageMetadata.Attributes()["name"].String(), "\"")
+		return zarfPackage.Name == strings.Trim(data.Metadata.Attributes()["name"].String(), "\"")
 	})
 	if !foundPackage {
 		resp.Diagnostics.AddWarning(
@@ -369,6 +367,9 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
+// TODO(clint): We probably wont have much of an actual Update method
+// implementation; I imagine any drift we find will be flagged as a re-create
+// scenario which would just redeploy the package.
 func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var data PackageResourceModel
 
@@ -422,7 +423,9 @@ func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportSt
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
-//TODO(clint): the below methods could/should be moved to a util type file
+//TODO(clint): the below methods could/should be moved to a util type file. They
+//were all lifted from Zarf Packager2 internal package and modified to fit our
+//needs here.
 
 // packageLayout manages the layout for a package.
 // Lifted from Zarf
