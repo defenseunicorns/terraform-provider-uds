@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -349,18 +350,21 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		resp.State.RemoveResource(ctx)
 		return
 	}
-	//TODO(clint): remove the package from state if it's not found in the list
-	// foundPackage := slices.ContainsFunc(deployedZarfPackages, func(zarfPackage zarfTypes.DeployedPackage) bool {
-	// 	return zarfPackage.Name == data.PackageMetadata.Attributes()["name"]
-	// })
-	// if !foundPackage {
-	// 	resp.Diagnostics.AddWarning(
-	// 		"Package not found",
-	// 		"Could not find package in deployed packages; removing resource",
-	// 	)
-	// 	resp.State.RemoveResource(ctx)
-	// 	return
-	// }
+
+	// remove the package from state if it's not found in the list
+	// TODO(clint): solve the mystery of why does the attribute come back with
+	// extra quotes in the string?
+	foundPackage := slices.ContainsFunc(deployedZarfPackages, func(zarfPackage zarfTypes.DeployedPackage) bool {
+		return zarfPackage.Name == strings.Trim(data.PackageMetadata.Attributes()["name"].String(), "\"")
+	})
+	if !foundPackage {
+		resp.Diagnostics.AddWarning(
+			"Package not found",
+			"Could not find package in deployed packages; removing resource",
+		)
+		resp.State.RemoveResource(ctx)
+		return
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
