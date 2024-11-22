@@ -4,17 +4,12 @@
 package provider
 
 import (
-	"archive/tar"
 	"context"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
-	goyaml "github.com/goccy/go-yaml"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -24,13 +19,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"github.com/mholt/archiver/v3"
 
-	zarfV1alpha1 "github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
 	zarfCluster "github.com/zarf-dev/zarf/src/pkg/cluster"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
-	zarfUtils "github.com/zarf-dev/zarf/src/pkg/utils"
 	zarfTypes "github.com/zarf-dev/zarf/src/types"
 )
 
@@ -156,20 +148,6 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-	// load package metadata so we know what kind of package to create
-	loadOpt := loadOptions{
-		Source: data.Name.String(),
-	}
-
-	layout, err := loadPackage(ctx, loadOpt)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error loading package metadata",
-			"Could not load package metadata from file: "+err.Error(),
-		)
-		return
-	}
-
 	deployOpts := zarfTypes.ZarfDeployOptions{
 		Timeout: timeout,
 	}
@@ -196,16 +174,16 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	pkgConfig.PkgOpts.PackageSource = data.Name.ValueString()
 
 	// default zarf init opts
-	if layout.Pkg.Kind == zarfV1alpha1.ZarfInitConfig {
-		pkgConfig.InitOpts = zarfTypes.ZarfInitOptions{
-			GitServer: zarfTypes.GitServerInfo{
-				PushUsername: zarfTypes.ZarfGitPushUser,
-			},
-			RegistryInfo: zarfTypes.RegistryInfo{
-				PushUsername: zarfTypes.ZarfRegistryPushUser,
-			},
-		}
+	// if layout.Pkg.Kind == zarfV1alpha1.ZarfInitConfig {
+	pkgConfig.InitOpts = zarfTypes.ZarfInitOptions{
+		GitServer: zarfTypes.GitServerInfo{
+			PushUsername: zarfTypes.ZarfGitPushUser,
+		},
+		RegistryInfo: zarfTypes.RegistryInfo{
+			PushUsername: zarfTypes.ZarfRegistryPushUser,
+		},
 	}
+	// }
 
 	// Create the package client
 	pkgClient, err := zarfPackager.New(&pkgConfig)
@@ -231,7 +209,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	tflog.Debug(ctx, "ending deploy")
 
 	data.ID = types.StringValue(data.Name.ValueString())
-	data.Kind = types.StringValue(string(layout.Pkg.Kind))
+	data.Kind = types.StringValue(string(pkgConfig.Pkg.Kind))
 
 	// populate the package metadata type.
 	// TODO(clint): this is ugly and I got it from https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/custom
@@ -242,9 +220,9 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		"version":     types.StringType,
 	}
 	elements := map[string]attr.Value{
-		"name":        types.StringValue(layout.Pkg.Metadata.Name),
-		"description": types.StringValue(layout.Pkg.Metadata.Description),
-		"version":     types.StringValue(layout.Pkg.Metadata.Version),
+		"name":        types.StringValue(pkgConfig.Pkg.Metadata.Name),
+		"description": types.StringValue(pkgConfig.Pkg.Metadata.Description),
+		"version":     types.StringValue(pkgConfig.Pkg.Metadata.Version),
 	}
 	objectValue, diags := types.ObjectValue(elementTypes, elements)
 
@@ -409,141 +387,4 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
-}
-
-//TODO(clint): the below methods could/should be moved to a util type file. They
-//were all lifted from Zarf Packager2 internal package and modified to fit our
-//needs here.
-
-// packageLayout manages the layout for a package.
-// Lifted from Zarf
-type packageLayout struct {
-	dirPath string
-	Pkg     zarfV1alpha1.ZarfPackage
-}
-
-// loadOptions are the options for LoadPackage.
-type loadOptions struct {
-	Source string
-	// Shasum                  string
-	// PublicKeyPath           string
-	// SkipSignatureValidation bool
-	// Filter                  filters.ComponentFilterStrategy
-}
-
-// packageLayoutOptions are the options used when loading a package.
-type packageLayoutOptions struct {
-	PublicKeyPath           string
-	SkipSignatureValidation bool
-	IsPartial               bool
-}
-
-func loadPackage(ctx context.Context, opt loadOptions) (*packageLayout, error) {
-	tmpDir, err := zarfUtils.MakeTempDir("")
-	if err != nil {
-		return nil, err
-	}
-	defer os.Remove(tmpDir)
-	// TODO(clint): tarpath temp dir isn't ever really used?
-	// tarPath := filepath.Join(tmpDir, "data.tar.zst")
-	tarPath := opt.Source
-
-	layoutOpt := packageLayoutOptions{
-		// PublicKeyPath:           opt.PublicKeyPath,
-		// SkipSignatureValidation: opt.SkipSignatureValidation,
-		// IsPartial:               isPartial,
-	}
-	pkgLayout, err := loadFromTar(ctx, tarPath, layoutOpt)
-	if err != nil {
-		return nil, err
-	}
-	return pkgLayout, nil
-}
-
-// loadFromTar unpacks the give compressed package and loads it.
-func loadFromTar(ctx context.Context, tarPath string, opt packageLayoutOptions) (*packageLayout, error) {
-	dirPath, err := zarfUtils.MakeTempDir(zarfConfig.CommonOptions.TempDirectory)
-	if err != nil {
-		return nil, err
-	}
-
-	//TODO(clint): find out why the path here has leading and trailing quotes
-	tarPath = strings.Trim(tarPath, "\"")
-	err = archiver.Walk(tarPath, func(f archiver.File) error {
-		if f.IsDir() {
-			return nil
-		}
-		header, ok := f.Header.(*tar.Header)
-		if !ok {
-			return fmt.Errorf("expected header to be *tar.Header but was %T", f.Header)
-		}
-		// If path has nested directories we want to create them.
-		dir := filepath.Dir(header.Name)
-		if dir != "." {
-			err := os.MkdirAll(filepath.Join(dirPath, dir), 0755)
-			if err != nil {
-				return err
-			}
-		}
-		dst, err := os.Create(filepath.Join(dirPath, header.Name))
-		if err != nil {
-			return err
-		}
-		defer dst.Close()
-		_, err = io.Copy(dst, f)
-		if err != nil {
-			return err
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	p, err := loadFromDir(ctx, dirPath, opt)
-	if err != nil {
-		return nil, err
-	}
-	return p, nil
-}
-
-// loadFromDir loads and validates a package from the given directory path.
-// some unused vars here because at this time we're not doing some of the other
-// validation things.
-func loadFromDir(_ context.Context, dirPath string, _ packageLayoutOptions) (*packageLayout, error) {
-	b, err := os.ReadFile(filepath.Join(dirPath, "zarf.yaml"))
-	if err != nil {
-		return nil, err
-	}
-	pkg, err := parseZarfPackage(b)
-	if err != nil {
-		return nil, err
-	}
-	pkgLayout := &packageLayout{
-		dirPath: dirPath,
-		Pkg:     pkg,
-	}
-	// err = validatePackageIntegrity(pkgLayout, opt.IsPartial)
-	// if err != nil {
-	// 	return nil, err
-	// }
-	// err = validatePackageSignature(ctx, pkgLayout, opt.PublicKeyPath, opt.SkipSignatureValidation)
-	// if err != nil {
-	// 	return nil, err
-	// }
-	return pkgLayout, nil
-}
-
-// parseZarfPackage parses the yaml passed as a byte slice and applies potential schema migrations.
-func parseZarfPackage(b []byte) (zarfV1alpha1.ZarfPackage, error) {
-	var pkg zarfV1alpha1.ZarfPackage
-	err := goyaml.Unmarshal(b, &pkg)
-	if err != nil {
-		return zarfV1alpha1.ZarfPackage{}, err
-	}
-	// if len(pkg.Build.Migrations) > 0 {
-	// 	for idx, component := range pkg.Components {
-	// 		pkg.Components[idx], _ = deprecated.MigrateComponent(pkg.Build, component)
-	// 	}
-	// }
-	return pkg, nil
 }
