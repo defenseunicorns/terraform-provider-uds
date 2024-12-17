@@ -22,8 +22,22 @@ UDS Package resource
 ### Optional
 
 - `components` (List of List of String) Explicit list of components to include in the package, if empty, all default components are included
+- `kind` (String) Kind of Zarf package; ZarfInitConfig or ZarfPackageConfig
+- `metadata` (Attributes) Metadata retrieved from the zarf.yaml in the package (see [below for nested schema](#nestedatt--metadata))
 - `timeout` (String) Timeout for the deploy operation
 
 ### Read-Only
 
 - `id` (String) Example identifier
+
+<a id="nestedatt--metadata"></a>
+### Nested Schema for `metadata`
+
+Optional:
+
+- `name` (String) Name of the zarf package. Used to identify the installed package
+
+Read-Only:
+
+- `description` (String) Description of the zarf package, from the zarf.yaml file
+- `version` (String) Version of the zarf package, from the zarf.yaml file
