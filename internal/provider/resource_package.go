@@ -6,7 +6,6 @@ package provider
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -39,12 +39,14 @@ type PackageResource struct{}
 
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
-	ID         types.String `tfsdk:"id"`
-	Name       types.String `tfsdk:"name"`
+	ID types.String `tfsdk:"id"`
+	// Name       types.String `tfsdk:"name"`
 	Components types.List   `tfsdk:"components"`
 	Timeout    types.String `tfsdk:"timeout"`
 	// Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
-	Kind types.String `tfsdk:"kind"`
+	Kind    types.String `tfsdk:"kind"`
+	OciURL  types.String `tfsdk:"oci_url"`
+	Version types.String `tfsdk:"version"`
 
 	// readonly metadata
 	Metadata types.Object `tfsdk:"metadata"`
@@ -70,9 +72,20 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
-			"name": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "File name of the package",
+			"oci_url": schema.StringAttribute{
+				Required:            true, // TODO(clint): make this optional and support local file
+				MarkdownDescription: "OCI URL of the package",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"version": schema.StringAttribute{
+				Computed:            true,
+				MarkdownDescription: "Version of the package that was deployed",
+				PlanModifiers: []planmodifier.String{
+					// TODO(clint): does RequireReplace work here?
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"components": schema.ListAttribute{
 				Optional:            true,
@@ -99,6 +112,9 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Optional:    true,
 				Computed:    true,
 				Description: "Metadata retrieved from the zarf.yaml in the package",
+				PlanModifiers: []planmodifier.Object{
+					objectplanmodifier.RequiresReplace(),
+				},
 				Attributes: map[string]schema.Attribute{
 					"name": &schema.StringAttribute{
 						Optional:    true,
@@ -110,8 +126,13 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						Description: "Description of the zarf package, from the zarf.yaml file",
 					},
 					"version": &schema.StringAttribute{
-						Computed:    true,
+						Optional:    true,
 						Description: "Version of the zarf package, from the zarf.yaml file",
+						// TODO(clint): make reading a different value here
+						// force the recreation
+						PlanModifiers: []planmodifier.String{
+							stringplanmodifier.RequiresReplace(),
+						},
 					},
 				},
 			},
@@ -154,7 +175,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 
 	pkgOpts := zarfTypes.ZarfPackageOptions{
 		// Load the package path from the terraform plan
-		PackageSource: data.Name.ValueString(),
+		PackageSource: data.OciURL.ValueString(),
 
 		// Explicitly set the components to deploy if specified
 		// OptionalComponents: strings.Join(data.Components.Elements(), ","),
@@ -171,7 +192,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	// TODO(clint): make this more flexible so we detect if it's a zarf init
 	// package or not, and only add the init opts if needed. Right now it's just
 	// a spike that got me through the first hurdle.
-	pkgConfig.PkgOpts.PackageSource = data.Name.ValueString()
+	pkgConfig.PkgOpts.PackageSource = data.OciURL.ValueString()
 
 	// default zarf init opts
 	// if layout.Pkg.Kind == zarfV1alpha1.ZarfInitConfig {
@@ -208,7 +229,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 	tflog.Debug(ctx, "ending deploy")
 
-	data.ID = types.StringValue(data.Name.ValueString())
+	data.ID = types.StringValue(data.OciURL.ValueString())
 	data.Kind = types.StringValue(string(pkgConfig.Pkg.Kind))
 
 	// populate the package metadata type.
@@ -224,7 +245,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		"description": types.StringValue(pkgConfig.Pkg.Metadata.Description),
 		"version":     types.StringValue(pkgConfig.Pkg.Metadata.Version),
 	}
-	objectValue, diags := types.ObjectValue(elementTypes, elements)
+	pkgMetaData, diags := types.ObjectValue(elementTypes, elements)
 
 	if diags.HasError() {
 		resp.Diagnostics.AddError(
@@ -233,9 +254,11 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		)
 		return
 	}
-	data.Metadata = objectValue
+	data.Metadata = pkgMetaData
 
-	// Documentation: https://terraform.io/plugin/log
+	// explicitly set the version
+	data.Version = types.StringValue(pkgConfig.Pkg.Metadata.Version)
+
 	tflog.Trace(ctx, "created zarf package resource")
 
 	// Save data into Terraform state
@@ -287,18 +310,18 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	// Populate a matrix of all the deployed packages
 	// TODO(clint): use this information to update our local state with the
 	// metadata from the package we're managing
-	packageData := [][]string{}
-
+	packageData := make(map[string]zarfTypes.DeployedPackage)
 	for _, pkg := range deployedZarfPackages {
-		var components []string
+		// var components []string
 
-		for _, component := range pkg.DeployedComponents {
-			components = append(components, component.Name)
-		}
+		// for _, component := range pkg.DeployedComponents {
+		// 	components = append(components, component.Name)
+		// }
 
-		packageData = append(packageData, []string{
-			pkg.Name, pkg.Data.Metadata.Version, fmt.Sprintf("%v", components),
-		})
+		// packageData = append(packageData, []string{
+		// 	pkg.Name, pkg.Data.Metadata.Version, fmt.Sprintf("%v", components),
+		// })
+		packageData[pkg.Name] = pkg
 	}
 
 	// TODO(clint): verify the package name is in this list. Right now the
@@ -306,7 +329,8 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	// we need to either dig into the package and find the metadata name, or
 	// find another way to identify and ask Zarf/Kubernetes to give us the
 	// package name.
-	if len(packageData) == 0 {
+	pkgUpdate, ok := packageData[strings.Trim(data.Metadata.Attributes()["name"].String(), "\"")]
+	if !ok {
 		resp.Diagnostics.AddWarning(
 			"Package not found",
 			"Could not find package in deployed packages; removing resource",
@@ -315,20 +339,31 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	// remove the package from state if it's not found in the list
-	// TODO(clint): solve the mystery of why does the attribute come back with
-	// extra quotes in the string?
-	foundPackage := slices.ContainsFunc(deployedZarfPackages, func(zarfPackage zarfTypes.DeployedPackage) bool {
-		return zarfPackage.Name == strings.Trim(data.Metadata.Attributes()["name"].String(), "\"")
-	})
-	if !foundPackage {
-		resp.Diagnostics.AddWarning(
-			"Package not found",
-			"Could not find package in deployed packages; removing resource",
+	// populate the package metadata type.
+	// TODO(clint): this is ugly and I got it from https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/custom
+	// There are probably a few optimizations or cleanups to be done here.
+	// TODO(clint): this can be combined with the same code from the Create
+	// method.
+	elementTypes := map[string]attr.Type{
+		"name":        types.StringType,
+		"description": types.StringType,
+		"version":     types.StringType,
+	}
+	elements := map[string]attr.Value{
+		"name":        types.StringValue(pkgUpdate.Name),
+		"description": types.StringValue(pkgUpdate.Data.Metadata.Description),
+		"version":     types.StringValue(pkgUpdate.Data.Metadata.Version),
+	}
+	pkgMetadata, diags := types.ObjectValue(elementTypes, elements)
+	if diags.HasError() {
+		resp.Diagnostics.AddError(
+			"Error converting type to package metadata in read",
+			"Could not convert: "+fmt.Sprintf("%v", diags),
 		)
-		resp.State.RemoveResource(ctx)
 		return
 	}
+	data.Metadata = pkgMetadata
+	data.Version = types.StringValue(pkgUpdate.Data.Metadata.Version)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -356,7 +391,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	opts := zarfTypes.ZarfPackageOptions{
-		PackageSource: data.Name.ValueString(),
+		PackageSource: data.OciURL.ValueString(),
 	}
 	pkgConfig := zarfTypes.PackagerConfig{
 		PkgOpts: opts,
@@ -370,6 +405,8 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		)
 		return
 	}
+
+	// TODO(clint): copied this from uds-cli, but I'm not sure if it's needed
 	defer pkgClient.ClearTempPaths()
 
 	if err := pkgClient.Remove(context.TODO()); err != nil {
