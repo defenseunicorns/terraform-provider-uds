@@ -18,7 +18,7 @@ tasks:
   - name: install
     description: Install the provider
     actions:
-      - cmd: go install -v ./...
+      - cmd: go install -v .
 
   - name: lint
     description: Lint the code
