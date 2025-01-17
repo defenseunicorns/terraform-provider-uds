@@ -18,8 +18,6 @@ import (
 // Ensure provider defined types fully satisfy framework interfaces.
 var _ resource.Resource = &BundleMetadataResource{}
 
-// var _ resource.ResourceWithImportState = &BundleMetadataResource{}
-
 func NewBundleMetadataResource() resource.Resource {
 	return &BundleMetadataResource{}
 }
