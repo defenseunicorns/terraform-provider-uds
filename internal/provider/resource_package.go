@@ -13,7 +13,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -53,6 +52,28 @@ type PackageResourceModel struct {
 	// others, probably read-only as well, from the ZarfPackage type:
 	// Variables
 	// Components
+
+	Overrides []OverrideModel `tfsdk:"overrides"`
+}
+
+type OverrideModel struct {
+	ComponentName types.String       `tfsdk:"component_name"`
+	ChartName     types.String       `tfsdk:"chart_name"`
+	ValuesFiles   []types.String     `tfsdk:"values_files"`
+	Values        []OverrideValue    `tfsdk:"values"`
+	Variables     []OverrideVariable `tfsdk:"variables"`
+}
+
+type OverrideValue struct {
+	Path  types.String `tfsdk:"path"`
+	Value types.Int64  `tfsdk:"value"`
+}
+
+type OverrideVariable struct {
+	Name        types.String `tfsdk:"name"`
+	Path        types.String `tfsdk:"path"`
+	Description types.String `tfsdk:"description"`
+	Default     types.String `tfsdk:"default"`
 }
 
 func (r *PackageResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -82,10 +103,6 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"version": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "Version of the package that was deployed",
-				PlanModifiers: []planmodifier.String{
-					// TODO(clint): does RequireReplace work here?
-					stringplanmodifier.RequiresReplace(),
-				},
 			},
 			"components": schema.ListAttribute{
 				Optional:            true,
@@ -109,12 +126,12 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 
 			"metadata": &schema.SingleNestedAttribute{
-				Optional:    true,
+				// Optional:    true,
 				Computed:    true,
 				Description: "Metadata retrieved from the zarf.yaml in the package",
-				PlanModifiers: []planmodifier.Object{
-					objectplanmodifier.RequiresReplace(),
-				},
+				// PlanModifiers: []planmodifier.Object{
+				// 	objectplanmodifier.RequiresReplace(),
+				// },
 				Attributes: map[string]schema.Attribute{
 					"name": &schema.StringAttribute{
 						Optional:    true,
@@ -132,6 +149,69 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						// force the recreation
 						PlanModifiers: []planmodifier.String{
 							stringplanmodifier.RequiresReplace(),
+						},
+					},
+				},
+			},
+
+			// overrides
+			"overrides": schema.ListNestedAttribute{
+				Description: "List of overrides for Helm charts.",
+				Optional:    true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"component_name": schema.StringAttribute{
+							Description: "Name of the component being overridden.",
+							Required:    true,
+						},
+						"chart_name": schema.StringAttribute{
+							Description: "Name of the Helm chart being overridden.",
+							Required:    true,
+						},
+						"values_files": schema.ListAttribute{
+							Description: "List of values files to include in the override.",
+							Optional:    true,
+							ElementType: types.StringType,
+						},
+						"values": schema.ListNestedAttribute{
+							Description: "List of values to override in the chart.",
+							Optional:    true,
+							NestedObject: schema.NestedAttributeObject{
+								Attributes: map[string]schema.Attribute{
+									"path": schema.StringAttribute{
+										Description: "Path of the value to override.",
+										Required:    true,
+									},
+									"value": schema.Int64Attribute{
+										Description: "Value to set at the given path.",
+										Required:    true,
+									},
+								},
+							},
+						},
+						"variables": schema.ListNestedAttribute{
+							Description: "List of variables for the Helm chart.",
+							Optional:    true,
+							NestedObject: schema.NestedAttributeObject{
+								Attributes: map[string]schema.Attribute{
+									"name": schema.StringAttribute{
+										Description: "Name of the variable.",
+										Required:    true,
+									},
+									"path": schema.StringAttribute{
+										Description: "Path of the variable in the Helm chart.",
+										Required:    true,
+									},
+									"description": schema.StringAttribute{
+										Description: "Description of the variable.",
+										Optional:    true,
+									},
+									"default": schema.StringAttribute{
+										Description: "Default value for the variable.",
+										Optional:    true,
+									},
+								},
+							},
 						},
 					},
 				},
@@ -207,9 +287,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	// }
 
 	// Create the package client
-	pkgClient, err := zarfPackager.New(&pkgConfig)
-	// Always clear the temp paths since we're running in automation
-	defer pkgClient.ClearTempPaths()
+	pkgClient, err := zarfPackager.New(&pkgConfig, zarfPackager.WithContext(ctx))
 	// Abort if we can't create the package client
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -218,6 +296,8 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		)
 		return
 	}
+	// Always clear the temp paths since we're running in automation
+	defer pkgClient.ClearTempPaths()
 
 	tflog.Debug(ctx, "starting deploy")
 	if err := pkgClient.Deploy(ctx); err != nil {
@@ -424,4 +504,44 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// Helper to parse `values`
+func parseOverrideValues(rawValues []interface{}) []OverrideValue {
+	values := make([]OverrideValue, len(rawValues))
+	for i, rawValue := range rawValues {
+		value := rawValue.(map[string]interface{})
+
+		// Ensure type safety for "value"
+		var intValue int64
+		switch v := value["value"].(type) {
+		case int:
+			intValue = int64(v)
+		case float64:
+			intValue = int64(v)
+		default:
+			panic("Unexpected type for value in override values")
+		}
+
+		values[i] = OverrideValue{
+			Path:  types.StringValue(value["path"].(string)),
+			Value: types.Int64Value(intValue),
+		}
+	}
+	return values
+}
+
+// Helper to parse `variables`
+func parseOverrideVariables(rawVariables []interface{}) []OverrideVariable {
+	variables := make([]OverrideVariable, len(rawVariables))
+	for i, rawVariable := range rawVariables {
+		variable := rawVariable.(map[string]interface{})
+		variables[i] = OverrideVariable{
+			Name:        types.StringValue(variable["name"].(string)),
+			Path:        types.StringValue(variable["path"].(string)),
+			Description: types.StringValue(variable["description"].(string)),
+			Default:     types.StringValue(variable["default"].(string)),
+		}
+	}
+	return variables
 }
