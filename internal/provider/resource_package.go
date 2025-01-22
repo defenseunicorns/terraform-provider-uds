@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -16,8 +17,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/ryboe/q"
 
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
 	zarfCluster "github.com/zarf-dev/zarf/src/pkg/cluster"
@@ -43,9 +46,10 @@ type PackageResourceModel struct {
 	Components types.List   `tfsdk:"components"`
 	Timeout    types.String `tfsdk:"timeout"`
 	// Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
-	Kind    types.String `tfsdk:"kind"`
-	OciURL  types.String `tfsdk:"oci_url"`
-	Version types.String `tfsdk:"version"`
+	Kind       types.String `tfsdk:"kind"`
+	Path       types.String `tfsdk:"path"`
+	Repository types.String `tfsdk:"repository"`
+	Version    types.String `tfsdk:"version"`
 
 	// readonly metadata
 	Metadata types.Object `tfsdk:"metadata"`
@@ -53,6 +57,7 @@ type PackageResourceModel struct {
 	// Variables
 	// Components
 
+	//	map[string]map[string]map[string]interface{}
 	Overrides []OverrideModel `tfsdk:"overrides"`
 }
 
@@ -93,9 +98,23 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
-			"oci_url": schema.StringAttribute{
-				Required:            true, // TODO(clint): make this optional and support local file
-				MarkdownDescription: "OCI URL of the package",
+			"path": schema.StringAttribute{
+				Optional:            true, // TODO(clint): make this optional and support local file
+				MarkdownDescription: "Path to tar file of the package",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					// Validate at least this attribute or other_attr should be configured.
+					stringvalidator.ExactlyOneOf(path.Expressions{
+						path.MatchRoot("repository"),
+						path.MatchRoot("path"),
+					}...),
+				},
+			},
+			"repository": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "url to the repository of the package",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -249,13 +268,15 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	thing := FlattenOverrides(data.Overrides)
 	deployOpts := zarfTypes.ZarfDeployOptions{
-		Timeout: timeout,
+		Timeout:            timeout,
+		ValuesOverridesMap: thing,
 	}
 
 	pkgOpts := zarfTypes.ZarfPackageOptions{
 		// Load the package path from the terraform plan
-		PackageSource: data.OciURL.ValueString(),
+		PackageSource: data.Path.ValueString(),
 
 		// Explicitly set the components to deploy if specified
 		// OptionalComponents: strings.Join(data.Components.Elements(), ","),
@@ -272,7 +293,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	// TODO(clint): make this more flexible so we detect if it's a zarf init
 	// package or not, and only add the init opts if needed. Right now it's just
 	// a spike that got me through the first hurdle.
-	pkgConfig.PkgOpts.PackageSource = data.OciURL.ValueString()
+	pkgConfig.PkgOpts.PackageSource = data.Path.ValueString()
 
 	// default zarf init opts
 	// if layout.Pkg.Kind == zarfV1alpha1.ZarfInitConfig {
@@ -298,6 +319,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 	// Always clear the temp paths since we're running in automation
 	defer pkgClient.ClearTempPaths()
+	q.Q("pkgClient deploy opts", pkgConfig.DeployOpts.ValuesOverridesMap)
 
 	tflog.Debug(ctx, "starting deploy")
 	if err := pkgClient.Deploy(ctx); err != nil {
@@ -309,7 +331,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 	tflog.Debug(ctx, "ending deploy")
 
-	data.ID = types.StringValue(data.OciURL.ValueString())
+	data.ID = types.StringValue(data.Path.ValueString())
 	data.Kind = types.StringValue(string(pkgConfig.Pkg.Kind))
 
 	// populate the package metadata type.
@@ -354,6 +376,9 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	// thing := FlattenOverrides(data.Overrides)
+	// q.Q("--- thing", thing)
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -471,7 +496,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	opts := zarfTypes.ZarfPackageOptions{
-		PackageSource: data.OciURL.ValueString(),
+		PackageSource: data.Path.ValueString(),
 	}
 	pkgConfig := zarfTypes.PackagerConfig{
 		PkgOpts: opts,
@@ -544,4 +569,57 @@ func parseOverrideVariables(rawVariables []interface{}) []OverrideVariable {
 		}
 	}
 	return variables
+}
+
+func FlattenOverrides(overrides []OverrideModel) map[string]map[string]map[string]interface{} {
+	result := make(map[string]map[string]map[string]interface{})
+
+	for _, override := range overrides {
+		// Initialize the nested maps if not already done
+		if _, exists := result[override.ComponentName.ValueString()]; !exists {
+			result[override.ComponentName.ValueString()] = make(map[string]map[string]interface{})
+		}
+
+		componentMap := result[override.ComponentName.ValueString()]
+		if _, exists := componentMap[override.ChartName.ValueString()]; !exists {
+			componentMap[override.ChartName.ValueString()] = make(map[string]interface{})
+		}
+
+		chartMap := componentMap[override.ChartName.ValueString()]
+
+		// Flatten the ValuesFiles, Values, and Variables
+		if override.ValuesFiles != nil {
+			valuesFiles := make([]string, len(override.ValuesFiles))
+			for i, file := range override.ValuesFiles {
+				valuesFiles[i] = file.ValueString()
+			}
+			chartMap["values_files"] = valuesFiles
+		}
+
+		if override.Values != nil {
+			values := make([]map[string]interface{}, len(override.Values))
+			for i, value := range override.Values {
+				values[i] = map[string]interface{}{
+					"path":  value.Path.ValueString(),
+					"value": value.Value.ValueInt64(),
+				}
+			}
+			chartMap["values"] = values
+		}
+
+		if override.Variables != nil {
+			variables := make([]map[string]interface{}, len(override.Variables))
+			for i, variable := range override.Variables {
+				variables[i] = map[string]interface{}{
+					"name":        variable.Name.ValueString(),
+					"path":        variable.Path.ValueString(),
+					"description": variable.Description.ValueString(),
+					"default":     variable.Default.ValueString(),
+				}
+			}
+			chartMap["variables"] = variables
+		}
+	}
+
+	return result
 }
