@@ -20,7 +20,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"github.com/ryboe/q"
 
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
 	zarfCluster "github.com/zarf-dev/zarf/src/pkg/cluster"
@@ -71,7 +70,7 @@ type OverrideModel struct {
 
 type OverrideValue struct {
 	Path  types.String `tfsdk:"path"`
-	Value types.Int64  `tfsdk:"value"`
+	Value types.String `tfsdk:"value"`
 }
 
 type OverrideVariable struct {
@@ -201,7 +200,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 										Description: "Path of the value to override.",
 										Required:    true,
 									},
-									"value": schema.Int64Attribute{
+									"value": schema.StringAttribute{
 										Description: "Value to set at the given path.",
 										Required:    true,
 									},
@@ -268,26 +267,11 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-	thing := FlattenOverrides(data.Overrides)
-	// otherThing := map[string]map[string]map[string]interface{}{
-	// 	"podinfo-color": {
-	// 		"podinfo": {
-	// 			"replicaCount": int64(2),
-	// 			"ui": map[string]interface{}{
-	// 				// "color": "red",
-	// 				"color": "purple",
-	// 			},
-	// 		},
-	// 	},
-	// }
+	thing := flattenOverrides(data.Overrides)
 	deployOpts := zarfTypes.ZarfDeployOptions{
 		Timeout:            timeout,
 		ValuesOverridesMap: thing,
-		// ValuesOverridesMap: otherThing,
 	}
-	q.Q("--- thing", thing)
-	// q.Q("--- otherThing", otherThing)
-	q.Q("--- POST deployOpts.ValuesOverridesMap", deployOpts.ValuesOverridesMap)
 
 	pkgOpts := zarfTypes.ZarfPackageOptions{
 		// Load the package path from the terraform plan
@@ -346,7 +330,6 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 	// Always clear the temp paths since we're running in automation
 	defer pkgClient.ClearTempPaths()
-	q.Q("pkgClient deploy opts", pkgConfig.DeployOpts.ValuesOverridesMap)
 
 	tflog.Debug(ctx, "starting deploy")
 	if err := pkgClient.Deploy(ctx); err != nil {
@@ -555,47 +538,7 @@ func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportSt
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
-// Helper to parse `values`
-func parseOverrideValues(rawValues []interface{}) []OverrideValue {
-	values := make([]OverrideValue, len(rawValues))
-	for i, rawValue := range rawValues {
-		value := rawValue.(map[string]interface{})
-
-		// Ensure type safety for "value"
-		var intValue int64
-		switch v := value["value"].(type) {
-		case int:
-			intValue = int64(v)
-		case float64:
-			intValue = int64(v)
-		default:
-			panic("Unexpected type for value in override values")
-		}
-
-		values[i] = OverrideValue{
-			Path:  types.StringValue(value["path"].(string)),
-			Value: types.Int64Value(intValue),
-		}
-	}
-	return values
-}
-
-// Helper to parse `variables`
-func parseOverrideVariables(rawVariables []interface{}) []OverrideVariable {
-	variables := make([]OverrideVariable, len(rawVariables))
-	for i, rawVariable := range rawVariables {
-		variable := rawVariable.(map[string]interface{})
-		variables[i] = OverrideVariable{
-			Name:        types.StringValue(variable["name"].(string)),
-			Path:        types.StringValue(variable["path"].(string)),
-			Description: types.StringValue(variable["description"].(string)),
-			Default:     types.StringValue(variable["default"].(string)),
-		}
-	}
-	return variables
-}
-
-func FlattenOverrides(overrides []OverrideModel) map[string]map[string]map[string]interface{} {
+func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[string]interface{} {
 	result := make(map[string]map[string]map[string]interface{})
 
 	for _, override := range overrides {
@@ -615,7 +558,7 @@ func FlattenOverrides(overrides []OverrideModel) map[string]map[string]map[strin
 		if override.Values != nil {
 			for _, value := range override.Values {
 				path := value.Path.ValueString()
-				chartMap[path] = value.Value.ValueInt64()
+				chartMap[path] = value.Value.ValueString()
 			}
 		}
 
