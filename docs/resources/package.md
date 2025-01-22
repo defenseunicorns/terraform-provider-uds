@@ -17,7 +17,7 @@ UDS Package resource
 
 ### Required
 
-- `name` (String) File name of the package
+- `oci_url` (String) OCI URL of the package
 
 ### Optional
 
@@ -29,6 +29,7 @@ UDS Package resource
 ### Read-Only
 
 - `id` (String) Example identifier
+- `version` (String) Version of the package that was deployed
 
 <a id="nestedatt--metadata"></a>
 ### Nested Schema for `metadata`
@@ -36,8 +37,8 @@ UDS Package resource
 Optional:
 
 - `name` (String) Name of the zarf package. Used to identify the installed package
+- `version` (String) Version of the zarf package, from the zarf.yaml file
 
 Read-Only:
 
 - `description` (String) Description of the zarf package, from the zarf.yaml file
-- `version` (String) Version of the zarf package, from the zarf.yaml file

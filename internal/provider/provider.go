@@ -37,6 +37,7 @@ func (p *udsProvider) Configure(context.Context, provider.ConfigureRequest, *pro
 func (p *udsProvider) Resources(context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewPackageResource,
+		NewBundleMetadataResource,
 	}
 }
 
