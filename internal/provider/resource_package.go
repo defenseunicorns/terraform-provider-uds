@@ -304,22 +304,8 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		},
 	}
 
-	// nsOverrides := make(sources.NamespaceOverrideMap)
-
-	// sha := "22e49faf7bd126cb78b2ab9636726722c38e7bbef5012dd7d988cacec18d5427"
-	// source, err := zarfSources.NewFromLocation(*b.cfg, pkg, pkgConfig.PkgOpts, sha, nsOverrides)
-	// if err != nil {
-	// 	resp.Diagnostics.AddError(
-	// 		"error loading from location",
-	// 		"Could not create client: "+err.Error(),
-	// 	)
-	// 	return
-	// }
-
 	// Create the package client
 	pkgClient, err := zarfPackager.New(&pkgConfig, zarfPackager.WithContext(ctx))
-	// pkgClient, err := zarfPackager.New(&pkgCfg, packager.WithSource(source), zarfPackager.WithTemp(opts.PackageSource))
-	// pkgClient, err := zarfPackager.New(&pkgConfig, zarfPackager.WithSource(source), zarfPackager.WithContext(ctx))
 	// Abort if we can't create the package client
 	if err != nil {
 		resp.Diagnostics.AddError(
