@@ -269,10 +269,25 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 
 	thing := FlattenOverrides(data.Overrides)
+	// otherThing := map[string]map[string]map[string]interface{}{
+	// 	"podinfo-color": {
+	// 		"podinfo": {
+	// 			"replicaCount": int64(2),
+	// 			"ui": map[string]interface{}{
+	// 				// "color": "red",
+	// 				"color": "purple",
+	// 			},
+	// 		},
+	// 	},
+	// }
 	deployOpts := zarfTypes.ZarfDeployOptions{
 		Timeout:            timeout,
 		ValuesOverridesMap: thing,
+		// ValuesOverridesMap: otherThing,
 	}
+	q.Q("--- thing", thing)
+	// q.Q("--- otherThing", otherThing)
+	q.Q("--- POST deployOpts.ValuesOverridesMap", deployOpts.ValuesOverridesMap)
 
 	pkgOpts := zarfTypes.ZarfPackageOptions{
 		// Load the package path from the terraform plan
@@ -296,7 +311,6 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	pkgConfig.PkgOpts.PackageSource = data.Path.ValueString()
 
 	// default zarf init opts
-	// if layout.Pkg.Kind == zarfV1alpha1.ZarfInitConfig {
 	pkgConfig.InitOpts = zarfTypes.ZarfInitOptions{
 		GitServer: zarfTypes.GitServerInfo{
 			PushUsername: zarfTypes.ZarfGitPushUser,
@@ -305,10 +319,23 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 			PushUsername: zarfTypes.ZarfRegistryPushUser,
 		},
 	}
+
+	// nsOverrides := make(sources.NamespaceOverrideMap)
+
+	// sha := "22e49faf7bd126cb78b2ab9636726722c38e7bbef5012dd7d988cacec18d5427"
+	// source, err := zarfSources.NewFromLocation(*b.cfg, pkg, pkgConfig.PkgOpts, sha, nsOverrides)
+	// if err != nil {
+	// 	resp.Diagnostics.AddError(
+	// 		"error loading from location",
+	// 		"Could not create client: "+err.Error(),
+	// 	)
+	// 	return
 	// }
 
 	// Create the package client
 	pkgClient, err := zarfPackager.New(&pkgConfig, zarfPackager.WithContext(ctx))
+	// pkgClient, err := zarfPackager.New(&pkgCfg, packager.WithSource(source), zarfPackager.WithTemp(opts.PackageSource))
+	// pkgClient, err := zarfPackager.New(&pkgConfig, zarfPackager.WithSource(source), zarfPackager.WithContext(ctx))
 	// Abort if we can't create the package client
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -376,9 +403,6 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	// thing := FlattenOverrides(data.Overrides)
-	// q.Q("--- thing", thing)
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -587,37 +611,35 @@ func FlattenOverrides(overrides []OverrideModel) map[string]map[string]map[strin
 
 		chartMap := componentMap[override.ChartName.ValueString()]
 
-		// Flatten the ValuesFiles, Values, and Variables
-		if override.ValuesFiles != nil {
-			valuesFiles := make([]string, len(override.ValuesFiles))
-			for i, file := range override.ValuesFiles {
-				valuesFiles[i] = file.ValueString()
-			}
-			chartMap["values_files"] = valuesFiles
-		}
-
+		// Flatten Values
 		if override.Values != nil {
-			values := make([]map[string]interface{}, len(override.Values))
-			for i, value := range override.Values {
-				values[i] = map[string]interface{}{
-					"path":  value.Path.ValueString(),
-					"value": value.Value.ValueInt64(),
-				}
+			for _, value := range override.Values {
+				path := value.Path.ValueString()
+				chartMap[path] = value.Value.ValueInt64()
 			}
-			chartMap["values"] = values
 		}
 
+		// Flatten Variables into Nested Map
 		if override.Variables != nil {
-			variables := make([]map[string]interface{}, len(override.Variables))
-			for i, variable := range override.Variables {
-				variables[i] = map[string]interface{}{
-					"name":        variable.Name.ValueString(),
-					"path":        variable.Path.ValueString(),
-					"description": variable.Description.ValueString(),
-					"default":     variable.Default.ValueString(),
+			for _, variable := range override.Variables {
+				path := variable.Path.ValueString()
+				// Create nested maps based on the path
+				pathParts := strings.Split(path, ".")
+				currentMap := chartMap
+
+				for i, part := range pathParts {
+					if i == len(pathParts)-1 {
+						// Last part of the path, set the value
+						currentMap[part] = variable.Default.ValueString()
+					} else {
+						// Intermediate parts, create maps if necessary
+						if _, exists := currentMap[part]; !exists {
+							currentMap[part] = make(map[string]interface{})
+						}
+						currentMap = currentMap[part].(map[string]interface{})
+					}
 				}
 			}
-			chartMap["variables"] = variables
 		}
 	}
 
