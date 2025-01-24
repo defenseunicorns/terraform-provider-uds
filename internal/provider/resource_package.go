@@ -269,10 +269,10 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-	thing := flattenOverrides(data.Overrides)
+	valuesMap := flattenOverrides(data.Overrides)
 	deployOpts := zarfTypes.ZarfDeployOptions{
 		Timeout:            timeout,
-		ValuesOverridesMap: thing,
+		ValuesOverridesMap: valuesMap,
 	}
 
 	pkgOpts := zarfTypes.ZarfPackageOptions{
@@ -398,12 +398,19 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
+	// TODO: (clint) sometimes we deploy successfully but this returns empty,
+	// retry might be appropriate or there may be a better way to detect this
 	if len(deployedZarfPackages) == 0 {
-		resp.Diagnostics.AddWarning(
-			"No Packages found",
-			"Could not find any packages deployed; removing resource",
-		)
-		resp.State.RemoveResource(ctx)
+		// try again before actually removing the resource
+		time.Sleep(time.Second * 2)
+		deployedZarfPackages, err = c.GetDeployedZarfPackages(timeoutCtx)
+		if err != nil || len(deployedZarfPackages) == 0 {
+			resp.Diagnostics.AddWarning(
+				"No Packages found",
+				"Could not find any packages deployed; removing resource",
+			)
+			resp.State.RemoveResource(ctx)
+		}
 		return
 	}
 
