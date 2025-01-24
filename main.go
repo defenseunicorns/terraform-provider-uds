@@ -14,16 +14,17 @@ import (
 	"github.com/defenseunicorns/terraform-provider-uds/internal/provider"
 	server "github.com/hashicorp/terraform-plugin-framework/providerserver"
 	zarfCLI "github.com/zarf-dev/zarf/src/cmd"
+	zarfConfig "github.com/zarf-dev/zarf/src/config"
 )
 
-var (
-	// set by goreleaser at build time
-	version = "dev"
-)
+// set by goreleaser at build time
+var version = "dev"
 
 func main() {
 	// Check if the zarf command is being run
 	if fixzarf.IsZarf() {
+		zarfConfig.CommonOptions.Confirm = true
+		zarfConfig.ActionsCommandZarfPrefix = "zarf"
 		zarfCLI.Execute(context.TODO())
 		return
 	}
@@ -39,7 +40,6 @@ func main() {
 	}
 
 	err := server.Serve(context.Background(), provider.New(version), opts)
-
 	if err != nil {
 		log.Fatal(err.Error())
 	}
