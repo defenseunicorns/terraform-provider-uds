@@ -53,12 +53,7 @@ type PackageResourceModel struct {
 	Version    types.String `tfsdk:"version"`
 
 	// readonly metadata
-	Metadata types.Object `tfsdk:"metadata"`
-	// others, probably read-only as well, from the ZarfPackage type:
-	// Variables
-	// Components
-
-	//	map[string]map[string]map[string]interface{}
+	Metadata  types.Object    `tfsdk:"metadata"`
 	Overrides []OverrideModel `tfsdk:"overrides"`
 }
 
@@ -146,12 +141,8 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 
 			"metadata": &schema.SingleNestedAttribute{
-				// Optional:    true,
 				Computed:    true,
 				Description: "Metadata retrieved from the zarf.yaml in the package",
-				// PlanModifiers: []planmodifier.Object{
-				// 	objectplanmodifier.RequiresReplace(),
-				// },
 				Attributes: map[string]schema.Attribute{
 					"name": &schema.StringAttribute{
 						Optional:    true,
@@ -165,8 +156,6 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					"version": &schema.StringAttribute{
 						Optional:    true,
 						Description: "Version of the zarf package, from the zarf.yaml file",
-						// TODO(clint): make reading a different value here
-						// force the recreation
 						PlanModifiers: []planmodifier.String{
 							stringplanmodifier.RequiresReplace(),
 						},
@@ -533,6 +522,7 @@ func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportSt
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
+// TODO: (clint) this is a bit of a mess and needs to have unit tests applied
 func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[string]interface{} {
 	result := make(map[string]map[string]map[string]interface{})
 
