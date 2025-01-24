@@ -253,9 +253,9 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	// TODO: (clint): make sure we actually need this here.
 	// Set the prefix for `./zarf` actions since we have to vendor zarf
 	zarfConfig.ActionsCommandZarfPrefix = "zarf"
-
 	// Confirm `zarf package deploy` since we're running in automation
 	zarfConfig.CommonOptions.Confirm = true
 
@@ -561,7 +561,10 @@ func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[strin
 				for i, part := range pathParts {
 					if i == len(pathParts)-1 {
 						// Last part of the path, set the value
-						currentMap[part] = variable.Default.ValueString()
+						// only add if the value is not empty
+						if variable.Default.ValueString() != "" {
+							currentMap[part] = variable.Default.ValueString()
+						}
 					} else {
 						// Intermediate parts, create maps if necessary
 						if _, exists := currentMap[part]; !exists {
