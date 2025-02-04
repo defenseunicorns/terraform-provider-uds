@@ -5,11 +5,16 @@ package provider
 
 import (
 	"context"
+	"os"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 )
+
+type customProviderData struct {
+	LocalPathOverride string
+}
 
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
@@ -31,7 +36,13 @@ type udsProvider struct {
 func (p *udsProvider) Schema(context.Context, provider.SchemaRequest, *provider.SchemaResponse) {
 }
 
-func (p *udsProvider) Configure(context.Context, provider.ConfigureRequest, *provider.ConfigureResponse) {
+func (p *udsProvider) Configure(_ context.Context, _ provider.ConfigureRequest, resp *provider.ConfigureResponse) {
+	customData := customProviderData{
+		LocalPathOverride: os.Getenv("UDS_LOCAL_PATH_OVERRIDE"),
+	}
+
+	resp.DataSourceData = &customData
+	resp.ResourceData = &customData
 }
 
 func (p *udsProvider) Resources(context.Context) []func() resource.Resource {

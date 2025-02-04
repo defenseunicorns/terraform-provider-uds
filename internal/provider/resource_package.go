@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,7 +39,9 @@ func NewPackageResource() resource.Resource {
 }
 
 // PackageResource defines the resource implementation.
-type PackageResource struct{}
+type PackageResource struct {
+	providerData *customProviderData
+}
 
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
@@ -54,6 +57,8 @@ type PackageResourceModel struct {
 	// readonly metadata
 	Metadata  types.Object    `tfsdk:"metadata"`
 	Overrides []OverrideModel `tfsdk:"overrides"`
+
+	Architecture types.String `tfsdk:"architecture"`
 }
 
 type OverrideModel struct {
@@ -115,8 +120,12 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"ref": schema.StringAttribute{
-				Computed:            true,
+				Required:            true,
 				MarkdownDescription: "Red of the package that was deployed",
+			},
+			"architecture": schema.StringAttribute{
+				Required:            true,
+				MarkdownDescription: "Architecture of the Zarf package",
 			},
 			"components": schema.ListAttribute{
 				Optional:            true,
@@ -228,7 +237,10 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 	}
 }
 
-func (r *PackageResource) Configure(_ context.Context, _ resource.ConfigureRequest, _ *resource.ConfigureResponse) {
+func (r *PackageResource) Configure(_ context.Context, req resource.ConfigureRequest, _ *resource.ConfigureResponse) {
+	if req.ProviderData != nil {
+		r.providerData = req.ProviderData.(*customProviderData)
+	}
 }
 
 func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -282,7 +294,25 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	// TODO(clint): make this more flexible so we detect if it's a zarf init
 	// package or not, and only add the init opts if needed. Right now it's just
 	// a spike that got me through the first hurdle.
-	pkgConfig.PkgOpts.PackageSource = data.Path.ValueString()
+	if data.Path.ValueString() != "" {
+		pkgConfig.PkgOpts.PackageSource = data.Path.ValueString()
+	} else if data.Repository.ValueString() != "" {
+		pkgConfig.PkgOpts.PackageSource = data.Repository.ValueString()
+	}
+
+	// NOTE: If providerData is set, we are using that location to override the Path & Repository
+	if r.providerData != nil && r.providerData.LocalPathOverride != "" {
+		if data.Path.ValueString() != "" {
+			pkgConfig.PkgOpts.PackageSource = strings.Trim(filepath.Base(data.Path.String()), "\"")
+		} else {
+			tarballName := fmt.Sprintf("zarf-package-%s-%s-%s.tar.zst",
+				strings.Trim(filepath.Base(data.Repository.String()), "\""),
+				strings.Trim(data.Architecture.ValueString(), "\""),
+				strings.Trim(data.Version.ValueString(), "\""))
+
+			pkgConfig.PkgOpts.PackageSource = filepath.Join(r.providerData.LocalPathOverride, tarballName)
+		}
+	}
 
 	// default zarf init opts
 	pkgConfig.InitOpts = zarfTypes.ZarfInitOptions{
