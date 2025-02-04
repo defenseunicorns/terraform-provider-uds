@@ -49,7 +49,7 @@ type PackageResourceModel struct {
 	Kind       types.String `tfsdk:"kind"`
 	Path       types.String `tfsdk:"path"`
 	Repository types.String `tfsdk:"repository"`
-	Version    types.String `tfsdk:"version"`
+	Ref        types.String `tfsdk:"ref"`
 
 	// readonly metadata
 	Metadata  types.Object    `tfsdk:"metadata"`
@@ -114,9 +114,9 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
-			"version": schema.StringAttribute{
+			"ref": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "Version of the package that was deployed",
+				MarkdownDescription: "Red of the package that was deployed",
 			},
 			"components": schema.ListAttribute{
 				Optional:            true,
@@ -345,7 +345,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	data.Metadata = pkgMetaData
 
 	// explicitly set the version
-	data.Version = types.StringValue(pkgConfig.Pkg.Metadata.Version)
+	data.Ref = types.StringValue(pkgConfig.Pkg.Metadata.Version)
 
 	tflog.Trace(ctx, "created zarf package resource")
 
@@ -458,7 +458,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 	data.Metadata = pkgMetadata
-	data.Version = types.StringValue(pkgUpdate.Data.Metadata.Version)
+	data.Ref = types.StringValue(pkgUpdate.Data.Metadata.Version)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
