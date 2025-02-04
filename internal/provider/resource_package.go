@@ -42,8 +42,7 @@ type PackageResource struct{}
 
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
-	ID types.String `tfsdk:"id"`
-	// Name       types.String `tfsdk:"name"`
+	ID         types.String `tfsdk:"id"`
 	Components types.List   `tfsdk:"components"`
 	Timeout    types.String `tfsdk:"timeout"`
 	// Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
@@ -540,11 +539,9 @@ func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[strin
 		chartMap := componentMap[override.ChartName.ValueString()]
 
 		// Flatten Values
-		if override.Values != nil {
-			for _, value := range override.Values {
-				path := value.Path.ValueString()
-				chartMap[path] = value.Value.ValueString()
-			}
+		for _, value := range override.Values {
+			path := value.Path.ValueString()
+			chartMap[path] = value.Value.ValueString()
 		}
 
 		// Flatten Variables into Nested Map
@@ -555,12 +552,17 @@ func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[strin
 				pathParts := strings.Split(path, ".")
 				currentMap := chartMap
 
+				rootPathPart := pathParts[0]
 				for i, part := range pathParts {
 					if i == len(pathParts)-1 {
 						// Last part of the path, set the value
 						// only add if the value is not empty
 						if variable.Default.ValueString() != "" {
 							currentMap[part] = variable.Default.ValueString()
+						} else {
+							if len(pathParts) > 1 {
+								delete(chartMap, rootPathPart)
+							}
 						}
 					} else {
 						// Intermediate parts, create maps if necessary
