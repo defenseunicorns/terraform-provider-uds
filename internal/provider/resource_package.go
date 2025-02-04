@@ -521,60 +521,97 @@ func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportSt
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
-// TODO: (clint) this is a bit of a mess and needs to have unit tests applied
 func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[string]interface{} {
 	result := make(map[string]map[string]map[string]interface{})
 
 	for _, override := range overrides {
-		// Initialize the nested maps if not already done
-		if _, exists := result[override.ComponentName.ValueString()]; !exists {
-			result[override.ComponentName.ValueString()] = make(map[string]map[string]interface{})
+		component := override.ComponentName.ValueString()
+		chart := override.ChartName.ValueString()
+
+		// Initialize nested maps if they don't exist
+		if _, exists := result[component]; !exists {
+			result[component] = make(map[string]map[string]interface{})
+		}
+		if _, exists := result[component][chart]; !exists {
+			result[component][chart] = make(map[string]interface{})
 		}
 
-		componentMap := result[override.ComponentName.ValueString()]
-		if _, exists := componentMap[override.ChartName.ValueString()]; !exists {
-			componentMap[override.ChartName.ValueString()] = make(map[string]interface{})
-		}
-
-		chartMap := componentMap[override.ChartName.ValueString()]
+		chartMap := result[component][chart]
 
 		// Flatten Values
-		for _, value := range override.Values {
-			path := value.Path.ValueString()
-			chartMap[path] = value.Value.ValueString()
+		for _, v := range override.Values {
+			chartMap[v.Path.ValueString()] = v.Value.ValueString()
 		}
 
-		// Flatten Variables into Nested Map
-		if override.Variables != nil {
-			for _, variable := range override.Variables {
-				path := variable.Path.ValueString()
-				// Create nested maps based on the path
-				pathParts := strings.Split(path, ".")
-				currentMap := chartMap
+		// Flatten Variables into Nested Maps
+		for _, variable := range override.Variables {
+			defaultValue := variable.Default.ValueString()
+			path := variable.Path.ValueString()
 
-				rootPathPart := pathParts[0]
-				for i, part := range pathParts {
-					if i == len(pathParts)-1 {
-						// Last part of the path, set the value
-						// only add if the value is not empty
-						if variable.Default.ValueString() != "" {
-							currentMap[part] = variable.Default.ValueString()
-						} else {
-							if len(pathParts) > 1 {
-								delete(chartMap, rootPathPart)
-							}
-						}
-					} else {
-						// Intermediate parts, create maps if necessary
-						if _, exists := currentMap[part]; !exists {
-							currentMap[part] = make(map[string]interface{})
-						}
-						currentMap = currentMap[part].(map[string]interface{})
-					}
-				}
+			if defaultValue != "" {
+				insertNestedValue(chartMap, path, defaultValue)
+			} else {
+				// Handle deletion if the default value is empty
+				deleteNestedValue(chartMap, path)
 			}
 		}
 	}
 
 	return result
+}
+
+// Inserts a nested value based on the dot-separated path
+func insertNestedValue(root map[string]interface{}, path, value string) {
+	parts := strings.Split(path, ".")
+	current := root
+
+	for i, part := range parts {
+		if i == len(parts)-1 {
+			current[part] = value
+			return
+		}
+
+		// Create intermediate maps if they don't exist
+		if next, exists := current[part]; exists {
+			// Ensure type safety
+			if nestedMap, ok := next.(map[string]interface{}); ok {
+				current = nestedMap
+			} else {
+				// Overwrite if the existing value is not a map
+				newMap := make(map[string]interface{})
+				current[part] = newMap
+				current = newMap
+			}
+		} else {
+			// Initialize a new map if it doesn't exist
+			newMap := make(map[string]interface{})
+			current[part] = newMap
+			current = newMap
+		}
+	}
+}
+
+// Deletes a nested value based on the dot-separated path
+func deleteNestedValue(root map[string]interface{}, path string) {
+	parts := strings.Split(path, ".")
+	current := root
+
+	for i, part := range parts {
+		if i == len(parts)-1 {
+			delete(current, part)
+			return
+		}
+
+		next, exists := current[part]
+		if !exists {
+			return // Path doesn't exist, nothing to delete
+		}
+
+		// Ensure type safety
+		nestedMap, ok := next.(map[string]interface{})
+		if !ok {
+			return // Invalid structure, cannot proceed
+		}
+		current = nestedMap
+	}
 }
