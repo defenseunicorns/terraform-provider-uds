@@ -9,14 +9,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
@@ -27,8 +28,10 @@ import (
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
-var _ resource.Resource = &PackageResource{}
-var _ resource.ResourceWithImportState = &PackageResource{}
+var (
+	_ resource.Resource                = &PackageResource{}
+	_ resource.ResourceWithImportState = &PackageResource{}
+)
 
 func NewPackageResource() resource.Resource {
 	return &PackageResource{}
@@ -39,20 +42,38 @@ type PackageResource struct{}
 
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
-	ID types.String `tfsdk:"id"`
-	// Name       types.String `tfsdk:"name"`
+	ID         types.String `tfsdk:"id"`
 	Components types.List   `tfsdk:"components"`
 	Timeout    types.String `tfsdk:"timeout"`
 	// Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
-	Kind    types.String `tfsdk:"kind"`
-	OciURL  types.String `tfsdk:"oci_url"`
-	Version types.String `tfsdk:"version"`
+	Kind       types.String `tfsdk:"kind"`
+	Path       types.String `tfsdk:"path"`
+	Repository types.String `tfsdk:"repository"`
+	Ref        types.String `tfsdk:"ref"`
 
 	// readonly metadata
-	Metadata types.Object `tfsdk:"metadata"`
-	// others, probably read-only as well, from the ZarfPackage type:
-	// Variables
-	// Components
+	Metadata  types.Object    `tfsdk:"metadata"`
+	Overrides []OverrideModel `tfsdk:"overrides"`
+}
+
+type OverrideModel struct {
+	ComponentName types.String       `tfsdk:"component_name"`
+	ChartName     types.String       `tfsdk:"chart_name"`
+	ValuesFiles   []types.String     `tfsdk:"values_files"`
+	Values        []OverrideValue    `tfsdk:"values"`
+	Variables     []OverrideVariable `tfsdk:"variables"`
+}
+
+type OverrideValue struct {
+	Path  types.String `tfsdk:"path"`
+	Value types.String `tfsdk:"value"`
+}
+
+type OverrideVariable struct {
+	Name        types.String `tfsdk:"name"`
+	Path        types.String `tfsdk:"path"`
+	Description types.String `tfsdk:"description"`
+	Default     types.String `tfsdk:"default"`
 }
 
 func (r *PackageResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -72,20 +93,30 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
-			"oci_url": schema.StringAttribute{
-				Required:            true, // TODO(clint): make this optional and support local file
-				MarkdownDescription: "OCI URL of the package",
+			"path": schema.StringAttribute{
+				Optional:            true, // TODO(clint): make this optional and support local file
+				MarkdownDescription: "Path to tar file of the package",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					// Validate at least this attribute or other_attr should be configured.
+					stringvalidator.ExactlyOneOf(path.Expressions{
+						path.MatchRoot("repository"),
+						path.MatchRoot("path"),
+					}...),
+				},
+			},
+			"repository": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "url to the repository of the package",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
-			"version": schema.StringAttribute{
+			"ref": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "Version of the package that was deployed",
-				PlanModifiers: []planmodifier.String{
-					// TODO(clint): does RequireReplace work here?
-					stringplanmodifier.RequiresReplace(),
-				},
+				MarkdownDescription: "Red of the package that was deployed",
 			},
 			"components": schema.ListAttribute{
 				Optional:            true,
@@ -109,12 +140,8 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 
 			"metadata": &schema.SingleNestedAttribute{
-				Optional:    true,
 				Computed:    true,
 				Description: "Metadata retrieved from the zarf.yaml in the package",
-				PlanModifiers: []planmodifier.Object{
-					objectplanmodifier.RequiresReplace(),
-				},
 				Attributes: map[string]schema.Attribute{
 					"name": &schema.StringAttribute{
 						Optional:    true,
@@ -128,10 +155,71 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					"version": &schema.StringAttribute{
 						Optional:    true,
 						Description: "Version of the zarf package, from the zarf.yaml file",
-						// TODO(clint): make reading a different value here
-						// force the recreation
 						PlanModifiers: []planmodifier.String{
 							stringplanmodifier.RequiresReplace(),
+						},
+					},
+				},
+			},
+
+			// overrides
+			"overrides": schema.ListNestedAttribute{
+				Description: "List of overrides for Helm charts.",
+				Optional:    true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"component_name": schema.StringAttribute{
+							Description: "Name of the component being overridden.",
+							Required:    true,
+						},
+						"chart_name": schema.StringAttribute{
+							Description: "Name of the Helm chart being overridden.",
+							Required:    true,
+						},
+						"values_files": schema.ListAttribute{
+							Description: "List of values files to include in the override.",
+							Optional:    true,
+							ElementType: types.StringType,
+						},
+						"values": schema.ListNestedAttribute{
+							Description: "List of values to override in the chart.",
+							Optional:    true,
+							NestedObject: schema.NestedAttributeObject{
+								Attributes: map[string]schema.Attribute{
+									"path": schema.StringAttribute{
+										Description: "Path of the value to override.",
+										Required:    true,
+									},
+									"value": schema.StringAttribute{
+										Description: "Value to set at the given path.",
+										Required:    true,
+									},
+								},
+							},
+						},
+						"variables": schema.ListNestedAttribute{
+							Description: "List of variables for the Helm chart.",
+							Optional:    true,
+							NestedObject: schema.NestedAttributeObject{
+								Attributes: map[string]schema.Attribute{
+									"name": schema.StringAttribute{
+										Description: "Name of the variable.",
+										Required:    true,
+									},
+									"path": schema.StringAttribute{
+										Description: "Path of the variable in the Helm chart.",
+										Required:    true,
+									},
+									"description": schema.StringAttribute{
+										Description: "Description of the variable.",
+										Optional:    true,
+									},
+									"default": schema.StringAttribute{
+										Description: "Default value for the variable.",
+										Optional:    true,
+									},
+								},
+							},
 						},
 					},
 				},
@@ -153,9 +241,9 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	// TODO: (clint): make sure we actually need this here.
 	// Set the prefix for `./zarf` actions since we have to vendor zarf
 	zarfConfig.ActionsCommandZarfPrefix = "zarf"
-
 	// Confirm `zarf package deploy` since we're running in automation
 	zarfConfig.CommonOptions.Confirm = true
 
@@ -169,13 +257,15 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	valuesMap := flattenOverrides(data.Overrides)
 	deployOpts := zarfTypes.ZarfDeployOptions{
-		Timeout: timeout,
+		Timeout:            timeout,
+		ValuesOverridesMap: valuesMap,
 	}
 
 	pkgOpts := zarfTypes.ZarfPackageOptions{
 		// Load the package path from the terraform plan
-		PackageSource: data.OciURL.ValueString(),
+		PackageSource: data.Path.ValueString(),
 
 		// Explicitly set the components to deploy if specified
 		// OptionalComponents: strings.Join(data.Components.Elements(), ","),
@@ -192,10 +282,9 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	// TODO(clint): make this more flexible so we detect if it's a zarf init
 	// package or not, and only add the init opts if needed. Right now it's just
 	// a spike that got me through the first hurdle.
-	pkgConfig.PkgOpts.PackageSource = data.OciURL.ValueString()
+	pkgConfig.PkgOpts.PackageSource = data.Path.ValueString()
 
 	// default zarf init opts
-	// if layout.Pkg.Kind == zarfV1alpha1.ZarfInitConfig {
 	pkgConfig.InitOpts = zarfTypes.ZarfInitOptions{
 		GitServer: zarfTypes.GitServerInfo{
 			PushUsername: zarfTypes.ZarfGitPushUser,
@@ -204,12 +293,9 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 			PushUsername: zarfTypes.ZarfRegistryPushUser,
 		},
 	}
-	// }
 
 	// Create the package client
-	pkgClient, err := zarfPackager.New(&pkgConfig)
-	// Always clear the temp paths since we're running in automation
-	defer pkgClient.ClearTempPaths()
+	pkgClient, err := zarfPackager.New(&pkgConfig, zarfPackager.WithContext(ctx))
 	// Abort if we can't create the package client
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -218,6 +304,8 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		)
 		return
 	}
+	// Always clear the temp paths since we're running in automation
+	defer pkgClient.ClearTempPaths()
 
 	tflog.Debug(ctx, "starting deploy")
 	if err := pkgClient.Deploy(ctx); err != nil {
@@ -229,7 +317,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 	tflog.Debug(ctx, "ending deploy")
 
-	data.ID = types.StringValue(data.OciURL.ValueString())
+	data.ID = types.StringValue(data.Path.ValueString())
 	data.Kind = types.StringValue(string(pkgConfig.Pkg.Kind))
 
 	// populate the package metadata type.
@@ -257,7 +345,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	data.Metadata = pkgMetaData
 
 	// explicitly set the version
-	data.Version = types.StringValue(pkgConfig.Pkg.Metadata.Version)
+	data.Ref = types.StringValue(pkgConfig.Pkg.Metadata.Version)
 
 	tflog.Trace(ctx, "created zarf package resource")
 
@@ -298,12 +386,19 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
+	// TODO: (clint) sometimes we deploy successfully but this returns empty,
+	// retry might be appropriate or there may be a better way to detect this
 	if len(deployedZarfPackages) == 0 {
-		resp.Diagnostics.AddWarning(
-			"No Packages found",
-			"Could not find any packages deployed; removing resource",
-		)
-		resp.State.RemoveResource(ctx)
+		// try again before actually removing the resource
+		time.Sleep(time.Second * 2)
+		deployedZarfPackages, err = c.GetDeployedZarfPackages(timeoutCtx)
+		if err != nil || len(deployedZarfPackages) == 0 {
+			resp.Diagnostics.AddWarning(
+				"No Packages found",
+				"Could not find any packages deployed; removing resource",
+			)
+			resp.State.RemoveResource(ctx)
+		}
 		return
 	}
 
@@ -363,7 +458,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 	data.Metadata = pkgMetadata
-	data.Version = types.StringValue(pkgUpdate.Data.Metadata.Version)
+	data.Ref = types.StringValue(pkgUpdate.Data.Metadata.Version)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -391,7 +486,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	opts := zarfTypes.ZarfPackageOptions{
-		PackageSource: data.OciURL.ValueString(),
+		PackageSource: data.Path.ValueString(),
 	}
 	pkgConfig := zarfTypes.PackagerConfig{
 		PkgOpts: opts,
@@ -424,4 +519,99 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[string]interface{} {
+	result := make(map[string]map[string]map[string]interface{})
+
+	for _, override := range overrides {
+		component := override.ComponentName.ValueString()
+		chart := override.ChartName.ValueString()
+
+		// Initialize nested maps if they don't exist
+		if _, exists := result[component]; !exists {
+			result[component] = make(map[string]map[string]interface{})
+		}
+		if _, exists := result[component][chart]; !exists {
+			result[component][chart] = make(map[string]interface{})
+		}
+
+		chartMap := result[component][chart]
+
+		// Flatten Values
+		for _, v := range override.Values {
+			chartMap[v.Path.ValueString()] = v.Value.ValueString()
+		}
+
+		// Flatten Variables into Nested Maps
+		for _, variable := range override.Variables {
+			defaultValue := variable.Default.ValueString()
+			path := variable.Path.ValueString()
+
+			if defaultValue != "" {
+				insertNestedValue(chartMap, path, defaultValue)
+			} else {
+				// Handle deletion if the default value is empty
+				deleteNestedValue(chartMap, path)
+			}
+		}
+	}
+
+	return result
+}
+
+// Inserts a nested value based on the dot-separated path
+func insertNestedValue(root map[string]interface{}, path, value string) {
+	parts := strings.Split(path, ".")
+	current := root
+
+	for i, part := range parts {
+		if i == len(parts)-1 {
+			current[part] = value
+			return
+		}
+
+		// Create intermediate maps if they don't exist
+		if next, exists := current[part]; exists {
+			// Ensure type safety
+			if nestedMap, ok := next.(map[string]interface{}); ok {
+				current = nestedMap
+			} else {
+				// Overwrite if the existing value is not a map
+				newMap := make(map[string]interface{})
+				current[part] = newMap
+				current = newMap
+			}
+		} else {
+			// Initialize a new map if it doesn't exist
+			newMap := make(map[string]interface{})
+			current[part] = newMap
+			current = newMap
+		}
+	}
+}
+
+// Deletes a nested value based on the dot-separated path
+func deleteNestedValue(root map[string]interface{}, path string) {
+	parts := strings.Split(path, ".")
+	current := root
+
+	for i, part := range parts {
+		if i == len(parts)-1 {
+			delete(current, part)
+			return
+		}
+
+		next, exists := current[part]
+		if !exists {
+			return // Path doesn't exist, nothing to delete
+		}
+
+		// Ensure type safety
+		nestedMap, ok := next.(map[string]interface{})
+		if !ok {
+			return // Invalid structure, cannot proceed
+		}
+		current = nestedMap
+	}
 }
