@@ -243,144 +243,33 @@ func (r *PackageResource) Configure(_ context.Context, req resource.ConfigureReq
 	}
 }
 
+// Create creates the resource and sets the initial Terraform state.
 func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var data PackageResourceModel
-
-	// Read Terraform plan data into the model
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
-
+	tflog.Info(ctx, "Creating Project")
+	// Retrieve values from plan
+	var plan PackageResourceModel
+	diags := req.Plan.Get(ctx, &plan)
+	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// TODO: (clint): make sure we actually need this here.
-	// Set the prefix for `./zarf` actions since we have to vendor zarf
-	zarfConfig.ActionsCommandZarfPrefix = "zarf"
-	// Confirm `zarf package deploy` since we're running in automation
-	zarfConfig.CommonOptions.Confirm = true
-
-	// convert the terraform timeout to a time.Duration
-	timeout, err := time.ParseDuration(data.Timeout.ValueString())
+	var err error
+	plan, err = r.upsert(ctx, plan)
 	if err != nil {
 		resp.Diagnostics.AddError(
-			"Invalid timeout value",
-			"Could not parse timeout duration: "+err.Error(),
+			"Error creating project",
+			"Could not create project, unexpected error: "+err.Error(),
 		)
 		return
 	}
 
-	valuesMap := flattenOverrides(data.Overrides)
-	deployOpts := zarfTypes.ZarfDeployOptions{
-		Timeout:            timeout,
-		ValuesOverridesMap: valuesMap,
-	}
-
-	pkgOpts := zarfTypes.ZarfPackageOptions{
-		// Load the package path from the terraform plan
-		PackageSource: data.Path.ValueString(),
-
-		// Explicitly set the components to deploy if specified
-		// OptionalComponents: strings.Join(data.Components.Elements(), ","),
-	}
-
-	// Initialize the package config
-	pkgConfig := zarfTypes.PackagerConfig{
-		DeployOpts: deployOpts,
-		PkgOpts:    pkgOpts,
-	}
-
-	// read the zarf package name from the terraform plan. Right now this
-	// expects a local file name, ex: "zarf-init-arm64-v0.43.0.tar.zst".
-	// TODO(clint): make this more flexible so we detect if it's a zarf init
-	// package or not, and only add the init opts if needed. Right now it's just
-	// a spike that got me through the first hurdle.
-	if data.Path.ValueString() != "" {
-		pkgConfig.PkgOpts.PackageSource = data.Path.ValueString()
-	} else if data.Repository.ValueString() != "" {
-		pkgConfig.PkgOpts.PackageSource = data.Repository.ValueString()
-	}
-
-	// NOTE: If providerData is set, we are using that location to override the Path & Repository
-	if r.providerData != nil && r.providerData.LocalPathOverride != "" {
-		if data.Path.ValueString() != "" {
-			pkgConfig.PkgOpts.PackageSource = strings.Trim(filepath.Base(data.Path.String()), "\"")
-		} else {
-			tarballName := fmt.Sprintf("zarf-package-%s-%s-%s.tar.zst",
-				strings.Trim(filepath.Base(data.Repository.String()), "\""),
-				strings.Trim(data.Architecture.ValueString(), "\""),
-				strings.Trim(data.Ref.ValueString(), "\""))
-
-			pkgConfig.PkgOpts.PackageSource = filepath.Join(r.providerData.LocalPathOverride, tarballName)
-		}
-	}
-
-	// default zarf init opts
-	pkgConfig.InitOpts = zarfTypes.ZarfInitOptions{
-		GitServer: zarfTypes.GitServerInfo{
-			PushUsername: zarfTypes.ZarfGitPushUser,
-		},
-		RegistryInfo: zarfTypes.RegistryInfo{
-			PushUsername: zarfTypes.ZarfRegistryPushUser,
-		},
-	}
-
-	// Create the package client
-	pkgClient, err := zarfPackager.New(&pkgConfig, zarfPackager.WithContext(ctx))
-	// Abort if we can't create the package client
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error creating package client",
-			"Could not create client: "+err.Error(),
-		)
+	// Set state to fully populated data
+	diags = resp.State.Set(ctx, plan)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
-	// Always clear the temp paths since we're running in automation
-	defer pkgClient.ClearTempPaths()
-
-	tflog.Debug(ctx, "starting deploy")
-	if err := pkgClient.Deploy(ctx); err != nil {
-		resp.Diagnostics.AddError(
-			"Error deploying package",
-			"Could not deploy package: "+err.Error(),
-		)
-		return
-	}
-	tflog.Debug(ctx, "ending deploy")
-
-	data.ID = types.StringValue(data.Path.ValueString())
-	data.Kind = types.StringValue(string(pkgConfig.Pkg.Kind))
-
-	// populate the package metadata type.
-	// TODO(clint): this is ugly and I got it from https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/custom
-	// There are probably a few optimizations or cleanups to be done here.
-	elementTypes := map[string]attr.Type{
-		"name":        types.StringType,
-		"description": types.StringType,
-		"version":     types.StringType,
-	}
-	elements := map[string]attr.Value{
-		"name":        types.StringValue(pkgConfig.Pkg.Metadata.Name),
-		"description": types.StringValue(pkgConfig.Pkg.Metadata.Description),
-		"version":     types.StringValue(pkgConfig.Pkg.Metadata.Version),
-	}
-	pkgMetaData, diags := types.ObjectValue(elementTypes, elements)
-
-	if diags.HasError() {
-		resp.Diagnostics.AddError(
-			"Error converting type to package metadata",
-			"Could not convert: "+fmt.Sprintf("%v", diags),
-		)
-		return
-	}
-	data.Metadata = pkgMetaData
-
-	// explicitly set the version
-	data.Ref = types.StringValue(pkgConfig.Pkg.Metadata.Version)
-
-	tflog.Trace(ctx, "created zarf package resource")
-
-	// Save data into Terraform state
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -493,21 +382,33 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
-// TODO(clint): We probably wont have much of an actual Update method
-// implementation; I imagine any drift we find will be flagged as a re-create
-// scenario which would just redeploy the package.
+// Update updates the resource and sets the updated Terraform state on success.
 func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var data PackageResourceModel
-
-	// Read Terraform plan data into the model
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
-
+	tflog.Info(ctx, "Updating Project")
+	// Retrieve values from plan
+	var plan PackageResourceModel
+	diags := req.Plan.Get(ctx, &plan)
+	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Save updated data into Terraform state
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	var err error
+	plan, err = r.upsert(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error updating project",
+			"Could not update project, unexpected error: "+err.Error(),
+		)
+		return
+	}
+
+	// Set state to fully populated data
+	diags = resp.State.Set(ctx, plan)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 }
 
 func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -644,4 +545,115 @@ func deleteNestedValue(root map[string]interface{}, path string) {
 		}
 		current = nestedMap
 	}
+}
+
+func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
+	// TODO: (clint): make sure we actually need this here.
+	// Set the prefix for `./zarf` actions since we have to vendor zarf
+	zarfConfig.ActionsCommandZarfPrefix = "zarf"
+	// Confirm `zarf package deploy` since we're running in automation
+	zarfConfig.CommonOptions.Confirm = true
+
+	// convert the terraform timeout to a time.Duration
+	timeout, err := time.ParseDuration(plan.Timeout.ValueString())
+	if err != nil {
+		return plan, err
+	}
+
+	valuesMap := flattenOverrides(plan.Overrides)
+	deployOpts := zarfTypes.ZarfDeployOptions{
+		Timeout:            timeout,
+		ValuesOverridesMap: valuesMap,
+	}
+
+	pkgOpts := zarfTypes.ZarfPackageOptions{
+		// Load the package path from the terraform plan
+		PackageSource: plan.Path.ValueString(),
+
+		// Explicitly set the components to deploy if specified
+		// OptionalComponents: strings.Join(data.Components.Elements(), ","),
+	}
+
+	// Initialize the package config
+	pkgConfig := zarfTypes.PackagerConfig{
+		DeployOpts: deployOpts,
+		PkgOpts:    pkgOpts,
+	}
+
+	// read the zarf package name from the terraform plan. Right now this
+	// expects a local file name, ex: "zarf-init-arm64-v0.43.0.tar.zst".
+	// TODO(clint): make this more flexible so we detect if it's a zarf init
+	// package or not, and only add the init opts if needed. Right now it's just
+	// a spike that got me through the first hurdle.
+	if plan.Path.ValueString() != "" {
+		pkgConfig.PkgOpts.PackageSource = plan.Path.ValueString()
+	} else if plan.Repository.ValueString() != "" {
+		pkgConfig.PkgOpts.PackageSource = plan.Repository.ValueString()
+	}
+
+	// NOTE: If providerData is set, we are using that location to override the Path & Repository
+	if r.providerData != nil && r.providerData.LocalPathOverride != "" {
+		if plan.Path.ValueString() != "" {
+			pkgConfig.PkgOpts.PackageSource = strings.Trim(filepath.Base(plan.Path.String()), "\"")
+		} else {
+			tarballName := fmt.Sprintf("zarf-package-%s-%s-%s.tar.zst",
+				strings.Trim(filepath.Base(plan.Repository.String()), "\""),
+				strings.Trim(plan.Architecture.ValueString(), "\""),
+				strings.Trim(plan.Ref.ValueString(), "\""))
+
+			pkgConfig.PkgOpts.PackageSource = filepath.Join(r.providerData.LocalPathOverride, tarballName)
+		}
+	}
+
+	// default zarf init opts
+	pkgConfig.InitOpts = zarfTypes.ZarfInitOptions{
+		GitServer: zarfTypes.GitServerInfo{
+			PushUsername: zarfTypes.ZarfGitPushUser,
+		},
+		RegistryInfo: zarfTypes.RegistryInfo{
+			PushUsername: zarfTypes.ZarfRegistryPushUser,
+		},
+	}
+
+	// Create the package client
+	pkgClient, err := zarfPackager.New(&pkgConfig, zarfPackager.WithContext(ctx))
+	// Abort if we can't create the package client
+	if err != nil {
+		return plan, err
+	}
+	// Always clear the temp paths since we're running in automation
+	defer pkgClient.ClearTempPaths()
+
+	tflog.Debug(ctx, "starting deploy")
+	if err := pkgClient.Deploy(ctx); err != nil {
+		return plan, err
+	}
+	tflog.Debug(ctx, "ending deploy")
+
+	plan.ID = types.StringValue(plan.Path.ValueString())
+	plan.Kind = types.StringValue(string(pkgConfig.Pkg.Kind))
+
+	// populate the package metadata type.
+	// TODO(clint): this is ugly and I got it from https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/custom
+	// There are probably a few optimizations or cleanups to be done here.
+	elementTypes := map[string]attr.Type{
+		"name":        types.StringType,
+		"description": types.StringType,
+		"version":     types.StringType,
+	}
+	elements := map[string]attr.Value{
+		"name":        types.StringValue(pkgConfig.Pkg.Metadata.Name),
+		"description": types.StringValue(pkgConfig.Pkg.Metadata.Description),
+		"version":     types.StringValue(pkgConfig.Pkg.Metadata.Version),
+	}
+	pkgMetaData, diags := types.ObjectValue(elementTypes, elements)
+
+	if diags.HasError() {
+		return plan, err
+	}
+	plan.Metadata = pkgMetaData
+
+	// explicitly set the version
+	plan.Ref = types.StringValue(pkgConfig.Pkg.Metadata.Version)
+	return plan, err
 }
