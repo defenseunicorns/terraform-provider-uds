@@ -143,8 +143,8 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 
 			"kind": schema.StringAttribute{
-				Computed:            true,
-				Optional:            true,
+				Computed: true,
+				// Optional:            true,
 				MarkdownDescription: "Kind of Zarf package; ZarfInitConfig or ZarfPackageConfig",
 			},
 
@@ -153,7 +153,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Description: "Metadata retrieved from the zarf.yaml in the package",
 				Attributes: map[string]schema.Attribute{
 					"name": &schema.StringAttribute{
-						Optional:    true,
+						// Optional:    true,
 						Computed:    true,
 						Description: "Name of the zarf package. Used to identify the installed package",
 					},
@@ -162,7 +162,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						Description: "Description of the zarf package, from the zarf.yaml file",
 					},
 					"version": &schema.StringAttribute{
-						Optional:    true,
+						Computed:    true,
 						Description: "Version of the zarf package, from the zarf.yaml file",
 						PlanModifiers: []planmodifier.String{
 							stringplanmodifier.RequiresReplace(),
@@ -308,7 +308,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 			tarballName := fmt.Sprintf("zarf-package-%s-%s-%s.tar.zst",
 				strings.Trim(filepath.Base(data.Repository.String()), "\""),
 				strings.Trim(data.Architecture.ValueString(), "\""),
-				strings.Trim(data.Version.ValueString(), "\""))
+				strings.Trim(data.Ref.ValueString(), "\""))
 
 			pkgConfig.PkgOpts.PackageSource = filepath.Join(r.providerData.LocalPathOverride, tarballName)
 		}
