@@ -593,16 +593,27 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 
 	// NOTE: If providerData is set, we are using that location to override the Path & Repository
 	if r.providerData != nil && r.providerData.LocalPathOverride != "" {
+		tarballName := ""
 		if plan.Path.ValueString() != "" {
-			pkgConfig.PkgOpts.PackageSource = strings.Trim(filepath.Base(plan.Path.String()), "\"")
+			// The path value already exists, I know the tarball name, I just need to change the parent dir
+			tarballName = filepath.Base(pkgConfig.PkgOpts.PackageSource)
 		} else {
-			tarballName := fmt.Sprintf("zarf-package-%s-%s-%s.tar.zst",
-				strings.Trim(filepath.Base(plan.Repository.String()), "\""),
+			// Construct the tarballName from metadata of the zarf package
+			packageName := strings.Trim(filepath.Base(plan.Repository.String()), "\"")
+
+			// zarf-init packages are 'special' and don't have the 'zarf-package' prefix
+			tarballNameTemplate := "zarf-package-%s-%s-%s.tar.zst"
+			if packageName == "init" {
+				tarballNameTemplate = "zarf-%s-%s-%s.tar.zst"
+			}
+
+			tarballName = fmt.Sprintf(tarballNameTemplate,
+				packageName,
 				strings.Trim(plan.Architecture.ValueString(), "\""),
 				strings.Trim(plan.Ref.ValueString(), "\""))
-
-			pkgConfig.PkgOpts.PackageSource = filepath.Join(r.providerData.LocalPathOverride, tarballName)
 		}
+
+		pkgConfig.PkgOpts.PackageSource = filepath.Join(r.providerData.LocalPathOverride, tarballName)
 	}
 
 	// default zarf init opts
