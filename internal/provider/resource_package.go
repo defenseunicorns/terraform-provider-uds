@@ -153,7 +153,6 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Description: "Metadata retrieved from the zarf.yaml in the package",
 				Attributes: map[string]schema.Attribute{
 					"name": &schema.StringAttribute{
-						// Optional:    true,
 						Computed:    true,
 						Description: "Name of the zarf package. Used to identify the installed package",
 					},
@@ -164,9 +163,6 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					"version": &schema.StringAttribute{
 						Computed:    true,
 						Description: "Version of the zarf package, from the zarf.yaml file",
-						PlanModifiers: []planmodifier.String{
-							stringplanmodifier.RequiresReplace(),
-						},
 					},
 				},
 			},
@@ -259,7 +255,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error creating project",
-			"Could not create project, unexpected error: "+err.Error(),
+			"Could not create resource, unexpected error: "+err.Error(),
 		)
 		return
 	}
@@ -418,6 +414,9 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	opts := zarfTypes.ZarfPackageOptions{
 		PackageSource: data.Path.ValueString(),
+	}
+	if data.Repository.ValueString() != "" {
+		opts.PackageSource = data.Repository.ValueString()
 	}
 	pkgConfig := zarfTypes.PackagerConfig{
 		PkgOpts: opts,
