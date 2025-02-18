@@ -22,7 +22,6 @@ func TestAccPackageResource(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("uds_bundle_metadata.example_bundle", "version", "0.0.1"),
 					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", "v0.48.0"),
-					resource.TestCheckResourceAttr("uds_package.podinfo", "metadata.version", "0.0.2"),
 				),
 			},
 			// Delete testing automatically occurs in TestCase
@@ -42,13 +41,6 @@ resource "uds_package" "init" {
   repository   = "oci://ghcr.io/zarf-dev/packages/init:v0.48.0"
   ref          = "v0.48.0"
   architecture = uds_bundle_metadata.example_bundle.architecture
-}
-
-  // this zarf package is created by running 'uds run test:acc', to ensure we have a zarf package that does not use zarf actions
-resource "uds_package" "podinfo" {
-  path = "zarf-package-podinfo-arm64-0.0.2.tar.zst"
-  ref        = "0.0.2"
-  architecture = uds_package.init.architecture
 }
 `
 

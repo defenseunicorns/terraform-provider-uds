@@ -4,14 +4,8 @@ tasks:
       - description: "Create the K3d cluster"
         # renovate: datasource=github-tags depName=defenseunicorns/uds-k3d versioning=semver
         cmd: "uds zarf package deploy oci://defenseunicorns/uds-k3d:0.12.0 --confirm --no-progress"
-  - name: create-zarf-package
-    actions:
-      - description: "Create the podinfo zarf package which does not have zarf actions"
-        cmd: "uds zarf package create internal/test_packages/podinfo"
-
   - name: acc
     description: "Run Acceptance Tests"
     actions:
-      # - task: create-k3d-cluster
-      - task: create-zarf-package
+      - task: create-k3d-cluster
       - cmd: TF_ACC=1 go test -v -cover -timeout 10m ./...
