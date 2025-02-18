@@ -5,12 +5,16 @@ package provider
 
 import (
 	"context"
+	"os"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 )
 
+type customProviderData struct {
+	LocalPathOverride string
+}
 
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
@@ -22,7 +26,7 @@ func New(version string) func() provider.Provider {
 
 var _ provider.Provider = (*udsProvider)(nil)
 
-type udsProvider struct{
+type udsProvider struct {
 	// version is set to the provider version on release, "dev" when the
 	// provider is built and ran locally, and "test" when running acceptance
 	// testing.
@@ -32,18 +36,24 @@ type udsProvider struct{
 func (p *udsProvider) Schema(context.Context, provider.SchemaRequest, *provider.SchemaResponse) {
 }
 
-func (p *udsProvider) Configure(context.Context, provider.ConfigureRequest, *provider.ConfigureResponse) {
+func (p *udsProvider) Configure(_ context.Context, _ provider.ConfigureRequest, resp *provider.ConfigureResponse) {
+	customData := customProviderData{
+		LocalPathOverride: os.Getenv("UDS_LOCAL_PATH_OVERRIDE"),
+	}
+
+	resp.DataSourceData = &customData
+	resp.ResourceData = &customData
 }
 
 func (p *udsProvider) Resources(context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewPackageResource,
+		NewBundleMetadataResource,
 	}
 }
 
 func (p *udsProvider) DataSources(context.Context) []func() datasource.DataSource {
-	return []func() datasource.DataSource{
-	}
+	return []func() datasource.DataSource{}
 }
 
 func (p *udsProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
