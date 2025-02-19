@@ -4,7 +4,6 @@
 package provider
 
 import (
-	"fmt"
 	"reflect"
 	"testing"
 
@@ -12,35 +11,17 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
-func TestAccExampleResource(t *testing.T) {
+func TestAccPackageResource(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create and Read testing
 			{
-				Config: testAccExampleResourceConfig("one"),
+				Config: testAccPackageResourceConfig,
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("uds_example.test", "defaulted", "example value when not configured"),
-					resource.TestCheckResourceAttr("uds_example.test", "id", "example-id"),
-				),
-			},
-			// ImportState testing
-			{
-				ResourceName:      "uds_example.test",
-				ImportState:       true,
-				ImportStateVerify: true,
-				// This is not normally necessary, but is here because this
-				// example code does not have an actual upstream service.
-				// Once the Read method is able to refresh information from
-				// the upstream service, this can be removed.
-				ImportStateVerifyIgnore: []string{"defaulted"},
-			},
-			// Update and Read testing
-			{
-				Config: testAccExampleResourceConfig("two"),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("uds_example.test", "configurable_attribute", "two"),
+					resource.TestCheckResourceAttr("uds_bundle_metadata.example_bundle", "version", "0.0.1"),
+					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", "v0.48.0"),
 				),
 			},
 			// Delete testing automatically occurs in TestCase
@@ -48,15 +29,22 @@ func TestAccExampleResource(t *testing.T) {
 	})
 }
 
-func testAccExampleResourceConfig(configurableAttribute string) string {
-	return fmt.Sprintf(`
-resource "uds_example" "test" {
-  configurable_attribute = %[1]q
-}
-`, configurableAttribute)
+var testAccPackageResourceConfig = `
+resource "uds_bundle_metadata" "example_bundle" {
+  version      = "0.0.1"
+  kind         = "UDSBundle"
+  description  = "A demo bundle for the podinfo and nginx packages"
+  architecture = "arm64"
 }
 
-// Test flattenOverrides function
+resource "uds_package" "init" {
+  repository   = "oci://ghcr.io/zarf-dev/packages/init:v0.48.0"
+  ref          = "v0.48.0"
+  architecture = uds_bundle_metadata.example_bundle.architecture
+}
+`
+
+// Unit test for flattenOverrides function
 func TestFlattenOverrides(t *testing.T) {
 	tests := []struct {
 		name     string

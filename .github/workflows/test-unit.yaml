@@ -1,0 +1,44 @@
+# Copyright 2025 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+name: Unit Tests
+on:
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "**.jpg"
+      - "**.png"
+      - "**.gif"
+      - "**.svg"
+      - "**.tf"
+      - "adr/**"
+      - "docs/**"
+      - "CODEOWNERS"
+      - "goreleaser.yml"
+
+permissions:
+  contents: read
+
+# Abort prior jobs in the same workflow / PR
+concurrency:
+  group: unit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup golang
+        uses: ./.github/actions/setup-golang
+
+      - name: Run unit tests
+        run: go test -v -cover -timeout=120s -parallel=10 ./...
+
+      - name: Save Logs
+        uses: defenseunicorns/uds-core/.github/actions/save-logs@f266d3630d4d14701414627f66287c8ef2dea3e5
+        if: always()
+        with:
+          suffix: unit
