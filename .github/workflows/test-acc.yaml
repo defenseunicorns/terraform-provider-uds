@@ -21,7 +21,7 @@ permissions:
 
 # Abort prior jobs in the same workflow / PR
 concurrency:
-  group: unit-${{ github.ref }}
+  group: acc-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
