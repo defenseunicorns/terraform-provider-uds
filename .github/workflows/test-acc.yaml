@@ -37,6 +37,11 @@ jobs:
           # renovate: datasource=github-tags depName=defenseunicorns/uds-cli versioning=semver
           version: v0.21.0
 
+      - name: Install k3d
+        shell: bash
+        # renovate: datasource=github-tags depName=k3d-io/k3d versioning=semver
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.7.5 bash
+
       - name: Run acceptance tests tests
         run: uds run test:acc
 
