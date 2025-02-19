@@ -3,7 +3,7 @@ default: fmt lint install generate
 build:
 	go build -v ./...
 
-install: build
+install: 
 	go install -v ./...
 
 lint:
