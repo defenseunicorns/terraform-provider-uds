@@ -35,11 +35,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN}}
         run: |
+          # A previous release was created using a lightweight tag
+          # git describe by default includes only annotated tags
+          # git describe --tags includes lightweight tags as well
+          DESCRIBE=`git tag -l --sort=-v:refname | grep -v nightly | head -n 1`
+          MAJOR_VERSION=`echo $DESCRIBE | awk '{split($0,a,"."); print a[1]}'`
+          MINOR_VERSION=`echo $DESCRIBE | awk '{split($0,a,"."); print a[2]}'`
+          MINOR_VERSION="$((${MINOR_VERSION} + 1))"
+          TAG="${MAJOR_VERSION}.${MINOR_VERSION}.0-nightly"
           # cleanup old release
-          gh release delete nightly-unstable --cleanup-tag -y || true
+          gh release delete ${TAG} --cleanup-tag -y || true
           # generate new release
           DATE="$(date +'%Y%m%d')"
-          gh release create nightly-unstable \
-            -t "nightly-unstable" \
+          gh release create \
+            -t "${TAG}" \
             --prerelease \
             -n "Nightly unstable build: $DATE"
