@@ -3,6 +3,7 @@
 
 name: Acceptance Tests
 on:
+  workflow_call: # allow other workflows to call this one
   pull_request:
     paths-ignore:
       - "**.md"
