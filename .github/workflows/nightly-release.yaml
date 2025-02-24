@@ -10,11 +10,13 @@ on:
 permissions:
   contents: read
 
-jobs:
-  test:
-    uses: ./.github/workflows/test-acc.yaml
+# Abort prior jobs in the same workflow / PR
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
 
-  push:
+jobs:
+  nightly:
     runs-on: ubuntu-latest
     environment: release-nightly
     needs: test
