@@ -51,6 +51,7 @@ jobs:
           gh release delete ${TAG} --cleanup-tag -y || true
           # generate new release
           DATE="$(date +'%Y%m%d')"
+          echo "Tag: ${TAG}"
           gh release create \
             -t "${TAG}" \
             --prerelease \
