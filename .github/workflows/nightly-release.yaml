@@ -68,12 +68,12 @@ jobs:
           MINOR_VERSION=$((MINOR_VERSION + 1))
           TAG="${MAJOR_VERSION}.${MINOR_VERSION}.0-nightly"
 
+          echo "Deleting old release if it exists..."
+          gh release delete "${TAG}" --cleanup-tag -y || true
+
           echo "Creating new nightly tag: ${TAG}"
           git tag "${TAG}"
           git push origin "${TAG}"
-
-          echo "Deleting old release if it exists..."
-          gh release delete "${TAG}" --cleanup-tag -y || true
 
           echo "Creating new nightly release..."
           DATE="$(date +'%Y%m%d')"
