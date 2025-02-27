@@ -52,7 +52,7 @@ jobs:
           # generate new release
           DATE="$(date +'%Y%m%d')"
           echo "Tag: ${TAG}"
-          gh release create \
+          gh release create ${TAG} \
             -t "${TAG}" \
             --prerelease \
             -n "Nightly unstable build: $DATE"
