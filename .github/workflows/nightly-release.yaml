@@ -82,3 +82,9 @@ jobs:
             --prerelease \
             -n "Nightly unstable build: $DATE" \
             --repo "${{ github.repository }}"
+
+      - name: Trigger Release Workflow
+        run: |
+          gh workflow run release.yml -f tag_name="${TAG}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
