@@ -44,20 +44,41 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN}}
         run: |
-          # A previous release was created using a lightweight tag
-          # git describe by default includes only annotated tags
-          # git describe --tags includes lightweight tags as well
-          DESCRIBE=`git tag -l --sort=-v:refname | grep -v nightly | head -n 1`
-          MAJOR_VERSION=`echo $DESCRIBE | awk '{split($0,a,"."); print a[1]}'`
-          MINOR_VERSION=`echo $DESCRIBE | awk '{split($0,a,"."); print a[2]}'`
-          MINOR_VERSION="$((${MINOR_VERSION} + 1))"
+          # Authenticate Git with GitHub Actions token
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+
+          # Find the latest nightly tag
+          NIGHTLY_TAG=$(git tag -l --sort=-v:refname '*-nightly' | head -n 1)
+          
+          # Delete the existing nightly tag if it exists
+          if [ -n "$NIGHTLY_TAG" ]; then
+            echo "Deleting existing nightly tag: $NIGHTLY_TAG"
+            git tag -d "$NIGHTLY_TAG" || true
+            git push origin --delete "$NIGHTLY_TAG" || true
+          else
+            echo "No existing nightly tag found."
+          fi
+
+          # Generate a new nightly tag based on the latest stable version
+          DESCRIBE=$(git tag -l --sort=-v:refname | grep -v nightly | head -n 1)
+          MAJOR_VERSION=$(echo "$DESCRIBE" | awk -F. '{print $1}')
+          MINOR_VERSION=$(echo "$DESCRIBE" | awk -F. '{print $2}')
+          MINOR_VERSION=$((MINOR_VERSION + 1))
           TAG="${MAJOR_VERSION}.${MINOR_VERSION}.0-nightly"
-          # cleanup old release
-          gh release delete ${TAG} --cleanup-tag -y || true
-          # generate new release
+
+          echo "Creating new nightly tag: ${TAG}"
+          git tag "${TAG}"
+          git push origin "${TAG}"
+
+          echo "Deleting old release if it exists..."
+          gh release delete "${TAG}" --cleanup-tag -y || true
+
+          echo "Creating new nightly release..."
           DATE="$(date +'%Y%m%d')"
-          echo "Tag: ${TAG}"
-          gh release create ${TAG} \
+          gh release create "${TAG}" \
             -t "${TAG}" \
             --prerelease \
-            -n "Nightly unstable build: $DATE"
+            -n "Nightly unstable build: $DATE" \
+            --repo "${{ github.repository }}"
