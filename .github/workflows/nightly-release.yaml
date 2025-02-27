@@ -8,7 +8,7 @@ on:
     - cron: "0 3 * * *" ## nightly at 3am UTC
 
 permissions:
-  contents: read  # ✅ Ensure GITHUB_TOKEN can read the repository
+  contents: write # ✅ Ensure GITHUB_TOKEN can read the repository
   packages: write
 
 # Abort prior jobs in the same workflow / PR
@@ -22,7 +22,7 @@ jobs:
     environment: release-nightly
     #needs: test
     permissions:
-      contents: read  # ✅ Fix checkout issues
+      contents: write # ✅ Fix checkout issues
       packages: write
     steps:
       - name: Debug GITHUB_TOKEN Permissions
