@@ -67,6 +67,7 @@ jobs:
           MINOR_VERSION=$(echo "$DESCRIBE" | awk -F. '{print $2}')
           MINOR_VERSION=$((MINOR_VERSION + 1))
           TAG="${MAJOR_VERSION}.${MINOR_VERSION}.0-nightly"
+          echo "TAG=${TAG}" >> $GITHUB_ENV  # ✅ This makes $TAG available to all future steps
 
           echo "Deleting old release if it exists..."
           gh release delete "${TAG}" --cleanup-tag -y || true
