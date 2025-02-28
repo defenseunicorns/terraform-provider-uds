@@ -54,6 +54,8 @@ type PackageResourceModel struct {
 	Repository types.String `tfsdk:"repository"`
 	Ref        types.String `tfsdk:"ref"`
 
+	Key types.String `tfsdk:"key"`
+
 	// readonly metadata
 	Metadata  types.Object    `tfsdk:"metadata"`
 	Overrides []OverrideModel `tfsdk:"overrides"`
@@ -122,6 +124,10 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"ref": schema.StringAttribute{
 				Required:            true,
 				MarkdownDescription: "Red of the package that was deployed",
+			},
+			"key": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Path to the public key for signed Zarf Packages",
 			},
 			"architecture": schema.StringAttribute{
 				Required:            true,
@@ -624,6 +630,8 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 			PushUsername: zarfTypes.ZarfRegistryPushUser,
 		},
 	}
+
+	pkgConfig.PkgOpts.PublicKeyPath = strings.Trim(plan.Key.String(), "\"")
 
 	// Create the package client
 	pkgClient, err := zarfPackager.New(&pkgConfig, zarfPackager.WithContext(ctx))
