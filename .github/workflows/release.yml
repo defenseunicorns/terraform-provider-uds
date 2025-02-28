@@ -7,11 +7,11 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
+  workflow_call:
     inputs:
       tag_name:
-        description: 'The tag to build a release for'
         required: false
+        type: string
 
 # Releases need permissions to read and write the repository contents.
 # GitHub considers creating releases and uploading assets as writing contents.

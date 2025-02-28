@@ -76,17 +76,7 @@ jobs:
           git tag "${TAG}"
           git push origin "${TAG}"
 
-          echo "Creating new nightly release..."
-          DATE="$(date +'%Y%m%d')"
-          gh release create "${TAG}" \
-            -t "${TAG}" \
-            --prerelease \
-            -n "Nightly unstable build: $DATE" \
-            --repo "${{ github.repository }}"
-
-      - name: Trigger Release Workflow
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          printf '%s\n' "${TAG}"
-          gh workflow run release.yml -f tag_name="${TAG}"
+      - name: Trigger Nightly Release
+        uses: ./.github/workflows/release.yaml
+        with:
+          tag_name: ${{ env.TAG }}
