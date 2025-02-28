@@ -11,7 +11,7 @@ on:
     inputs:
       tag_name:
         description: 'The tag to build a release for'
-        required: true
+        required: false
 
 # Releases need permissions to read and write the repository contents.
 # GitHub considers creating releases and uploading assets as writing contents.
