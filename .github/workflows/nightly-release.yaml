@@ -76,7 +76,7 @@ jobs:
           git tag "${TAG}"
           git push origin "${TAG}"
 
-      - name: Trigger Nightly Release
-        uses: ./.github/workflows/release.yml
-        with:
-          tag_name: ${{ env.TAG }}
+  trigger-nightly-release:
+    uses: ./.github/workflows/release.yml
+    with:
+      tag_name: ${{ env.TAG }}
