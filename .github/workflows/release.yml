@@ -2,7 +2,7 @@
 name: Release
 
 # This GitHub action creates a release when a tag that matches the pattern
-# "v*" (e.g. v0.1.0) is created.
+# "v*" (e.g. v0.1.0) is created or when triggered by another workflow.
 on:
   push:
     tags:
@@ -12,22 +12,25 @@ on:
       tag_name:
         required: false
         type: string
+        description: "The tag name to use for the release"
 
 # Releases need permissions to read and write the repository contents.
-# GitHub considers creating releases and uploading assets as writing contents.
 permissions:
   contents: write
 
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    timeout-minutes: 60  # Match the timeout in the goreleaser command
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.tag_name || github.ref }}
-          # Allow goreleaser to access older tag information.
+          # Allow goreleaser to access older tag information
           fetch-depth: 0
           fetch-tags: true
+          
       - name: Setup golang
         uses: ./.github/actions/setup-golang
 
@@ -41,8 +44,15 @@ jobs:
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@026299872805cb2db698e02dd7fb506a4da5122d # v6.2.0
         with:
-          args: release --clean --timeout 60m  # Set timeout to 60 minutes
+          args: release --clean --timeout 60m
         env:
-          # GitHub sets the GITHUB_TOKEN secret automatically.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+          
+      - name: Upload release assets (if any failed)
+        if: failure()
+        uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3 # v4.3.1
+        with:
+          name: goreleaser-dist
+          path: dist/
+          retention-days: 5

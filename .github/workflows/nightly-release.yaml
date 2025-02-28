@@ -8,7 +8,7 @@ on:
     - cron: "0 3 * * *" ## nightly at 3am UTC
 
 permissions:
-  contents: write # ✅ Ensure GITHUB_TOKEN can read the repository
+  contents: write
   packages: write
 
 # Abort prior jobs in the same workflow / PR
@@ -20,68 +20,47 @@ jobs:
   nightly:
     runs-on: ubuntu-latest
     environment: release-nightly
-    #needs: test
-    permissions:
-      contents: write # ✅ Fix checkout issues
-      packages: write
+    timeout-minutes: 15  # Add timeout to prevent stuck workflows
     outputs:
       tag_name: ${{ steps.update_tag.outputs.tag }}
     steps:
-      - name: Debug GITHUB_TOKEN Permissions
-        run: |
-          curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-          -H "Accept: application/vnd.github.v3+json" \
-          https://api.github.com/repos/${{ github.repository }}
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          fetch-depth: 0    # Ensure full history is fetched
+          fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GITHUB_TOKEN }}  # ✅ Explicitly pass authentication token
 
       - name: Setup golang
         uses: ./.github/actions/setup-golang
 
-      - name: Update nightly-unstable tag
+      - name: Update nightly tag
         id: update_tag
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN}}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Authenticate Git with GitHub Actions token
+          # Configure git
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
-
-          # Find the latest nightly tag
-          NIGHTLY_TAG=$(git tag -l --sort=-v:refname '*-nightly' | head -n 1)
           
-          # Delete the existing nightly tag if it exists
-          if [ -n "$NIGHTLY_TAG" ]; then
-            echo "Deleting existing nightly tag: $NIGHTLY_TAG"
-            git tag -d "$NIGHTLY_TAG" || true
-            git push origin --delete "$NIGHTLY_TAG" || true
-          else
-            echo "No existing nightly tag found."
-          fi
-
-          # Generate a new nightly tag based on the latest stable version
-          DESCRIBE=$(git tag -l --sort=-v:refname | grep -v nightly | head -n 1)
-          MAJOR_VERSION=$(echo "$DESCRIBE" | awk -F. '{print $1}')
-          MINOR_VERSION=$(echo "$DESCRIBE" | awk -F. '{print $2}')
+          # Find latest stable version and increment minor for nightly
+          LATEST_STABLE=$(git tag -l --sort=-v:refname | grep -v nightly | head -n 1)
+          MAJOR_VERSION=$(echo "$LATEST_STABLE" | awk -F. '{print $1}')
+          MINOR_VERSION=$(echo "$LATEST_STABLE" | awk -F. '{print $2}')
           MINOR_VERSION=$((MINOR_VERSION + 1))
           TAG="${MAJOR_VERSION}.${MINOR_VERSION}.0-nightly"
-          echo "TAG=${TAG}" >> "$GITHUB_ENV"  # ✅ This makes $TAG available to all future steps
-
-          echo "Deleting old release if it exists..."
+          
+          # Clean up any existing nightly releases/tags
           gh release delete "${TAG}" --cleanup-tag -y || true
-
-          echo "Creating new nightly tag: ${TAG}"
+          
+          # Create new tag and push it
           git tag "${TAG}"
           git push origin "${TAG}"
+          
+          # Set output for next job
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
   trigger-nightly-release:
-    needs: nightly 
+    needs: nightly
     uses: ./.github/workflows/release.yml
     with:
       tag_name: ${{ needs.nightly.outputs.tag_name }}
