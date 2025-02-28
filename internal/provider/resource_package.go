@@ -631,7 +631,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		},
 	}
 
-	pkgConfig.PkgOpts.PublicKeyPath = strings.Trim(plan.Key.String(), "\"")
+	pkgConfig.PkgOpts.PublicKeyPath = plan.Key.ValueString()
 
 	// Create the package client
 	pkgClient, err := zarfPackager.New(&pkgConfig, zarfPackager.WithContext(ctx))
