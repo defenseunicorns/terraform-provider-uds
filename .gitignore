@@ -22,3 +22,5 @@ modules-dev/
 !command/test-fixtures/**/.terraform/
 
 *.tar.zst
+
+tmp/
