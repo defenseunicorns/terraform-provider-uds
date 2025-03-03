@@ -101,7 +101,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"path": schema.StringAttribute{
-				Optional:            true, // TODO(clint): make this optional and support local file
+				Optional:            true,
 				MarkdownDescription: "Path to tar file of the package",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -247,7 +247,7 @@ func (r *PackageResource) Configure(_ context.Context, req resource.ConfigureReq
 
 // Create creates the resource and sets the initial Terraform state.
 func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	tflog.Info(ctx, "Creating Project")
+	tflog.Info(ctx, "Creating Package Resource")
 	// Retrieve values from plan
 	var plan PackageResourceModel
 	diags := req.Plan.Get(ctx, &plan)
@@ -260,7 +260,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	plan, err = r.upsert(ctx, plan)
 	if err != nil {
 		resp.Diagnostics.AddError(
-			"Error creating project",
+			"Error creating package",
 			"Could not create resource, unexpected error: "+err.Error(),
 		)
 		return
@@ -386,7 +386,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 
 // Update updates the resource and sets the updated Terraform state on success.
 func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	tflog.Info(ctx, "Updating Project")
+	tflog.Info(ctx, "Updating Package")
 	// Retrieve values from plan
 	var plan PackageResourceModel
 	diags := req.Plan.Get(ctx, &plan)
@@ -399,8 +399,8 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	plan, err = r.upsert(ctx, plan)
 	if err != nil {
 		resp.Diagnostics.AddError(
-			"Error updating project",
-			"Could not update project, unexpected error: "+err.Error(),
+			"Error updating package",
+			"Could not update package, unexpected error: "+err.Error(),
 		)
 		return
 	}
@@ -553,10 +553,9 @@ func deleteNestedValue(root map[string]interface{}, path string) {
 }
 
 func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
-	// TODO: (clint): make sure we actually need this here.
-	// Set the prefix for `./zarf` actions since we have to vendor zarf
-	zarfConfig.ActionsCommandZarfPrefix = "zarf"
+	// Set the prefix for `./zarf` actions since we have to vendor zarf, otherwise Zarf actions will not run.
 	// Confirm `zarf package deploy` since we're running in automation
+	zarfConfig.ActionsCommandZarfPrefix = "zarf"
 	zarfConfig.CommonOptions.Confirm = true
 
 	// convert the terraform timeout to a time.Duration
@@ -566,34 +565,20 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 
 	valuesMap := flattenOverrides(plan.Overrides)
-	deployOpts := zarfTypes.ZarfDeployOptions{
-		Timeout:            timeout,
-		ValuesOverridesMap: valuesMap,
-	}
-
-	pkgOpts := zarfTypes.ZarfPackageOptions{
-		// Load the package path from the terraform plan
-		PackageSource: plan.Path.ValueString(),
-
-		// Explicitly set the components to deploy if specified
-		// OptionalComponents: strings.Join(data.Components.Elements(), ","),
+	sourcePath := plan.Path.ValueString()
+	if plan.Repository.ValueString() != "" {
+		sourcePath = plan.Repository.ValueString()
 	}
 
 	// Initialize the package config
 	pkgConfig := zarfTypes.PackagerConfig{
-		DeployOpts: deployOpts,
-		PkgOpts:    pkgOpts,
-	}
-
-	// read the zarf package name from the terraform plan. Right now this
-	// expects a local file name, ex: "zarf-init-arm64-v0.43.0.tar.zst".
-	// TODO(clint): make this more flexible so we detect if it's a zarf init
-	// package or not, and only add the init opts if needed. Right now it's just
-	// a spike that got me through the first hurdle.
-	if plan.Path.ValueString() != "" {
-		pkgConfig.PkgOpts.PackageSource = plan.Path.ValueString()
-	} else if plan.Repository.ValueString() != "" {
-		pkgConfig.PkgOpts.PackageSource = plan.Repository.ValueString()
+		DeployOpts: zarfTypes.ZarfDeployOptions{
+			Timeout:            timeout,
+			ValuesOverridesMap: valuesMap,
+		},
+		PkgOpts: zarfTypes.ZarfPackageOptions{
+			PackageSource: sourcePath,
+		},
 	}
 
 	// NOTE: If providerData is set, we are using that location to override the Path & Repository
