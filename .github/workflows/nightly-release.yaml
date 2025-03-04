@@ -52,6 +52,10 @@ jobs:
           # Clean up any existing nightly releases/tags
           gh release delete "${TAG}" --cleanup-tag -y || true
           
+          # Ensure tag is deleted locally and remotely (in case --cleanup-tag didn't work)
+          git tag -d "${TAG}" 2>/dev/null || true
+          git push origin --delete "${TAG}" 2>/dev/null || true
+          
           # Create new tag and push it
           git tag "${TAG}"
           git push origin "${TAG}"
