@@ -17,28 +17,67 @@ UDS Package resource
 
 ### Required
 
-- `oci_url` (String) OCI URL of the package
+- `architecture` (String) Architecture of the Zarf package
+- `ref` (String) Red of the package that was deployed
 
 ### Optional
 
 - `components` (List of List of String) Explicit list of components to include in the package, if empty, all default components are included
-- `kind` (String) Kind of Zarf package; ZarfInitConfig or ZarfPackageConfig
-- `metadata` (Attributes) Metadata retrieved from the zarf.yaml in the package (see [below for nested schema](#nestedatt--metadata))
+- `key` (String) Path to the public key for signed Zarf Packages
+- `overrides` (Attributes List) List of overrides for Helm charts. (see [below for nested schema](#nestedatt--overrides))
+- `path` (String) Path to tar file of the package
+- `repository` (String) url to the repository of the package
 - `timeout` (String) Timeout for the deploy operation
 
 ### Read-Only
 
 - `id` (String) Example identifier
-- `version` (String) Version of the package that was deployed
+- `kind` (String) Kind of Zarf package; ZarfInitConfig or ZarfPackageConfig
+- `metadata` (Attributes) Metadata retrieved from the zarf.yaml in the package (see [below for nested schema](#nestedatt--metadata))
+
+<a id="nestedatt--overrides"></a>
+### Nested Schema for `overrides`
+
+Required:
+
+- `chart_name` (String) Name of the Helm chart being overridden.
+- `component_name` (String) Name of the component being overridden.
+
+Optional:
+
+- `values` (Attributes List) List of values to override in the chart. (see [below for nested schema](#nestedatt--overrides--values))
+- `values_files` (List of String) List of values files to include in the override.
+- `variables` (Attributes List) List of variables for the Helm chart. (see [below for nested schema](#nestedatt--overrides--variables))
+
+<a id="nestedatt--overrides--values"></a>
+### Nested Schema for `overrides.values`
+
+Required:
+
+- `path` (String) Path of the value to override.
+- `value` (String) Value to set at the given path.
+
+
+<a id="nestedatt--overrides--variables"></a>
+### Nested Schema for `overrides.variables`
+
+Required:
+
+- `name` (String) Name of the variable.
+- `path` (String) Path of the variable in the Helm chart.
+
+Optional:
+
+- `default` (String) Default value for the variable.
+- `description` (String) Description of the variable.
+
+
 
 <a id="nestedatt--metadata"></a>
 ### Nested Schema for `metadata`
 
-Optional:
-
-- `name` (String) Name of the zarf package. Used to identify the installed package
-- `version` (String) Version of the zarf package, from the zarf.yaml file
-
 Read-Only:
 
 - `description` (String) Description of the zarf package, from the zarf.yaml file
+- `name` (String) Name of the zarf package. Used to identify the installed package
+- `version` (String) Version of the zarf package, from the zarf.yaml file
