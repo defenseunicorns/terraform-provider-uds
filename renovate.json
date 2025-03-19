@@ -1,6 +1,47 @@
 {
+  "enabled": true,
+  "forkProcessing": "enabled",
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "branchConcurrentLimit": 0,
+  "prConcurrentLimit": 0,
+  "prHourlyLimit": 0,
+  "ignorePaths": [],
+  "dependencyDashboard": true,
+  "dependencyDashboardTitle": "Renovate Dashboard 🤖",
+  "rebaseWhen": "conflicted",
+  "commitBodyTable": true,
+  "suppressNotifications": [
+    "prIgnoreNotification"
+  ],
+  "postUpdateOptions": [
+    "gomodTidy"
+  ],
+  "packageRules": [
+    {
+      "matchFileNames": [
+        ".github/**"
+      ],
+      "groupName": "github-actions",
+      "commitMessageTopic": "github actions"
+    },
+    {
+      "matchFileNames": [
+        "go.mod",
+        "go.sum"
+      ],
+      "groupName": "go-dependencies",
+      "commitMessageTopic": "go dependencies"
+    },
+    {
+      "matchPackageNames": [
+        "zarf-dev/zarf",
+        "github.com/zarf-dev/zarf"
+      ],
+      "groupName": "zarf",
+      "commitMessageTopic": "zarf"
+    }
   ]
 }
