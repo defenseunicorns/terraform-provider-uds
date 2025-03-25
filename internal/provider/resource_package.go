@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -46,6 +47,7 @@ type PackageResource struct {
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
 	ID         types.String `tfsdk:"id"`
+	Name       types.String `tfsdk:"name"`
 	Components types.List   `tfsdk:"components"`
 	Timeout    types.String `tfsdk:"timeout"`
 	// Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
@@ -99,6 +101,10 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
+			},
+			"name": schema.StringAttribute{
+				Required:            true,
+				MarkdownDescription: "The name of the Zarf Package",
 			},
 			"path": schema.StringAttribute{
 				Optional:            true,

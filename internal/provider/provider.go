@@ -14,6 +14,7 @@ import (
 
 type customProviderData struct {
 	LocalPathOverride string
+	BundleArch        string
 }
 
 func New(version string) func() provider.Provider {
@@ -39,6 +40,7 @@ func (p *udsProvider) Schema(context.Context, provider.SchemaRequest, *provider.
 func (p *udsProvider) Configure(_ context.Context, _ provider.ConfigureRequest, resp *provider.ConfigureResponse) {
 	customData := customProviderData{
 		LocalPathOverride: os.Getenv("UDS_LOCAL_PATH_OVERRIDE"),
+		BundleArch:        os.Getenv("UDS_BUNDLE_ARCH"),
 	}
 
 	resp.DataSourceData = &customData
