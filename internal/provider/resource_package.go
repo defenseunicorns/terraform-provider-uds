@@ -424,12 +424,20 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	packageSource, err := getPackageSource(data, *r.providerData)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error determine package source",
+			"Could not determine package source: "+err.Error(),
+		)
+		return
+	}
 	opts := zarfTypes.ZarfPackageOptions{
-		PackageSource: data.Path.ValueString(),
+		PackageSource: packageSource,
 	}
-	if data.Repository.ValueString() != "" {
-		opts.PackageSource = data.Repository.ValueString()
-	}
+	// if data.Repository.ValueString() != "" {
+	// 	opts.PackageSource = data.Repository.ValueString()
+	// }
 	pkgConfig := zarfTypes.PackagerConfig{
 		PkgOpts: opts,
 	}
@@ -571,29 +579,10 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 
 	valuesMap := flattenOverrides(plan.Overrides)
-
-	sourcePath := ""
-	packageTarballName := createPackageName(plan, r.providerData.BundleArch)
-
-	// Determine the proper sourcePath depending on provided overrides from UDS-CLI
-	if *r.providerData != (customProviderData{}) {
-		// Check if UDS CLI sent overrides we need to use
-		sourcePath = filepath.Join(r.providerData.LocalPathOverride, packageTarballName)
-	} else if plan.Repository.ValueString() != "" {
-		// Generate the oci schema based string from the provided repository
-		sourcePath = fmt.Sprintf("oci://%s:%s", plan.Repository.ValueString(), plan.Ref.ValueString())
-	} else if plan.Path.ValueString() != "" {
-		// Generate a path to the zarf package tarball
-		sourcePath = plan.Path.ValueString()
-		info, err := os.Stat(sourcePath)
-		if err != nil {
-			return plan, err
-		}
-		if info.IsDir() {
-			sourcePath = filepath.Join(sourcePath, packageTarballName)
-		}
+	sourcePath, err := getPackageSource(plan, *r.providerData)
+	if err != nil {
+		return plan, err
 	}
-
 	// Initialize the package config
 	pkgConfig := zarfTypes.PackagerConfig{
 		DeployOpts: zarfTypes.ZarfDeployOptions{
@@ -660,7 +649,32 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	return plan, err
 }
 
-func createPackageName(pkg PackageResourceModel, archOverride string) string {
+func getPackageSource(pkg PackageResourceModel, providerData customProviderData) (string, error) {
+	packageTarballName := getPackageName(pkg, providerData.BundleArch)
+	sourcePath := ""
+
+	// Determine the proper sourcePath depending on provided overrides from UDS-CLI
+	if providerData != (customProviderData{}) {
+		// Check if UDS CLI sent overrides we need to use
+		sourcePath = filepath.Join(providerData.LocalPathOverride, packageTarballName)
+	} else if pkg.Repository.ValueString() != "" {
+		// Generate the oci schema based string from the provided repository
+		sourcePath = fmt.Sprintf("oci://%s:%s", pkg.Repository.ValueString(), pkg.Ref.ValueString())
+	} else if pkg.Path.ValueString() != "" {
+		// Generate a path to the zarf package tarball
+		sourcePath = pkg.Path.ValueString()
+		info, err := os.Stat(sourcePath)
+		if err != nil {
+			return "", err
+		}
+		if info.IsDir() {
+			sourcePath = filepath.Join(sourcePath, packageTarballName)
+		}
+	}
+	return sourcePath, nil
+}
+
+func getPackageName(pkg PackageResourceModel, archOverride string) string {
 	tarballName := ""
 	packageName := pkg.Name.ValueString()
 	tarballArch := pkg.Architecture.ValueString()

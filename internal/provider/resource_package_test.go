@@ -38,7 +38,8 @@ resource "uds_bundle_metadata" "example_bundle" {
 }
 
 resource "uds_package" "init" {
-  repository   = "oci://ghcr.io/zarf-dev/packages/init:v0.48.0"
+	name         = "init"
+  repository   = "ghcr.io/zarf-dev/packages/init"
   ref          = "v0.48.0"
   architecture = uds_bundle_metadata.example_bundle.architecture
 }
