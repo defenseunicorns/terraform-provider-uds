@@ -571,9 +571,27 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 
 	valuesMap := flattenOverrides(plan.Overrides)
-	sourcePath := plan.Path.ValueString()
-	if plan.Repository.ValueString() != "" {
-		sourcePath = plan.Repository.ValueString()
+
+	sourcePath := ""
+	packageTarballName := createPackageName(plan, r.providerData.BundleArch)
+
+	// Determine the proper sourcePath depending on provided overrides from UDS-CLI
+	if *r.providerData != (customProviderData{}) {
+		// Check if UDS CLI sent overrides we need to use
+		sourcePath = filepath.Join(r.providerData.LocalPathOverride, packageTarballName)
+	} else if plan.Repository.ValueString() != "" {
+		// Generate the oci schema based string from the provided repository
+		sourcePath = fmt.Sprintf("oci://%s:%s", plan.Repository.ValueString(), plan.Ref.ValueString())
+	} else if plan.Path.ValueString() != "" {
+		// Generate a path to the zarf package tarball
+		sourcePath = plan.Path.ValueString()
+		info, err := os.Stat(sourcePath)
+		if err != nil {
+			return plan, err
+		}
+		if info.IsDir() {
+			sourcePath = filepath.Join(sourcePath, packageTarballName)
+		}
 	}
 
 	// Initialize the package config
@@ -585,31 +603,6 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		PkgOpts: zarfTypes.ZarfPackageOptions{
 			PackageSource: sourcePath,
 		},
-	}
-
-	// NOTE: If providerData is set, we are using that location to override the Path & Repository
-	if r.providerData != nil && r.providerData.LocalPathOverride != "" {
-		tarballName := ""
-		if plan.Path.ValueString() != "" {
-			// The path value already exists, I know the tarball name, I just need to change the parent dir
-			tarballName = filepath.Base(pkgConfig.PkgOpts.PackageSource)
-		} else {
-			// Construct the tarballName from metadata of the zarf package
-			packageName := strings.Trim(filepath.Base(plan.Repository.String()), "\"")
-
-			// zarf-init packages are 'special' and don't have the 'zarf-package' prefix
-			tarballNameTemplate := "zarf-package-%s-%s-%s.tar.zst"
-			if packageName == "init" {
-				tarballNameTemplate = "zarf-%s-%s-%s.tar.zst"
-			}
-
-			tarballName = fmt.Sprintf(tarballNameTemplate,
-				packageName,
-				strings.Trim(plan.Architecture.ValueString(), "\""),
-				strings.Trim(plan.Ref.ValueString(), "\""))
-		}
-
-		pkgConfig.PkgOpts.PackageSource = filepath.Join(r.providerData.LocalPathOverride, tarballName)
 	}
 
 	// default zarf init opts
@@ -665,4 +658,28 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	// explicitly set the version
 	plan.Ref = types.StringValue(pkgConfig.Pkg.Metadata.Version)
 	return plan, err
+}
+
+func createPackageName(pkg PackageResourceModel, archOverride string) string {
+	tarballName := ""
+	packageName := pkg.Name.ValueString()
+	tarballArch := pkg.Architecture.ValueString()
+	tarballRef := pkg.Ref.ValueString()
+
+	if archOverride != "" {
+		tarballArch = archOverride
+	}
+
+	// zarf-init packages are 'special' and don't have the 'zarf-package' prefix
+	tarballNameTemplate := "zarf-package-%s-%s-%s.tar.zst"
+	if packageName == "init" {
+		tarballNameTemplate = "zarf-%s-%s-%s.tar.zst"
+	}
+
+	tarballName = fmt.Sprintf(tarballNameTemplate,
+		packageName,
+		tarballArch,
+		tarballRef)
+
+	return tarballName
 }
