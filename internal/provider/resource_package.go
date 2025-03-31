@@ -435,9 +435,6 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	opts := zarfTypes.ZarfPackageOptions{
 		PackageSource: packageSource,
 	}
-	// if data.Repository.ValueString() != "" {
-	// 	opts.PackageSource = data.Repository.ValueString()
-	// }
 	pkgConfig := zarfTypes.PackagerConfig{
 		PkgOpts: opts,
 	}
