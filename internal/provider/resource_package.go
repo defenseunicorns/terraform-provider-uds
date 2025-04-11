@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -46,6 +47,7 @@ type PackageResource struct {
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
 	ID         types.String `tfsdk:"id"`
+	Name       types.String `tfsdk:"name"`
 	Components types.List   `tfsdk:"components"`
 	Timeout    types.String `tfsdk:"timeout"`
 	// Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
@@ -99,6 +101,10 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
+			},
+			"name": schema.StringAttribute{
+				Required:            true,
+				MarkdownDescription: "The name of the Zarf Package",
 			},
 			"path": schema.StringAttribute{
 				Optional:            true,
@@ -418,11 +424,16 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-	opts := zarfTypes.ZarfPackageOptions{
-		PackageSource: data.Path.ValueString(),
+	packageSource, err := getPackageSource(data, *r.providerData)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error determine package source",
+			"Could not determine package source: "+err.Error(),
+		)
+		return
 	}
-	if data.Repository.ValueString() != "" {
-		opts.PackageSource = data.Repository.ValueString()
+	opts := zarfTypes.ZarfPackageOptions{
+		PackageSource: packageSource,
 	}
 	pkgConfig := zarfTypes.PackagerConfig{
 		PkgOpts: opts,
@@ -565,11 +576,10 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 
 	valuesMap := flattenOverrides(plan.Overrides)
-	sourcePath := plan.Path.ValueString()
-	if plan.Repository.ValueString() != "" {
-		sourcePath = plan.Repository.ValueString()
+	sourcePath, err := getPackageSource(plan, *r.providerData)
+	if err != nil {
+		return plan, err
 	}
-
 	// Initialize the package config
 	pkgConfig := zarfTypes.PackagerConfig{
 		DeployOpts: zarfTypes.ZarfDeployOptions{
@@ -579,31 +589,6 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		PkgOpts: zarfTypes.ZarfPackageOptions{
 			PackageSource: sourcePath,
 		},
-	}
-
-	// NOTE: If providerData is set, we are using that location to override the Path & Repository
-	if r.providerData != nil && r.providerData.LocalPathOverride != "" {
-		tarballName := ""
-		if plan.Path.ValueString() != "" {
-			// The path value already exists, I know the tarball name, I just need to change the parent dir
-			tarballName = filepath.Base(pkgConfig.PkgOpts.PackageSource)
-		} else {
-			// Construct the tarballName from metadata of the zarf package
-			packageName := strings.Trim(filepath.Base(plan.Repository.String()), "\"")
-
-			// zarf-init packages are 'special' and don't have the 'zarf-package' prefix
-			tarballNameTemplate := "zarf-package-%s-%s-%s.tar.zst"
-			if packageName == "init" {
-				tarballNameTemplate = "zarf-%s-%s-%s.tar.zst"
-			}
-
-			tarballName = fmt.Sprintf(tarballNameTemplate,
-				packageName,
-				strings.Trim(plan.Architecture.ValueString(), "\""),
-				strings.Trim(plan.Ref.ValueString(), "\""))
-		}
-
-		pkgConfig.PkgOpts.PackageSource = filepath.Join(r.providerData.LocalPathOverride, tarballName)
 	}
 
 	// default zarf init opts
@@ -659,4 +644,53 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	// explicitly set the version
 	plan.Ref = types.StringValue(pkgConfig.Pkg.Metadata.Version)
 	return plan, err
+}
+
+func getPackageSource(pkg PackageResourceModel, providerData customProviderData) (string, error) {
+	packageTarballName := getPackageName(pkg, providerData.BundleArch)
+	sourcePath := ""
+
+	// Determine the proper sourcePath depending on provided overrides from UDS-CLI
+	if providerData != (customProviderData{}) {
+		// Check if UDS CLI sent overrides we need to use
+		sourcePath = filepath.Join(providerData.LocalPathOverride, packageTarballName)
+	} else if pkg.Repository.ValueString() != "" {
+		// Generate the oci schema based string from the provided repository
+		sourcePath = fmt.Sprintf("oci://%s:%s", pkg.Repository.ValueString(), pkg.Ref.ValueString())
+	} else if pkg.Path.ValueString() != "" {
+		// Generate a path to the zarf package tarball
+		sourcePath = pkg.Path.ValueString()
+		info, err := os.Stat(sourcePath)
+		if err != nil {
+			return "", err
+		}
+		if info.IsDir() {
+			sourcePath = filepath.Join(sourcePath, packageTarballName)
+		}
+	}
+	return sourcePath, nil
+}
+
+func getPackageName(pkg PackageResourceModel, archOverride string) string {
+	tarballName := ""
+	packageName := pkg.Name.ValueString()
+	tarballArch := pkg.Architecture.ValueString()
+	tarballRef := pkg.Ref.ValueString()
+
+	if archOverride != "" {
+		tarballArch = archOverride
+	}
+
+	// zarf-init packages are 'special' and don't have the 'zarf-package' prefix
+	tarballNameTemplate := "zarf-package-%s-%s-%s.tar.zst"
+	if packageName == "init" {
+		tarballNameTemplate = "zarf-%s-%s-%s.tar.zst"
+	}
+
+	tarballName = fmt.Sprintf(tarballNameTemplate,
+		packageName,
+		tarballArch,
+		tarballRef)
+
+	return tarballName
 }
