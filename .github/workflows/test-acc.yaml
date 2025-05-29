@@ -50,7 +50,7 @@ jobs:
         run: uds run test:acc
 
       - name: Save Logs
-        uses: defenseunicorns/uds-core/.github/actions/save-logs@129864213a0da9ebd887e93e70fa1f0454bdbe9c
+        uses: defenseunicorns/uds-core/.github/actions/save-logs@d8bc4f8ec35cfca42ce773b53c0a066a1d87f800
         if: always()
         with:
           suffix: unit
