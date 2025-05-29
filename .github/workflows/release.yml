@@ -42,7 +42,7 @@ jobs:
       #     passphrase: ${{ secrets.PASSPHRASE }}
       
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@90a3faa9d0182683851fbfa97ca1a2cb983bfca3 # v6.2.1
+        uses: goreleaser/goreleaser-action@9c156ee8a17a598857849441385a2041ef570552 # v6.3.0
         with:
           args: release --clean --timeout 60m
         env:
@@ -51,7 +51,7 @@ jobs:
           
       - name: Upload release assets (if any failed)
         if: failure()
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: goreleaser-dist
           path: dist/
