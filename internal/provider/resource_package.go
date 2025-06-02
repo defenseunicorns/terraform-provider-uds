@@ -293,7 +293,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	c, err := zarfCluster.NewClusterWithWait(timeoutCtx)
+	c, err := zarfCluster.NewWithWait(timeoutCtx)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Could not connect to cluster",
