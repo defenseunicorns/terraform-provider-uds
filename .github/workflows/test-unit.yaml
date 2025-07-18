@@ -38,7 +38,7 @@ jobs:
         run: go test -v -cover -timeout=120s -parallel=10 ./...
 
       - name: Save Logs
-        uses: defenseunicorns/uds-core/.github/actions/save-logs@f3259055aa27f3f3b75ffc0ee944068a87aa8adb
+        uses: defenseunicorns/uds-core/.github/actions/save-logs@5e37fe7d4fc6f9e35f75a846a4e59ec360f89d5a
         if: always()
         with:
           suffix: unit
