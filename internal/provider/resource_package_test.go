@@ -4,7 +4,9 @@
 package provider
 
 import (
+	"fmt"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -29,21 +31,21 @@ func TestAccPackageResource(t *testing.T) {
 	})
 }
 
-var testAccPackageResourceConfig = `
+var testAccPackageResourceConfig = fmt.Sprintf(`
 resource "uds_bundle_metadata" "example_bundle" {
   version      = "0.0.1"
   kind         = "UDSBundle"
   description  = "A demo bundle for the podinfo and nginx packages"
-  architecture = "arm64"
+  architecture = "%s"
 }
 
 resource "uds_package" "init" {
-	name         = "init"
+  name         = "init"
   repository   = "ghcr.io/zarf-dev/packages/init"
   ref          = "v0.48.0"
   architecture = uds_bundle_metadata.example_bundle.architecture
 }
-`
+`, runtime.GOARCH)
 
 // Unit test for flattenOverrides function
 func TestFlattenOverrides(t *testing.T) {
