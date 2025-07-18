@@ -1,8 +1,6 @@
 module github.com/defenseunicorns/terraform-provider-uds
 
-go 1.24.2
-
-toolchain go1.24.5
+go 1.24.4
 
 require (
 	github.com/google/uuid v1.6.0
