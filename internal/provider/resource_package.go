@@ -645,9 +645,10 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		},
 		ValuesOverridesMap: valuesMap,
 	}
+	components := "" // TODO(erickson): Placeholder for (Optional) components currently not working. Fixed in another branch
 	filter := zarfFilters.Combine(
 		zarfFilters.ByLocalOS(runtime.GOOS),
-		//zarfFilters.ForDeploy(components, false), // TODO(erickson): Placeholder for (Optional) components currently not working. Fixed in another branch
+		zarfFilters.ForDeploy(components, false),
 	)
 	pkgLayout.Pkg.Components, err = filter.Apply(pkgLayout.Pkg)
 	if err != nil {
