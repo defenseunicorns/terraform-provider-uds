@@ -5,9 +5,11 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -26,7 +28,8 @@ import (
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
 	zarfCluster "github.com/zarf-dev/zarf/src/pkg/cluster"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
-	zarfTypes "github.com/zarf-dev/zarf/src/types"
+	zarfFilters "github.com/zarf-dev/zarf/src/pkg/packager/filters"
+	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
@@ -254,6 +257,7 @@ func (r *PackageResource) Configure(_ context.Context, req resource.ConfigureReq
 // Create creates the resource and sets the initial Terraform state.
 func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	tflog.Info(ctx, "Creating Package Resource")
+
 	// Retrieve values from plan
 	var plan PackageResourceModel
 	diags := req.Plan.Get(ctx, &plan)
@@ -332,7 +336,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	// Populate a matrix of all the deployed packages
 	// TODO(clint): use this information to update our local state with the
 	// metadata from the package we're managing
-	packageData := make(map[string]zarfTypes.DeployedPackage)
+	packageData := make(map[string]zarfState.DeployedPackage)
 	for _, pkg := range deployedZarfPackages {
 		// var components []string
 
@@ -393,6 +397,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 // Update updates the resource and sets the updated Terraform state on success.
 func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	tflog.Info(ctx, "Updating Package")
+
 	// Retrieve values from plan
 	var plan PackageResourceModel
 	diags := req.Plan.Get(ctx, &plan)
@@ -432,26 +437,49 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		)
 		return
 	}
-	opts := zarfTypes.ZarfPackageOptions{
-		PackageSource: packageSource,
-	}
-	pkgConfig := zarfTypes.PackagerConfig{
-		PkgOpts: opts,
-	}
 
-	pkgClient, err := zarfPackager.New(&pkgConfig)
+	// convert the terraform timeout to a time.Duration
+	deleteTimeout, err := time.ParseDuration(data.Timeout.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError(
-			"Error creating package client",
-			"Could not create package client: "+err.Error(),
+			"Error determine timeout",
+			"Could not determine timeout: "+err.Error(),
 		)
 		return
 	}
 
-	// TODO(clint): copied this from uds-cli, but I'm not sure if it's needed
-	defer pkgClient.ClearTempPaths()
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	c, err := zarfCluster.NewWithWait(timeoutCtx)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Could not connect to cluster",
+			"Error connecting to cluster:"+err.Error(),
+		)
+		return
+	}
 
-	if err := pkgClient.Remove(context.TODO()); err != nil {
+	filter := zarfFilters.Combine(
+		zarfFilters.ByLocalOS(runtime.GOOS),
+	)
+	loadOpts := zarfPackager.LoadOptions{
+		Architecture: getArchitecture(data, *r.providerData),
+		Filter:       filter,
+	}
+	pkg, err := zarfPackager.GetPackageFromSourceOrCluster(ctx, c, packageSource, "", loadOpts)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error loading package",
+			"Could not load package: "+err.Error(),
+		)
+		return
+	}
+
+	removeOpt := zarfPackager.RemoveOptions{
+		Cluster: c,
+		Timeout: deleteTimeout,
+	}
+	if err := zarfPackager.Remove(ctx, pkg, removeOpt); err != nil {
 		resp.Diagnostics.AddError(
 			"Error removing package",
 			"Could not remove package: "+err.Error(),
@@ -580,46 +608,62 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if err != nil {
 		return plan, err
 	}
-	// Initialize the package config
-	pkgConfig := zarfTypes.PackagerConfig{
-		DeployOpts: zarfTypes.ZarfDeployOptions{
-			Timeout:            timeout,
-			ValuesOverridesMap: valuesMap,
-		},
-		PkgOpts: zarfTypes.ZarfPackageOptions{
-			PackageSource: sourcePath,
-		},
+
+	// TODO(erickson): Do we need configurable remote options?
+	remoteOpts := zarfPackager.RemoteOptions{
+		PlainHTTP:             zarfConfig.CommonOptions.PlainHTTP,
+		InsecureSkipTLSVerify: zarfConfig.CommonOptions.InsecureSkipTLSVerify,
 	}
 
-	// default zarf init opts
-	pkgConfig.InitOpts = zarfTypes.ZarfInitOptions{
-		GitServer: zarfTypes.GitServerInfo{
-			PushUsername: zarfTypes.ZarfGitPushUser,
-		},
-		RegistryInfo: zarfTypes.RegistryInfo{
-			PushUsername: zarfTypes.ZarfRegistryPushUser,
-		},
+	// TODO(erickson): Add support for Shasum, CachePath, OCIConcurrency?
+	loadOpt := zarfPackager.LoadOptions{
+		Filter:                  zarfFilters.Empty(),
+		Architecture:            getArchitecture(plan, *r.providerData),
+		PublicKeyPath:           plan.Key.ValueString(),
+		SkipSignatureValidation: false, // TODO(erickson): Make this configurable?
+		RemoteOptions:           remoteOpts,
 	}
 
-	pkgConfig.PkgOpts.PublicKeyPath = plan.Key.ValueString()
-
-	// Create the package client
-	pkgClient, err := zarfPackager.New(&pkgConfig, zarfPackager.WithContext(ctx))
-	// Abort if we can't create the package client
+	pkgLayout, err := zarfPackager.LoadPackage(ctx, sourcePath, loadOpt)
 	if err != nil {
 		return plan, err
 	}
-	// Always clear the temp paths since we're running in automation
-	defer pkgClient.ClearTempPaths()
+	defer func() {
+		err = errors.Join(err, pkgLayout.Cleanup())
+	}()
+
+	// TODO(erickson): Add support for Retries, OCIConcurrency, NamespaceOverride?
+	deployOpts := zarfPackager.DeployOptions{
+		AdoptExistingResources: false,
+		Timeout:                timeout,
+		RemoteOptions:          remoteOpts,
+		GitServer: zarfState.GitServerInfo{
+			PushUsername: zarfState.ZarfGitPushUser,
+		},
+		RegistryInfo: zarfState.RegistryInfo{
+			PushUsername: zarfState.ZarfRegistryPushUser,
+		},
+		ValuesOverridesMap: valuesMap,
+	}
+	components := "" // TODO(erickson): Placeholder for (Optional) components currently not working. Fixed in another branch
+	filter := zarfFilters.Combine(
+		zarfFilters.ByLocalOS(runtime.GOOS),
+		zarfFilters.ForDeploy(components, false),
+	)
+	pkgLayout.Pkg.Components, err = filter.Apply(pkgLayout.Pkg)
+	if err != nil {
+		return plan, err
+	}
 
 	tflog.Debug(ctx, "starting deploy")
-	if err := pkgClient.Deploy(ctx); err != nil {
+	_, err = zarfPackager.Deploy(ctx, pkgLayout, deployOpts)
+	if err != nil {
 		return plan, err
 	}
 	tflog.Debug(ctx, "ending deploy")
 
 	plan.ID = types.StringValue(plan.Path.ValueString())
-	plan.Kind = types.StringValue(string(pkgConfig.Pkg.Kind))
+	plan.Kind = types.StringValue(string(pkgLayout.Pkg.Kind))
 
 	// populate the package metadata type.
 	// TODO(clint): this is ugly and I got it from https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/custom
@@ -630,9 +674,9 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		"version":     types.StringType,
 	}
 	elements := map[string]attr.Value{
-		"name":        types.StringValue(pkgConfig.Pkg.Metadata.Name),
-		"description": types.StringValue(pkgConfig.Pkg.Metadata.Description),
-		"version":     types.StringValue(pkgConfig.Pkg.Metadata.Version),
+		"name":        types.StringValue(pkgLayout.Pkg.Metadata.Name),
+		"description": types.StringValue(pkgLayout.Pkg.Metadata.Description),
+		"version":     types.StringValue(pkgLayout.Pkg.Metadata.Version),
 	}
 	pkgMetaData, diags := types.ObjectValue(elementTypes, elements)
 
@@ -642,8 +686,15 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	plan.Metadata = pkgMetaData
 
 	// explicitly set the version
-	plan.Ref = types.StringValue(pkgConfig.Pkg.Metadata.Version)
+	plan.Ref = types.StringValue(pkgLayout.Pkg.Metadata.Version)
 	return plan, err
+}
+
+func getArchitecture(pkg PackageResourceModel, providerData customProviderData) string {
+	if providerData.BundleArch != "" {
+		return providerData.BundleArch
+	}
+	return pkg.Architecture.ValueString()
 }
 
 func getPackageSource(pkg PackageResourceModel, providerData customProviderData) (string, error) {
