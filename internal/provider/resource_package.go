@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -38,13 +39,21 @@ var (
 	_ resource.ResourceWithImportState = &PackageResource{}
 )
 
-func NewPackageResource() resource.Resource {
-	return &PackageResource{}
+// NewPackageResource creates a new instance of the package resource.
+// If packager is nil, a new DefaultZarfPackager will be created.
+func NewPackageResource(packager udsPackager.ZarfPackager) resource.Resource {
+	if packager == nil {
+		packager = udsPackager.NewZarfPackager()
+	}
+	return &PackageResource{
+		packager: packager,
+	}
 }
 
 // PackageResource defines the resource implementation.
 type PackageResource struct {
 	providerData *customProviderData
+	packager     udsPackager.ZarfPackager
 }
 
 // PackageResourceModel describes the resource data model.
@@ -249,8 +258,15 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 }
 
 func (r *PackageResource) Configure(_ context.Context, req resource.ConfigureRequest, _ *resource.ConfigureResponse) {
-	if req.ProviderData != nil {
-		r.providerData = req.ProviderData.(*customProviderData)
+	if req.ProviderData == nil {
+		return
+	}
+
+	r.providerData = req.ProviderData.(*customProviderData)
+
+	// Initialize the packager if it wasn't set in NewPackageResource
+	if r.packager == nil {
+		r.packager = udsPackager.NewZarfPackager()
 	}
 }
 
