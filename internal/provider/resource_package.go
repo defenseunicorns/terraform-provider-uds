@@ -14,6 +14,7 @@ import (
 	"time"
 
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
+	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -26,6 +27,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
+	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
 	zarfCluster "github.com/zarf-dev/zarf/src/pkg/cluster"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
@@ -60,10 +62,8 @@ type PackageResource struct {
 type PackageResourceModel struct {
 	ID         types.String `tfsdk:"id"`
 	Name       types.String `tfsdk:"name"`
-	Components types.List   `tfsdk:"components"`
 	Timeout    types.String `tfsdk:"timeout"`
-	// Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
-	Kind       types.String `tfsdk:"kind"`
+	Kind       types.String `tfsdk:"kind"` // Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
 	Path       types.String `tfsdk:"path"`
 	Repository types.String `tfsdk:"repository"`
 	Ref        types.String `tfsdk:"ref"`
@@ -74,7 +74,13 @@ type PackageResourceModel struct {
 	Metadata  types.Object    `tfsdk:"metadata"`
 	Overrides []OverrideModel `tfsdk:"overrides"`
 
-	Architecture types.String `tfsdk:"architecture"`
+	Component    []ComponentModel `tfsdk:"component"`
+	Architecture types.String     `tfsdk:"architecture"`
+}
+
+type ComponentModel struct {
+	Name    types.String `tfsdk:"name"`
+	Install types.Bool   `tfsdk:"install"`
 }
 
 type OverrideModel struct {
@@ -151,19 +157,12 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Required:            true,
 				MarkdownDescription: "Architecture of the Zarf package",
 			},
-			"components": schema.ListAttribute{
-				Optional:            true,
-				MarkdownDescription: "Explicit list of components to include in the package, if empty, all default components are included",
-				ElementType: types.ListType{
-					ElemType: types.StringType,
-				},
-			},
-			// Set the default value to "30m" vs the default of "15m" since this runs in automation
 			"timeout": schema.StringAttribute{
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString("30m"),
 				MarkdownDescription: "Timeout for the deploy operation",
+				// TODO(erickson): Add duration validator
 			},
 
 			"kind": schema.StringAttribute{
@@ -251,6 +250,29 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 							},
 						},
 					},
+				},
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"component": schema.ListNestedBlock{
+				MarkdownDescription: "Component configuration to include/exclude in the package deployment",
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							Required:    true,
+							Description: "Name of the component",
+						},
+						"install": schema.BoolAttribute{
+							Required:    true,
+							Description: "Whether to install this component (true) or exclude it (false)",
+						},
+					},
+				},
+				Validators: []validator.List{
+					func() validator.List {
+						v, _ := udsValidator.NewBlockStringAttributeUniquenessValidator("component", "name")
+						return v
+					}(),
 				},
 			},
 		},
@@ -635,8 +657,8 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	loadOpt := zarfPackager.LoadOptions{
 		Filter:                  zarfFilters.Empty(),
 		Architecture:            getArchitecture(plan, *r.providerData),
-		PublicKeyPath:           plan.Key.ValueString(),
-		SkipSignatureValidation: false, // TODO(erickson): Make this configurable?
+		PublicKeyPath:           plan.Key.ValueString(), // TODO(erickson): Not sure this is correct. Do we need to write key to temp file and set path to that?
+		SkipSignatureValidation: false,                  // TODO(erickson): Make this configurable?
 		RemoteOptions:           remoteOpts,
 	}
 
@@ -647,6 +669,34 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	defer func() {
 		err = errors.Join(err, pkgLayout.Cleanup())
 	}()
+
+	var componentErrors []error
+	optionalComponents := []string{}
+	for _, component := range plan.Component {
+		pkgComponent, found := findPackageComponent(pkgLayout.Pkg.Components, component.Name.ValueString())
+		if !found {
+			componentErrors = append(componentErrors, fmt.Errorf("component %s not found in package", component.Name.ValueString()))
+			continue
+		}
+		// TODO(erickson): Is it safe to assume if pkgComponent.Required is nil, that it is optional?
+		isOptional := pkgComponent.Required == nil || !*pkgComponent.Required
+		if !isOptional && component.Install.Equal(types.BoolValue(false)) {
+			componentErrors = append(componentErrors, fmt.Errorf("component %s is required and cannot be disabled", component.Name.ValueString()))
+		}
+
+		// Only keep track of included/excluded optional components if there are no errors
+		if len(componentErrors) == 0 && isOptional {
+			if component.Install.Equal(types.BoolValue(true)) {
+				optionalComponents = append(optionalComponents, component.Name.ValueString())
+			} else if pkgComponent.Default {
+				optionalComponents = append(optionalComponents, "-"+component.Name.ValueString())
+			}
+		}
+	}
+
+	if len(componentErrors) > 0 {
+		return plan, errors.Join(componentErrors...)
+	}
 
 	// TODO(erickson): Add support for Retries, OCIConcurrency, NamespaceOverride?
 	deployOpts := zarfPackager.DeployOptions{
@@ -661,14 +711,25 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		},
 		ValuesOverridesMap: valuesMap,
 	}
-	components := "" // TODO(erickson): Placeholder for (Optional) components currently not working. Fixed in another branch
+
 	filter := zarfFilters.Combine(
 		zarfFilters.ByLocalOS(runtime.GOOS),
-		zarfFilters.ForDeploy(components, false),
+		zarfFilters.ForDeploy(strings.Join(optionalComponents, ","), false),
 	)
 	pkgLayout.Pkg.Components, err = filter.Apply(pkgLayout.Pkg)
 	if err != nil {
 		return plan, err
+	}
+
+	// Log components to enable for package deployment based on filter
+	tflog.Debug(ctx, fmt.Sprintf("%d components to include for package deployment:", len(pkgLayout.Pkg.Components)))
+	for _, component := range pkgLayout.Pkg.Components {
+		requiredStr := "nil"
+		if component.Required != nil {
+			requiredStr = fmt.Sprintf("%t", *component.Required)
+		}
+		tflog.Debug(ctx, fmt.Sprintf("include component: name=%s, required=%s, default=%t",
+			component.Name, requiredStr, component.Default))
 	}
 
 	tflog.Debug(ctx, "starting deploy")
@@ -760,4 +821,13 @@ func getPackageName(pkg PackageResourceModel, archOverride string) string {
 		tarballRef)
 
 	return tarballName
+}
+
+func findPackageComponent(components []v1alpha1.ZarfComponent, name string) (v1alpha1.ZarfComponent, bool) {
+	for _, c := range components {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return v1alpha1.ZarfComponent{}, false // Not found
 }
