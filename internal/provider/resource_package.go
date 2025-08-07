@@ -74,6 +74,7 @@ type PackageResourceModel struct {
 	Timeout                 types.String `tfsdk:"timeout"`
 	Key                     types.String `tfsdk:"key"`
 	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
+	ZarfVars                []ZarfVar    `tfsdk:"zarf_vars"`
 
 	Component []ComponentModel `tfsdk:"component"`
 	Overrides []OverrideModel  `tfsdk:"overrides"`
@@ -88,6 +89,12 @@ type PackageResourceModel struct {
 type ComponentModel struct {
 	Name types.String `tfsdk:"name"`
 	// TODO(erickson): Move chart overrides into component model
+}
+
+// ZarfVar represents a Zarf Variable name and value pairing.
+type ZarfVar struct {
+	Name  types.String `tfsdk:"name"`
+	Value types.String `tfsdk:"value"`
 }
 
 // OverrideModel represents configuration overrides for a component.
@@ -198,6 +205,23 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					},
 				},
 			},
+			"zarf_vars": schema.ListNestedAttribute{
+				Description: "List of Zarf variables for the package.",
+				Optional:    true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							Description: "Name of the Zarf Variable being set.",
+							Required:    true,
+						},
+						"value": schema.StringAttribute{
+							Description: "Value for the Zarf Variable.",
+							Required:    true,
+						},
+					},
+				},
+			},
+			// overrides
 			"overrides": schema.ListNestedAttribute{
 				Description: "List of overrides for Helm charts.",
 				Optional:    true,
@@ -693,8 +717,14 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, errors.Join(componentErrors...)
 	}
 
+	setVariables := map[string]string{}
+	for _, zarfVar := range plan.ZarfVars {
+		setVariables[zarfVar.Name.ValueString()] = zarfVar.Value.ValueString()
+	}
+
 	// TODO(erickson): Add support for Retries, OCIConcurrency, NamespaceOverride?
 	deployOpts := zarfPackager.DeployOptions{
+		SetVariables:           setVariables,
 		AdoptExistingResources: false,
 		Timeout:                timeout,
 		RemoteOptions:          remoteOpts,
