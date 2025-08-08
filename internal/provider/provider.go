@@ -7,7 +7,6 @@ import (
 	"context"
 	"os"
 
-	"github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -49,12 +48,9 @@ func (p *udsProvider) Configure(_ context.Context, _ provider.ConfigureRequest, 
 }
 
 func (p *udsProvider) Resources(context.Context) []func() resource.Resource {
-	// Create a new ZarfPackager instance
-	packager := packager.NewZarfPackager()
-
 	return []func() resource.Resource{
 		// Pass the packager to NewPackageResource
-		func() resource.Resource { return NewPackageResource(packager) },
+		func() resource.Resource { return NewPackageResource(nil, nil, nil) },
 		NewBundleMetadataResource,
 	}
 }

@@ -5,38 +5,58 @@ package packager
 
 import (
 	"context"
+	"runtime"
 
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
-	"github.com/zarf-dev/zarf/src/pkg/packager"
+	zPackager "github.com/zarf-dev/zarf/src/pkg/packager"
+	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 )
 
-// ZarfPackager defines the interface for interacting with Zarf packages
-type ZarfPackager interface {
-	Deploy(ctx context.Context, pkgLayout *layout.PackageLayout, opts packager.DeployOptions) (packager.DeployResult, error)
-	Remove(ctx context.Context, pkg v1alpha1.ZarfPackage, opts packager.RemoveOptions) error
-	LoadPackage(ctx context.Context, source string, opts packager.LoadOptions) (_ *layout.PackageLayout, err error)
+type Packager interface {
+	Deploy(ctx context.Context, pkgLayout *layout.PackageLayout, opts zPackager.DeployOptions) (zPackager.DeployResult, error)
+	Remove(ctx context.Context, pkg v1alpha1.ZarfPackage, opts zPackager.RemoveOptions) error
+	LoadPackage(ctx context.Context, source string, opts zPackager.LoadOptions) (_ *layout.PackageLayout, err error)
 }
 
-// DefaultZarfPackager is the default implementation of ZarfPackager
-type DefaultZarfPackager struct{}
+type zarfPackager struct{}
 
-// NewZarfPackager creates a new instance of DefaultZarfPackager
-func NewZarfPackager() *DefaultZarfPackager {
-	return &DefaultZarfPackager{}
+func NewPackager() Packager {
+	return &zarfPackager{}
 }
 
-// Deploy implements the ZarfPackager interface
-func (z *DefaultZarfPackager) Deploy(ctx context.Context, pkgLayout *layout.PackageLayout, opts packager.DeployOptions) (packager.DeployResult, error) {
-	return packager.Deploy(ctx, pkgLayout, opts)
+func (z *zarfPackager) Deploy(ctx context.Context, pkgLayout *layout.PackageLayout, opts zPackager.DeployOptions) (zPackager.DeployResult, error) {
+	return zPackager.Deploy(ctx, pkgLayout, opts)
 }
 
-// Remove implements the ZarfPackager interface
-func (z *DefaultZarfPackager) Remove(ctx context.Context, pkg v1alpha1.ZarfPackage, opts packager.RemoveOptions) error {
-	return packager.Remove(ctx, pkg, opts)
+func (z *zarfPackager) Remove(ctx context.Context, pkg v1alpha1.ZarfPackage, opts zPackager.RemoveOptions) error {
+	return zPackager.Remove(ctx, pkg, opts)
 }
 
-// Load implements the ZarfPackager interface
-func (z *DefaultZarfPackager) LoadPackage(ctx context.Context, source string, opts packager.LoadOptions) (_ *layout.PackageLayout, err error) {
-	return packager.LoadPackage(ctx, source, opts)
+func (z *zarfPackager) LoadPackage(ctx context.Context, source string, opts zPackager.LoadOptions) (_ *layout.PackageLayout, err error) {
+	return zPackager.LoadPackage(ctx, source, opts)
+}
+
+type PackageComponentFilter interface {
+	ByLocalOS() filters.ComponentFilterStrategy
+	ForDeploy(optionalComponents string) filters.ComponentFilterStrategy
+}
+
+type zarfPackageComponentFilter struct{}
+
+func (z *zarfPackageComponentFilter) ByLocalOS() filters.ComponentFilterStrategy {
+	return filters.Combine(
+		filters.ByLocalOS(runtime.GOOS),
+	)
+}
+
+func (z *zarfPackageComponentFilter) ForDeploy(optionalComponents string) filters.ComponentFilterStrategy {
+	return filters.Combine(
+		//filters.ByLocalOS(runtime.GOOS),
+		filters.ForDeploy(optionalComponents, false),
+	)
+}
+
+func NewPackageComponentFilter() PackageComponentFilter {
+	return &zarfPackageComponentFilter{}
 }

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -43,20 +42,28 @@ var (
 )
 
 // NewPackageResource creates a new instance of the package resource.
-// If packager is nil, a new DefaultZarfPackager will be created.
-func NewPackageResource(packager udsPackager.ZarfPackager) resource.Resource {
+func NewPackageResource(providerData *customProviderData, packager udsPackager.Packager, packageComponentFilter udsPackager.PackageComponentFilter) resource.Resource {
+	if providerData == nil {
+		providerData = &customProviderData{}
+	}
 	if packager == nil {
-		packager = udsPackager.NewZarfPackager()
+		packager = udsPackager.NewPackager()
+	}
+	if packageComponentFilter == nil {
+		packageComponentFilter = udsPackager.NewPackageComponentFilter()
 	}
 	return &PackageResource{
-		packager: packager,
+		providerData:  providerData,
+		packager:      packager,
+		packageFilter: packageComponentFilter,
 	}
 }
 
 // PackageResource defines the resource implementation.
 type PackageResource struct {
-	providerData *customProviderData
-	packager     udsPackager.ZarfPackager
+	providerData  *customProviderData
+	packager      udsPackager.Packager
+	packageFilter udsPackager.PackageComponentFilter
 }
 
 // PackageResourceModel describes the resource data model.
@@ -291,7 +298,7 @@ func (r *PackageResource) Configure(_ context.Context, req resource.ConfigureReq
 
 	// Initialize the packager if it wasn't set in NewPackageResource
 	if r.packager == nil {
-		r.packager = udsPackager.NewZarfPackager()
+		r.packager = udsPackager.NewPackager()
 	}
 }
 
@@ -500,9 +507,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 
-	filter := zarfFilters.Combine(
-		zarfFilters.ByLocalOS(runtime.GOOS),
-	)
+	filter := r.packageFilter.ByLocalOS()
 	loadOpts := zarfPackager.LoadOptions{
 		Architecture: getArchitecture(data, *r.providerData),
 		Filter:       filter,
@@ -520,7 +525,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		Cluster: c,
 		Timeout: deleteTimeout,
 	}
-	if err := zarfPackager.Remove(ctx, pkg, removeOpt); err != nil {
+	if err := r.packager.Remove(ctx, pkg, removeOpt); err != nil {
 		resp.Diagnostics.AddError(
 			"Error removing package",
 			"Could not remove package: "+err.Error(),
@@ -665,7 +670,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		RemoteOptions:           remoteOpts,
 	}
 
-	pkgLayout, err := zarfPackager.LoadPackage(ctx, sourcePath, loadOpt)
+	pkgLayout, err := r.packager.LoadPackage(ctx, sourcePath, loadOpt)
 	if err != nil {
 		return plan, err
 	}
@@ -715,10 +720,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		ValuesOverridesMap: valuesMap,
 	}
 
-	filter := zarfFilters.Combine(
-		zarfFilters.ByLocalOS(runtime.GOOS),
-		zarfFilters.ForDeploy(strings.Join(optionalComponents, ","), false),
-	)
+	filter := r.packageFilter.ForDeploy(strings.Join(optionalComponents, ","))
 	pkgLayout.Pkg.Components, err = filter.Apply(pkgLayout.Pkg)
 	if err != nil {
 		return plan, err
@@ -736,7 +738,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 
 	tflog.Debug(ctx, "starting deploy")
-	_, err = zarfPackager.Deploy(ctx, pkgLayout, deployOpts)
+	_, err = r.packager.Deploy(ctx, pkgLayout, deployOpts)
 	if err != nil {
 		return plan, err
 	}
