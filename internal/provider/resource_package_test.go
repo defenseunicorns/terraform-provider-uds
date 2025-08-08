@@ -4,10 +4,21 @@
 package provider
 
 import (
+	"context"
+	"fmt"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 
+	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/zarf-dev/zarf/src/api/v1alpha1"
+	"github.com/zarf-dev/zarf/src/pkg/packager"
+	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
+	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 )
 
 // Unit test for flattenOverrides function
@@ -155,4 +166,218 @@ func TestFlattenOverrides(t *testing.T) {
 			}
 		})
 	}
+}
+
+type MockPackager struct {
+	mock.Mock
+}
+
+func (m *MockPackager) Deploy(ctx context.Context, pkgLayout *layout.PackageLayout, opts packager.DeployOptions) (packager.DeployResult, error) {
+	args := m.Called(ctx, pkgLayout, opts)
+	return args.Get(0).(packager.DeployResult), args.Error(1)
+}
+
+func (m *MockPackager) Remove(ctx context.Context, pkg v1alpha1.ZarfPackage, opts packager.RemoveOptions) error {
+	args := m.Called(ctx, pkg, opts)
+	return args.Error(0)
+}
+
+func (m *MockPackager) LoadPackage(ctx context.Context, source string, opts packager.LoadOptions) (*layout.PackageLayout, error) {
+	args := m.Called(ctx, source, opts)
+	return args.Get(0).(*layout.PackageLayout), args.Error(1)
+}
+
+type MockPackageComponentFilter struct {
+	mock.Mock
+	packageComponentFilter udsPackager.PackageComponentFilter
+}
+
+func (m *MockPackageComponentFilter) getPackageComponentFilter() udsPackager.PackageComponentFilter {
+	if m.packageComponentFilter == nil {
+		m.packageComponentFilter = udsPackager.NewPackageComponentFilter()
+	}
+	return m.packageComponentFilter
+}
+
+func (m *MockPackageComponentFilter) ByLocalOS() filters.ComponentFilterStrategy {
+	m.Called()
+	return m.getPackageComponentFilter().ByLocalOS()
+}
+
+func (m *MockPackageComponentFilter) ForDeploy(optionalComponents string) filters.ComponentFilterStrategy {
+	m.Called(optionalComponents)
+	return m.getPackageComponentFilter().ForDeploy(optionalComponents)
+}
+
+type MockLoadPackageResult struct {
+	Layout *layout.PackageLayout
+	Error  error
+}
+
+type PackageModelTestData struct {
+	Name         string
+	Repository   string
+	Ref          string
+	Timeout      string
+	Architecture string
+}
+
+type ComponentModelTestData struct {
+	Name    string
+	Install *bool
+}
+
+func NewPackageResourceModelFromTestData(packageModelData PackageModelTestData, componentModelData []ComponentModelTestData) PackageResourceModel {
+	return PackageResourceModel{
+		Name:         types.StringValue(packageModelData.Name),
+		Repository:   types.StringValue(packageModelData.Repository),
+		Ref:          types.StringValue(packageModelData.Ref),
+		Timeout:      types.StringValue(packageModelData.Timeout),
+		Architecture: types.StringValue(packageModelData.Architecture),
+		Component:    NewComponentModelsFromTestData(componentModelData),
+	}
+}
+
+func NewComponentModelsFromTestData(componentModelData []ComponentModelTestData) []ComponentModel {
+	var componentModels []ComponentModel
+	for _, data := range componentModelData {
+		install := true
+		if data.Install != nil {
+			install = *data.Install
+		}
+
+		componentModels = append(componentModels, ComponentModel{
+			Name:    types.StringValue(data.Name),
+			Install: types.BoolValue(install),
+		})
+	}
+	return componentModels
+}
+
+func TestPackageResource_Upsert(t *testing.T) {
+
+	validPackageModelData := PackageModelTestData{
+		Name:         "test-package",
+		Repository:   "ghcr.io/defenseunicornstest/packages/test-package",
+		Ref:          "v0.0.1",
+		Timeout:      "10m",
+		Architecture: runtime.GOARCH,
+	}
+	validLoadPackageResult := MockLoadPackageResult{
+		Layout: &layout.PackageLayout{
+			Pkg: v1alpha1.ZarfPackage{
+				Metadata: v1alpha1.ZarfMetadata{
+					Name:        "test-package",
+					Description: "Test package",
+					Version:     "0.0.1",
+				},
+				Components: []v1alpha1.ZarfComponent{
+					{
+						Name:     "test-required-component-0",
+						Required: boolPtr(true),
+						Default:  false,
+					},
+					{
+						Name:     "test-required-component-1",
+						Required: boolPtr(true),
+						Default:  false,
+					},
+					{
+						Name:     "test-optional-default-component-0",
+						Required: nil, // Why zarf, why?
+						Default:  true,
+					},
+					{
+						Name:     "test-optional-default-component-1",
+						Required: boolPtr(false),
+						Default:  true,
+					},
+					{
+						Name:     "test-optional-non-default-component-0",
+						Required: nil,
+						Default:  false,
+					},
+					{
+						Name:     "test-optional-non-default-component-1",
+						Required: boolPtr(false),
+						Default:  false,
+					},
+				},
+			},
+		},
+		Error: nil,
+	}
+	tests := []struct {
+		name                                      string
+		packageModelData                          PackageModelTestData
+		componentModelData                        []ComponentModelTestData
+		zarfPackagerLoadPackageResult             MockLoadPackageResult
+		expectedOptionalComponentsForDeployFilter []string
+		expectedErrorContains                     []string
+	}{
+		{
+			name:                          "package without components deploys required components only",
+			packageModelData:              validPackageModelData,
+			componentModelData:            []ComponentModelTestData{},
+			zarfPackagerLoadPackageResult: validLoadPackageResult,
+			expectedOptionalComponentsForDeployFilter: []string{""},
+			expectedErrorContains:                     []string{},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+				tc.zarfPackagerLoadPackageResult.Layout,
+				tc.zarfPackagerLoadPackageResult.Error,
+			)
+			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter).(*PackageResource)
+			testModel := NewPackageResourceModelFromTestData(tc.packageModelData, tc.componentModelData)
+
+			_, err := packageResource.upsert(context.Background(), testModel)
+
+			if err == nil && len(tc.expectedErrorContains) > 0 {
+				t.Errorf("Expected error, got none")
+				return
+			}
+			if err != nil && len(tc.expectedErrorContains) == 0 {
+				t.Errorf("Expected no error, got %v", err)
+				return
+			}
+			for _, expectedErrorMsg := range tc.expectedErrorContains {
+				if !strings.Contains(err.Error(), expectedErrorMsg) {
+					t.Errorf("Expected error to contain %q, but got: %v", expectedErrorMsg, err)
+					return
+				}
+			}
+
+			// Verify optional components for deploy filter expectations
+			mockPackageComponentFilter.AssertExpectations(t)
+
+			// Check that ForDeploy was called with expected optional components
+			for _, call := range mockPackageComponentFilter.Calls {
+				if call.Method == "ForDeploy" && len(call.Arguments) > 0 {
+					actualOptionalComponents := call.Arguments[0].(string)
+					actualComponents := strings.Split(actualOptionalComponents, ",")
+
+					for i, comp := range actualComponents {
+						actualComponents[i] = strings.TrimSpace(comp)
+					}
+
+					assert.ElementsMatch(t, tc.expectedOptionalComponentsForDeployFilter, actualComponents,
+						fmt.Sprintf("Optional components selected for deploy do not match: expected: %v, actual: %v", tc.expectedOptionalComponentsForDeployFilter, actualComponents))
+				}
+			}
+		})
+	}
+}
+
+// Helper function to create bool pointers
+func boolPtr(b bool) *bool {
+	return &b
 }
