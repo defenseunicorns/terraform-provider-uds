@@ -542,8 +542,8 @@ func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportSt
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
-func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[string]interface{} {
-	result := make(map[string]map[string]map[string]interface{})
+func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[string]any {
+	result := make(map[string]map[string]map[string]any)
 
 	for _, override := range overrides {
 		component := override.ComponentName.ValueString()
@@ -551,10 +551,10 @@ func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[strin
 
 		// Initialize nested maps if they don't exist
 		if _, exists := result[component]; !exists {
-			result[component] = make(map[string]map[string]interface{})
+			result[component] = make(map[string]map[string]any)
 		}
 		if _, exists := result[component][chart]; !exists {
-			result[component][chart] = make(map[string]interface{})
+			result[component][chart] = make(map[string]any)
 		}
 
 		chartMap := result[component][chart]
@@ -582,7 +582,7 @@ func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[strin
 }
 
 // Inserts a nested value based on the dot-separated path
-func insertNestedValue(root map[string]interface{}, path, value string) {
+func insertNestedValue(root map[string]any, path, value string) {
 	parts := strings.Split(path, ".")
 	current := root
 
@@ -595,17 +595,17 @@ func insertNestedValue(root map[string]interface{}, path, value string) {
 		// Create intermediate maps if they don't exist
 		if next, exists := current[part]; exists {
 			// Ensure type safety
-			if nestedMap, ok := next.(map[string]interface{}); ok {
+			if nestedMap, ok := next.(map[string]any); ok {
 				current = nestedMap
 			} else {
 				// Overwrite if the existing value is not a map
-				newMap := make(map[string]interface{})
+				newMap := make(map[string]any)
 				current[part] = newMap
 				current = newMap
 			}
 		} else {
 			// Initialize a new map if it doesn't exist
-			newMap := make(map[string]interface{})
+			newMap := make(map[string]any)
 			current[part] = newMap
 			current = newMap
 		}
@@ -613,7 +613,7 @@ func insertNestedValue(root map[string]interface{}, path, value string) {
 }
 
 // Deletes a nested value based on the dot-separated path
-func deleteNestedValue(root map[string]interface{}, path string) {
+func deleteNestedValue(root map[string]any, path string) {
 	parts := strings.Split(path, ".")
 	current := root
 
@@ -629,7 +629,7 @@ func deleteNestedValue(root map[string]interface{}, path string) {
 		}
 
 		// Ensure type safety
-		nestedMap, ok := next.(map[string]interface{})
+		nestedMap, ok := next.(map[string]any)
 		if !ok {
 			return // Invalid structure, cannot proceed
 		}

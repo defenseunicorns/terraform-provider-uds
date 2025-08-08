@@ -26,7 +26,7 @@ func TestFlattenOverrides(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    []OverrideModel
-		expected map[string]map[string]map[string]interface{}
+		expected map[string]map[string]map[string]any
 	}{
 		{
 			name: "Single Override with Simple Value",
@@ -39,7 +39,7 @@ func TestFlattenOverrides(t *testing.T) {
 					},
 				},
 			},
-			expected: map[string]map[string]map[string]interface{}{
+			expected: map[string]map[string]map[string]any{
 				"component1": {
 					"chart1": {
 						"replicaCount": "2",
@@ -61,10 +61,10 @@ func TestFlattenOverrides(t *testing.T) {
 					},
 				},
 			},
-			expected: map[string]map[string]map[string]interface{}{
+			expected: map[string]map[string]map[string]any{
 				"component1": {
 					"chart1": {
-						"ui": map[string]interface{}{
+						"ui": map[string]any{
 							"color": "purple",
 						},
 					},
@@ -92,7 +92,7 @@ func TestFlattenOverrides(t *testing.T) {
 					},
 				},
 			},
-			expected: map[string]map[string]map[string]interface{}{
+			expected: map[string]map[string]map[string]any{
 				"component1": {
 					"chart1": {
 						"replicaCount": "3",
@@ -100,7 +100,7 @@ func TestFlattenOverrides(t *testing.T) {
 				},
 				"component2": {
 					"chart2": {
-						"database": map[string]interface{}{
+						"database": map[string]any{
 							"url": "localhost",
 						},
 					},
@@ -121,7 +121,7 @@ func TestFlattenOverrides(t *testing.T) {
 					},
 				},
 			},
-			expected: map[string]map[string]map[string]interface{}{
+			expected: map[string]map[string]map[string]any{
 				"component1": {
 					"chart1": {},
 				},
@@ -141,12 +141,12 @@ func TestFlattenOverrides(t *testing.T) {
 					},
 				},
 			},
-			expected: map[string]map[string]map[string]interface{}{
+			expected: map[string]map[string]map[string]any{
 				"component1": {
 					"chart1": {
-						"app": map[string]interface{}{
-							"settings": map[string]interface{}{
-								"features": map[string]interface{}{
+						"app": map[string]any{
+							"settings": map[string]any{
+								"features": map[string]any{
 									"enable": "true",
 								},
 							},
