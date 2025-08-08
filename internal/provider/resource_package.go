@@ -507,7 +507,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 
-	filter := r.packageFilter.ByLocalOS()
+	filter := r.packageFilter.ForRemove()
 	loadOpts := zarfPackager.LoadOptions{
 		Architecture: getArchitecture(data, *r.providerData),
 		Filter:       filter,
@@ -720,7 +720,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		ValuesOverridesMap: valuesMap,
 	}
 
-	filter := r.packageFilter.ForDeploy(strings.Join(optionalComponents, ","))
+	filter := r.packageFilter.ForDeploy(optionalComponents)
 	pkgLayout.Pkg.Components, err = filter.Apply(pkgLayout.Pkg)
 	if err != nil {
 		return plan, err

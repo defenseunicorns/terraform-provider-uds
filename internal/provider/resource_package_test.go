@@ -199,12 +199,12 @@ func (m *MockPackageComponentFilter) getPackageComponentFilter() udsPackager.Pac
 	return m.packageComponentFilter
 }
 
-func (m *MockPackageComponentFilter) ByLocalOS() filters.ComponentFilterStrategy {
+func (m *MockPackageComponentFilter) ForRemove() filters.ComponentFilterStrategy {
 	m.Called()
-	return m.getPackageComponentFilter().ByLocalOS()
+	return m.getPackageComponentFilter().ForRemove()
 }
 
-func (m *MockPackageComponentFilter) ForDeploy(optionalComponents string) filters.ComponentFilterStrategy {
+func (m *MockPackageComponentFilter) ForDeploy(optionalComponents []string) filters.ComponentFilterStrategy {
 	m.Called(optionalComponents)
 	return m.getPackageComponentFilter().ForDeploy(optionalComponents)
 }
@@ -320,7 +320,7 @@ func TestPackageResource_Upsert(t *testing.T) {
 			packageModelData:              validPackageModelData,
 			componentModelData:            []ComponentModelTestData{},
 			zarfPackagerLoadPackageResult: validLoadPackageResult,
-			expectedOptionalComponentsForDeployFilter: []string{""},
+			expectedOptionalComponentsForDeployFilter: []string{},
 			expectedErrorContains:                     []string{},
 		},
 	}
@@ -356,23 +356,16 @@ func TestPackageResource_Upsert(t *testing.T) {
 				}
 			}
 
-			// Verify optional components for deploy filter expectations
-			mockPackageComponentFilter.AssertExpectations(t)
-
 			// Check that ForDeploy was called with expected optional components
+			mockPackageComponentFilter.AssertExpectations(t)
+			var actualOptionalComponents []string
 			for _, call := range mockPackageComponentFilter.Calls {
 				if call.Method == "ForDeploy" && len(call.Arguments) > 0 {
-					actualOptionalComponents := call.Arguments[0].(string)
-					actualComponents := strings.Split(actualOptionalComponents, ",")
-
-					for i, comp := range actualComponents {
-						actualComponents[i] = strings.TrimSpace(comp)
-					}
-
-					assert.ElementsMatch(t, tc.expectedOptionalComponentsForDeployFilter, actualComponents,
-						fmt.Sprintf("Optional components selected for deploy do not match: expected: %v, actual: %v", tc.expectedOptionalComponentsForDeployFilter, actualComponents))
+					actualOptionalComponents = call.Arguments[0].([]string)
 				}
 			}
+			assert.ElementsMatch(t, tc.expectedOptionalComponentsForDeployFilter, actualOptionalComponents,
+				fmt.Sprintf("Optional components selected for deploy do not match: expected: %v, actual: %v", tc.expectedOptionalComponentsForDeployFilter, actualOptionalComponents))
 		})
 	}
 }

@@ -6,6 +6,7 @@ package packager
 import (
 	"context"
 	"runtime"
+	"strings"
 
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zPackager "github.com/zarf-dev/zarf/src/pkg/packager"
@@ -38,22 +39,21 @@ func (z *zarfPackager) LoadPackage(ctx context.Context, source string, opts zPac
 }
 
 type PackageComponentFilter interface {
-	ByLocalOS() filters.ComponentFilterStrategy
-	ForDeploy(optionalComponents string) filters.ComponentFilterStrategy
+	ForRemove() filters.ComponentFilterStrategy
+	ForDeploy(optionalComponents []string) filters.ComponentFilterStrategy
 }
 
 type zarfPackageComponentFilter struct{}
 
-func (z *zarfPackageComponentFilter) ByLocalOS() filters.ComponentFilterStrategy {
+func (z *zarfPackageComponentFilter) ForRemove() filters.ComponentFilterStrategy {
 	return filters.Combine(
 		filters.ByLocalOS(runtime.GOOS),
 	)
 }
 
-func (z *zarfPackageComponentFilter) ForDeploy(optionalComponents string) filters.ComponentFilterStrategy {
+func (z *zarfPackageComponentFilter) ForDeploy(optionalComponents []string) filters.ComponentFilterStrategy {
 	return filters.Combine(
-		//filters.ByLocalOS(runtime.GOOS),
-		filters.ForDeploy(optionalComponents, false),
+		filters.ForDeploy(strings.Join(optionalComponents, ","), false),
 	)
 }
 
