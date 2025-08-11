@@ -1,138 +1,37 @@
+# # Copyright 2024 Defense Unicorns
+# # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 terraform {
   required_providers {
     uds = {
-      source = "defenseunicorns/uds"
+      source  = "defenseunicorns/uds"
+      version = "0.0.1"
     }
   }
 }
 
 provider "uds" {}
 
+
+locals {
+  architecture = "arm64"
+}
+
 resource "uds_package" "uds-k3d-dev" {
-  # name = "zarf-package-uds-k3d-arm64-0.9.0.tar.zst"
-  name = "oci://ghcr.io/defenseunicorns/packages/uds-k3d:0.9.0"
+  name         = "uds_k3d"
+  repository   = "ghcr.io/defenseunicorns/packages/uds-k3d"
+  ref          = "0.13.0"
+  architecture = local.architecture
 }
 
 resource "uds_package" "init" {
-  # name       = "zarf-init-arm64-v0.41.0.tar.zst"
-  name       = "oci://ghcr.io/zarf-dev/packages/init:v0.41.0"
-  depends_on = [uds_package.uds-k3d-dev]
+  depends_on   = [uds_package.uds-k3d-dev]
+  name         = "init"
+  repository   = "ghcr.io/zarf-dev/packages/init"
+  ref          = "v0.59.0"
+  architecture = local.architecture
+
+  # Uncomment the component block below to install the git-server optional component
+  #component {
+  #  name = "git-server"
+  #}
 }
-
-
-
-
-
-
-# # Copyright 2024 Defense Unicorns
-# # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
-
-# kind: UDSBundle
-# metadata:0.0"
-#   # x-release-pleas
-#       uds-dev-stack:
-#         minio:
-#           variables:
-#             - na
-#   version: "0.3me: buckets
-#               description: "Set Minio Buckets"
-#               path: buckets
-#   name: k3d-core-sle-end
-
-# packages:
-#   - name: uds-k3d-dev
-#     repository: ghcr.io/defenseunicorns/packages/uds-k3d
-#     ref: 0.9.0
-#     overrides:im-dev
-#   description: A UDS bundle for deploying Istio from UDS Core on a development cluster
-#   # x-release-please-start-version
-#             - name: svcaccts
-#               description: "Minio Service Accounts"
-#               path: svcaccts
-#             - name: users
-#               description: "Minio Users"
-#               path: users
-#             - name: policies
-#               description: "Minio policies"
-#               path: policies
-
-#   - name: init
-#     repository: ghcr.io/zarf-dev/packages/init
-#     ref: v0.41.0
-
-#   - name: core-base
-#     path: ../../build/
-#     # x-release-please-start-version
-#     ref: 0.30.0
-#     # x-release-please-end
-#     overrides:
-#       istio-admin-gateway:
-#         uds-istio-config:
-#           variables:
-#             - name: ADMIN_TLS_CERT
-#               description: "The TLS cert for the admin gateway (must be base64 encoded)"
-#               path: tls.cert
-#             - name: ADMIN_TLS_KEY
-#               description: "The TLS key for the admin gateway (must be base64 encoded)"
-#               path: tls.key
-#             - name: ADMIN_TLS1_2_SUPPORT
-#               description: "Add support for TLS 1.2 on this gateway"
-#               path: tls.supportTLSV1_2
-#       istio-tenant-gateway:
-#         uds-istio-config:
-#           variables:
-#             - name: TENANT_TLS_CERT
-#               description: "The TLS cert for the tenant gateway (must be base64 encoded)"
-#               path: tls.cert
-#             - name: TENANT_TLS_KEY
-#               description: "The TLS key for the tenant gateway (must be base64 encoded)"
-#               path: tls.key
-#             - name: TENANT_TLS1_2_SUPPORT
-#               description: "Add support for TLS 1.2 on this gateway"
-#               path: tls.supportTLSV1_2
-#         gateway:
-#           variables:
-#             - name: TENANT_SERVICE_PORTS
-#               description: "The ports that are exposed from the tenant gateway LoadBalancer (useful for non-HTTP(S) traffic)"
-#               path: "service.ports"
-
-#   - name: core-identity-authorization
-#     path: ../../build/
-#     # x-release-please-start-version
-#     ref: 0.30.0
-#     # x-release-please-end
-#     overrides:
-#       keycloak:
-#         keycloak:
-#           variables:
-#             - name: INSECURE_ADMIN_PASSWORD_GENERATION
-#               description: "Generate an insecure admin password for dev/test"
-#               path: insecureAdminPasswordGeneration.enabled
-#             - name: KEYCLOAK_HA
-#               description: "Enable Keycloak HA"
-#               path: autoscaling.enabled
-#             - name: KEYCLOAK_PG_USERNAME
-#               description: "Keycloak Postgres username"
-#               path: postgresql.username
-#             - name: KEYCLOAK_PG_PASSWORD
-#               description: "Keycloak Postgres password"
-#               path: postgresql.password
-#             - name: KEYCLOAK_PG_DATABASE
-#               description: "Keycloak Postgres database"
-#               path: postgresql.database
-#             - name: KEYCLOAK_PG_HOST
-#               description: "Keycloak Postgres host"
-#               path: postgresql.host
-#             - name: KEYCLOAK_DEVMODE
-#               description: "Enables Keycloak dev mode"
-#               path: devMode
-#           values:
-#             - path: realmInitEnv
-#               value:
-#                 GOOGLE_IDP_ENABLED: true
-#                 GOOGLE_IDP_ID: "C01881u7t"
-#                 GOOGLE_IDP_SIGNING_CERT: "MIIDdDCCAlygAwIBAgIGAXkza8/+MA0GCSqGSIb3DQEBCwUAMHsxFDASBgNVBAoTC0dvb2dsZSBJbmMuMRYwFAYDVQQHEw1Nb3VudGFpbiBWaWV3MQ8wDQYDVQQDEwZHb29nbGUxGDAWBgNVBAsTD0dvb2dsZSBGb3IgV29yazELMAkGA1UEBhMCVVMxEzARBgNVBAgTCkNhbGlmb3JuaWEwHhcNMjEwNTAzMTgwOTMzWhcNMjYwNTAyMTgwOTMzWjB7MRQwEgYDVQQKEwtHb29nbGUgSW5jLjEWMBQGA1UEBxMNTW91bnRhaW4gVmlldzEPMA0GA1UEAxMGR29vZ2xlMRgwFgYDVQQLEw9Hb29nbGUgRm9yIFdvcmsxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpDYWxpZm9ybmlhMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAu9en1CO4EriCJ5jzss6TqUmtYMXXRBfsSkdnhVvMx0fYOegxy0d8DouUEEITlPW+YPBG1T72kiV9KGtKVw90ff4Y+siNDNrME81w4K3Zjo6VukvATfD05lVzh9JyO0VxdzBpdRXSJqBOVLo38cwVbyTcX5Nk/nHENjDSN7as3UvbXa7eT4Xswy1GARGAZ3MAaLTZn1+Cctn0MDKniQOS6QDryYgKWz8ko/H4T9XCxgjHJVsL6obezaPZF+pibyyVPCuePssuxUbFHF6yiP5rCfAsK6VTv/8pbYGauGpYHDgnM941RtN2ThltORgi+P9i9wQ8VRBQpEm1RvDXOqJ7OwIDAQABMA0GCSqGSIb3DQEBCwUAA4IBAQB5L26tpco6EgVunmZYBAFiFE+Dhqwvy4J1iKuXApaKhqabeKJ8kBv/pJBnZl7CRF5Pv8dLfhNoNm2BsXbpH91/rhDj9zl/Imkc5ttVGbXbKSBpUaduwBZpsVIX0xCugNPflHFz9kf/zsGWb3X6wO/2eNewj3fr8jNRC/KWQ7otcdqwYbe1BO4yo6FjAIs5L+wCQcc2JjRWgBon4wL25ccX3nH8aMHl4/gz5trKwPqH0/lYcScJmMSRPzHbmd62LlmZE9eWEwuYJ+h8fssTZA9JTMXvkPhg05w2snaM9XdSuXIRo4UtqGpMQC0KRMmwDHbVSluX63wn7iSZD4TGHZGa"
-#                 GOOGLE_IDP_NAME_ID_FORMAT: "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified"
-#                 GOOGLE_IDP_CORE_ENTITY_ID: "https://sso.uds.dev/realms/uds"
-#                 GOOGLE_IDP_ADMIN_GROUP: "uds-core-dev-admin"
-#                 GOOGLE_IDP_AUDITOR_GROUP: "uds-core-dev-auditor"
