@@ -67,17 +67,17 @@ type PackageResource struct {
 
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
-	ID                      types.String `tfsdk:"id"`
-	Name                    types.String `tfsdk:"name"`
-	Source                  types.String `tfsdk:"source"`
-	Architecture            types.String `tfsdk:"architecture"`
-	Timeout                 types.String `tfsdk:"timeout"`
-	Key                     types.String `tfsdk:"key"`
-	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
-	ZarfVars                []ZarfVar    `tfsdk:"zarf_vars"`
-
-	Component []ComponentModel `tfsdk:"component"`
-	Overrides []OverrideModel  `tfsdk:"overrides"`
+	ID                      types.String     `tfsdk:"id"`
+	Name                    types.String     `tfsdk:"name"`
+	Source                  types.String     `tfsdk:"source"`
+	Architecture            types.String     `tfsdk:"architecture"`
+	Timeout                 types.String     `tfsdk:"timeout"`
+	Key                     types.String     `tfsdk:"key"`
+	SkipSignatureValidation types.Bool       `tfsdk:"skip_signature_validation"`
+	Component               []ComponentModel `tfsdk:"component"`
+	Overrides               []OverrideModel  `tfsdk:"overrides"`
+	ZarfVars                []ZarfVar        `tfsdk:"zarf_vars"`
+	ZarfDeploySets          types.Map        `tfsdk:"zarf_deploy_sets"` // TODO(jperry): I'm not really liking this name
 
 	// readonly metadata
 	Metadata types.Object `tfsdk:"metadata"`
@@ -204,6 +204,11 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						Description: "Version of the zarf package, from the zarf.yaml file",
 					},
 				},
+			},
+			"zarf_deploy_sets": schema.MapAttribute{
+				ElementType: types.StringType,
+				Optional:    true,
+				Description: "A map of zarf values for the package, usually provided from a zarf config file",
 			},
 			"zarf_vars": schema.ListNestedAttribute{
 				Description: "List of Zarf variables for the package.",
@@ -718,6 +723,12 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 
 	setVariables := map[string]string{}
+	diags := plan.ZarfDeploySets.ElementsAs(ctx, &setVariables, false)
+	if diags.HasError() {
+		return plan, fmt.Errorf("Unable to convert variables from a provided zarf-config file")
+	}
+
+	// variables from the HCL config take precidence over variables from the zarf config file.
 	for _, zarfVar := range plan.ZarfVars {
 		setVariables[zarfVar.Name.ValueString()] = zarfVar.Value.ValueString()
 	}
