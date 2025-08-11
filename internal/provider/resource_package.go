@@ -19,7 +19,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -87,8 +86,8 @@ type PackageResourceModel struct {
 }
 
 type ComponentModel struct {
-	Name    types.String `tfsdk:"name"`
-	Install types.Bool   `tfsdk:"install"`
+	Name types.String `tfsdk:"name"`
+	// TODO(erickson): Move chart overrides into component model
 }
 
 type OverrideModel struct {
@@ -269,12 +268,6 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						"name": schema.StringAttribute{
 							Required:    true,
 							Description: "Name of the component",
-						},
-						"install": schema.BoolAttribute{
-							Optional:    true,
-							Computed:    true,
-							Description: "Whether to install this component (true) or exclude it (false). Default is true.",
-							Default:     booldefault.StaticBool(true),
 						},
 					},
 				},
@@ -687,18 +680,8 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 			continue
 		}
 		// TODO(erickson): Is it safe to assume if pkgComponent.Required is nil, that it is optional?
-		isOptional := pkgComponent.Required == nil || !*pkgComponent.Required
-		if !isOptional && component.Install.Equal(types.BoolValue(false)) {
-			componentErrors = append(componentErrors, fmt.Errorf("component %s is required and cannot be disabled", component.Name.ValueString()))
-		}
-
-		// Only keep track of included/excluded optional components if there are no errors
-		if len(componentErrors) == 0 && isOptional {
-			if component.Install.Equal(types.BoolValue(true)) {
-				optionalComponents = append(optionalComponents, component.Name.ValueString())
-			} else if pkgComponent.Default {
-				optionalComponents = append(optionalComponents, "-"+component.Name.ValueString())
-			}
+		if len(componentErrors) == 0 && pkgComponent.Required == nil || !*pkgComponent.Required {
+			optionalComponents = append(optionalComponents, component.Name.ValueString())
 		}
 	}
 

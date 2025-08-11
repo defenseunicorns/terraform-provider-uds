@@ -223,8 +223,8 @@ type PackageModelTestData struct {
 }
 
 type ComponentModelTestData struct {
-	Name    string
-	Install *bool
+	Name string
+	// TODO(erickson): Add chart overides in future
 }
 
 func NewPackageResourceModelFromTestData(packageModelData PackageModelTestData, componentModelData []ComponentModelTestData) PackageResourceModel {
@@ -241,20 +241,14 @@ func NewPackageResourceModelFromTestData(packageModelData PackageModelTestData, 
 func NewComponentModelsFromTestData(componentModelData []ComponentModelTestData) []ComponentModel {
 	var componentModels []ComponentModel
 	for _, data := range componentModelData {
-		install := true
-		if data.Install != nil {
-			install = *data.Install
-		}
-
 		componentModels = append(componentModels, ComponentModel{
-			Name:    types.StringValue(data.Name),
-			Install: types.BoolValue(install),
+			Name: types.StringValue(data.Name),
 		})
 	}
 	return componentModels
 }
 
-func TestPackageResource_Upsert(t *testing.T) {
+func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 
 	validPackageModelData := PackageModelTestData{
 		Name:         "test-package",
@@ -263,55 +257,61 @@ func TestPackageResource_Upsert(t *testing.T) {
 		Timeout:      "10m",
 		Architecture: runtime.GOARCH,
 	}
-	validLoadPackageResult := MockLoadPackageResult{
-		Layout: &layout.PackageLayout{
-			Pkg: v1alpha1.ZarfPackage{
-				Metadata: v1alpha1.ZarfMetadata{
-					Name:        "test-package",
-					Description: "Test package",
-					Version:     "0.0.1",
-				},
-				Components: []v1alpha1.ZarfComponent{
-					{
-						Name:     "test-required-component-0",
-						Required: boolPtr(true),
-						Default:  false,
+
+	// Helper function to create fresh MockLoadPackageResult for each test
+	newValidLoadPackageResult := func() MockLoadPackageResult {
+		return MockLoadPackageResult{
+			Layout: &layout.PackageLayout{
+				Pkg: v1alpha1.ZarfPackage{
+					Metadata: v1alpha1.ZarfMetadata{
+						Name:        "test-package",
+						Description: "Test package",
+						Version:     "0.0.1",
 					},
-					{
-						Name:     "test-required-component-1",
-						Required: boolPtr(true),
-						Default:  false,
-					},
-					{
-						Name:     "test-optional-default-component-0",
-						Required: nil, // Why zarf, why?
-						Default:  true,
-					},
-					{
-						Name:     "test-optional-default-component-1",
-						Required: boolPtr(false),
-						Default:  true,
-					},
-					{
-						Name:     "test-optional-non-default-component-0",
-						Required: nil,
-						Default:  false,
-					},
-					{
-						Name:     "test-optional-non-default-component-1",
-						Required: boolPtr(false),
-						Default:  false,
+					Components: []v1alpha1.ZarfComponent{
+						{
+							Name:     "test-required-component-0",
+							Required: boolPtr(true),
+							Default:  false,
+						},
+						{
+							Name:     "test-required-component-1",
+							Required: boolPtr(true),
+							Default:  false,
+						},
+						{
+							Name:     "test-optional-default-component-0",
+							Required: nil, // Why zarf, why?
+							Default:  true,
+						},
+						{
+							Name:     "test-optional-default-component-1",
+							Required: boolPtr(false),
+							Default:  true,
+						},
+						{
+							Name:     "test-optional-non-default-component-0",
+							Required: nil,
+							Default:  false,
+						},
+						{
+							Name:     "test-optional-non-default-component-1",
+							Required: boolPtr(false),
+							Default:  false,
+						},
 					},
 				},
 			},
-		},
-		Error: nil,
+			Error: nil,
+		}
 	}
+
 	tests := []struct {
 		name                                      string
 		packageModelData                          PackageModelTestData
 		componentModelData                        []ComponentModelTestData
 		zarfPackagerLoadPackageResult             MockLoadPackageResult
+		expectedCallToDeploy                      bool
 		expectedOptionalComponentsForDeployFilter []string
 		expectedErrorContains                     []string
 	}{
@@ -319,22 +319,105 @@ func TestPackageResource_Upsert(t *testing.T) {
 			name:                          "package without components deploys required components only",
 			packageModelData:              validPackageModelData,
 			componentModelData:            []ComponentModelTestData{},
-			zarfPackagerLoadPackageResult: validLoadPackageResult,
+			zarfPackagerLoadPackageResult: newValidLoadPackageResult(),
+			expectedCallToDeploy:          true,
 			expectedOptionalComponentsForDeployFilter: []string{},
 			expectedErrorContains:                     []string{},
 		},
+		{
+			name:             "package with only required components deploys required components only",
+			packageModelData: validPackageModelData,
+			componentModelData: []ComponentModelTestData{
+				{
+					Name: "test-required-component-0",
+				},
+				{
+					Name: "test-required-component-1",
+				},
+			},
+			zarfPackagerLoadPackageResult:             newValidLoadPackageResult(),
+			expectedCallToDeploy:                      true,
+			expectedOptionalComponentsForDeployFilter: []string{},
+			expectedErrorContains:                     []string{},
+		},
+		{
+			name:             "package with only optional components deploys each optional component",
+			packageModelData: validPackageModelData,
+			componentModelData: []ComponentModelTestData{
+				{
+					Name: "test-optional-default-component-0",
+				},
+				{
+					Name: "test-optional-non-default-component-0",
+				},
+			},
+			zarfPackagerLoadPackageResult: newValidLoadPackageResult(),
+			expectedCallToDeploy:          true,
+			expectedOptionalComponentsForDeployFilter: []string{
+				"test-optional-default-component-0",
+				"test-optional-non-default-component-0",
+			},
+			expectedErrorContains: []string{},
+		},
+		{
+			name:             "package with required and optional components deploys each optional component",
+			packageModelData: validPackageModelData,
+			componentModelData: []ComponentModelTestData{
+				{
+					Name: "test-required-component-0",
+				},
+				{
+					Name: "test-required-component-1",
+				},
+				{
+					Name: "test-optional-default-component-0",
+				},
+				{
+					Name: "test-optional-non-default-component-0",
+				},
+			},
+			zarfPackagerLoadPackageResult: newValidLoadPackageResult(),
+			expectedCallToDeploy:          true,
+			expectedOptionalComponentsForDeployFilter: []string{
+				"test-optional-default-component-0",
+				"test-optional-non-default-component-0",
+			},
+			expectedErrorContains: []string{},
+		},
+		{
+			name:             "package with unknown components returns error for each unknown component",
+			packageModelData: validPackageModelData,
+			componentModelData: []ComponentModelTestData{
+				{
+					Name: "test-unknown-component-0",
+				},
+				{
+					Name: "test-unknown-component-1",
+				},
+			},
+			zarfPackagerLoadPackageResult:             newValidLoadPackageResult(),
+			expectedCallToDeploy:                      false,
+			expectedOptionalComponentsForDeployFilter: []string{},
+			expectedErrorContains: []string{
+				"test-unknown-component-0 not found in package",
+				"test-unknown-component-1 not found in package",
+			},
+		},
 	}
+
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+
 			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
 				tc.zarfPackagerLoadPackageResult.Layout,
 				tc.zarfPackagerLoadPackageResult.Error,
 			)
-			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
-
-			mockPackageComponentFilter := &MockPackageComponentFilter{}
-			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+			if tc.expectedCallToDeploy {
+				mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+				mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+			}
 
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter).(*PackageResource)
 			testModel := NewPackageResourceModelFromTestData(tc.packageModelData, tc.componentModelData)
