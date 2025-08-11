@@ -679,7 +679,6 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 			componentErrors = append(componentErrors, fmt.Errorf("component %s not found in package", component.Name.ValueString()))
 			continue
 		}
-		// TODO(erickson): Is it safe to assume if pkgComponent.Required is nil, that it is optional?
 		if len(componentErrors) == 0 && pkgComponent.Required == nil || !*pkgComponent.Required {
 			optionalComponents = append(optionalComponents, component.Name.ValueString())
 		}
