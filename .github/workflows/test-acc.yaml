@@ -45,8 +45,8 @@ jobs:
 
       - name: Setup golang
         uses: ./.github/actions/setup-golang
-        
-      - name: Run acceptance tests tests
+
+      - name: Run acceptance tests
         run: uds run test:acc
 
       - name: Save Logs

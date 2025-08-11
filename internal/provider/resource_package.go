@@ -9,10 +9,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
+	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
+	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -25,6 +26,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
+	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
 	zarfCluster "github.com/zarf-dev/zarf/src/pkg/cluster"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
@@ -38,23 +40,37 @@ var (
 	_ resource.ResourceWithImportState = &PackageResource{}
 )
 
-func NewPackageResource() resource.Resource {
-	return &PackageResource{}
+// NewPackageResource creates a new instance of the package resource.
+func NewPackageResource(providerData *customProviderData, packager udsPackager.Packager, packageComponentFilter udsPackager.PackageComponentFilter) resource.Resource {
+	if providerData == nil {
+		providerData = &customProviderData{}
+	}
+	if packager == nil {
+		packager = udsPackager.NewPackager()
+	}
+	if packageComponentFilter == nil {
+		packageComponentFilter = udsPackager.NewPackageComponentFilter()
+	}
+	return &PackageResource{
+		providerData:  providerData,
+		packager:      packager,
+		packageFilter: packageComponentFilter,
+	}
 }
 
 // PackageResource defines the resource implementation.
 type PackageResource struct {
-	providerData *customProviderData
+	providerData  *customProviderData
+	packager      udsPackager.Packager
+	packageFilter udsPackager.PackageComponentFilter
 }
 
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
 	ID         types.String `tfsdk:"id"`
 	Name       types.String `tfsdk:"name"`
-	Components types.List   `tfsdk:"components"`
 	Timeout    types.String `tfsdk:"timeout"`
-	// Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
-	Kind       types.String `tfsdk:"kind"`
+	Kind       types.String `tfsdk:"kind"` // Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
 	Path       types.String `tfsdk:"path"`
 	Repository types.String `tfsdk:"repository"`
 	Ref        types.String `tfsdk:"ref"`
@@ -65,7 +81,13 @@ type PackageResourceModel struct {
 	Metadata  types.Object    `tfsdk:"metadata"`
 	Overrides []OverrideModel `tfsdk:"overrides"`
 
-	Architecture types.String `tfsdk:"architecture"`
+	Component    []ComponentModel `tfsdk:"component"`
+	Architecture types.String     `tfsdk:"architecture"`
+}
+
+type ComponentModel struct {
+	Name types.String `tfsdk:"name"`
+	// TODO(erickson): Move chart overrides into component model
 }
 
 type OverrideModel struct {
@@ -142,19 +164,12 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Required:            true,
 				MarkdownDescription: "Architecture of the Zarf package",
 			},
-			"components": schema.ListAttribute{
-				Optional:            true,
-				MarkdownDescription: "Explicit list of components to include in the package, if empty, all default components are included",
-				ElementType: types.ListType{
-					ElemType: types.StringType,
-				},
-			},
-			// Set the default value to "30m" vs the default of "15m" since this runs in automation
 			"timeout": schema.StringAttribute{
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString("30m"),
 				MarkdownDescription: "Timeout for the deploy operation",
+				// TODO(erickson): Add duration validator
 			},
 
 			"kind": schema.StringAttribute{
@@ -245,12 +260,38 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 		},
+		Blocks: map[string]schema.Block{
+			"component": schema.ListNestedBlock{
+				MarkdownDescription: "Component configuration to include/exclude in the package deployment",
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							Required:    true,
+							Description: "Name of the component",
+						},
+					},
+				},
+				Validators: []validator.List{
+					func() validator.List {
+						v, _ := udsValidator.NewBlockStringAttributeUniquenessValidator("component", "name")
+						return v
+					}(),
+				},
+			},
+		},
 	}
 }
 
 func (r *PackageResource) Configure(_ context.Context, req resource.ConfigureRequest, _ *resource.ConfigureResponse) {
-	if req.ProviderData != nil {
-		r.providerData = req.ProviderData.(*customProviderData)
+	if req.ProviderData == nil {
+		return
+	}
+
+	r.providerData = req.ProviderData.(*customProviderData)
+
+	// Initialize the packager if it wasn't set in NewPackageResource
+	if r.packager == nil {
+		r.packager = udsPackager.NewPackager()
 	}
 }
 
@@ -459,9 +500,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 
-	filter := zarfFilters.Combine(
-		zarfFilters.ByLocalOS(runtime.GOOS),
-	)
+	filter := r.packageFilter.ForRemove()
 	loadOpts := zarfPackager.LoadOptions{
 		Architecture: getArchitecture(data, *r.providerData),
 		Filter:       filter,
@@ -479,7 +518,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		Cluster: c,
 		Timeout: deleteTimeout,
 	}
-	if err := zarfPackager.Remove(ctx, pkg, removeOpt); err != nil {
+	if err := r.packager.Remove(ctx, pkg, removeOpt); err != nil {
 		resp.Diagnostics.AddError(
 			"Error removing package",
 			"Could not remove package: "+err.Error(),
@@ -496,8 +535,8 @@ func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportSt
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
-func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[string]interface{} {
-	result := make(map[string]map[string]map[string]interface{})
+func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[string]any {
+	result := make(map[string]map[string]map[string]any)
 
 	for _, override := range overrides {
 		component := override.ComponentName.ValueString()
@@ -505,10 +544,10 @@ func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[strin
 
 		// Initialize nested maps if they don't exist
 		if _, exists := result[component]; !exists {
-			result[component] = make(map[string]map[string]interface{})
+			result[component] = make(map[string]map[string]any)
 		}
 		if _, exists := result[component][chart]; !exists {
-			result[component][chart] = make(map[string]interface{})
+			result[component][chart] = make(map[string]any)
 		}
 
 		chartMap := result[component][chart]
@@ -536,7 +575,7 @@ func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[strin
 }
 
 // Inserts a nested value based on the dot-separated path
-func insertNestedValue(root map[string]interface{}, path, value string) {
+func insertNestedValue(root map[string]any, path, value string) {
 	parts := strings.Split(path, ".")
 	current := root
 
@@ -549,17 +588,17 @@ func insertNestedValue(root map[string]interface{}, path, value string) {
 		// Create intermediate maps if they don't exist
 		if next, exists := current[part]; exists {
 			// Ensure type safety
-			if nestedMap, ok := next.(map[string]interface{}); ok {
+			if nestedMap, ok := next.(map[string]any); ok {
 				current = nestedMap
 			} else {
 				// Overwrite if the existing value is not a map
-				newMap := make(map[string]interface{})
+				newMap := make(map[string]any)
 				current[part] = newMap
 				current = newMap
 			}
 		} else {
 			// Initialize a new map if it doesn't exist
-			newMap := make(map[string]interface{})
+			newMap := make(map[string]any)
 			current[part] = newMap
 			current = newMap
 		}
@@ -567,7 +606,7 @@ func insertNestedValue(root map[string]interface{}, path, value string) {
 }
 
 // Deletes a nested value based on the dot-separated path
-func deleteNestedValue(root map[string]interface{}, path string) {
+func deleteNestedValue(root map[string]any, path string) {
 	parts := strings.Split(path, ".")
 	current := root
 
@@ -583,7 +622,7 @@ func deleteNestedValue(root map[string]interface{}, path string) {
 		}
 
 		// Ensure type safety
-		nestedMap, ok := next.(map[string]interface{})
+		nestedMap, ok := next.(map[string]any)
 		if !ok {
 			return // Invalid structure, cannot proceed
 		}
@@ -619,18 +658,35 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	loadOpt := zarfPackager.LoadOptions{
 		Filter:                  zarfFilters.Empty(),
 		Architecture:            getArchitecture(plan, *r.providerData),
-		PublicKeyPath:           plan.Key.ValueString(),
-		SkipSignatureValidation: false, // TODO(erickson): Make this configurable?
+		PublicKeyPath:           plan.Key.ValueString(), // TODO(erickson): Not sure this is correct. Do we need to write key to temp file and set path to that?
+		SkipSignatureValidation: false,                  // TODO(erickson): Make this configurable?
 		RemoteOptions:           remoteOpts,
 	}
 
-	pkgLayout, err := zarfPackager.LoadPackage(ctx, sourcePath, loadOpt)
+	pkgLayout, err := r.packager.LoadPackage(ctx, sourcePath, loadOpt)
 	if err != nil {
 		return plan, err
 	}
 	defer func() {
 		err = errors.Join(err, pkgLayout.Cleanup())
 	}()
+
+	var componentErrors []error
+	optionalComponents := []string{}
+	for _, component := range plan.Component {
+		pkgComponent, found := findPackageComponent(pkgLayout.Pkg.Components, component.Name.ValueString())
+		if !found {
+			componentErrors = append(componentErrors, fmt.Errorf("component %s not found in package", component.Name.ValueString()))
+			continue
+		}
+		if len(componentErrors) == 0 && pkgComponent.Required == nil || !*pkgComponent.Required {
+			optionalComponents = append(optionalComponents, component.Name.ValueString())
+		}
+	}
+
+	if len(componentErrors) > 0 {
+		return plan, errors.Join(componentErrors...)
+	}
 
 	// TODO(erickson): Add support for Retries, OCIConcurrency, NamespaceOverride?
 	deployOpts := zarfPackager.DeployOptions{
@@ -645,18 +701,26 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		},
 		ValuesOverridesMap: valuesMap,
 	}
-	components := "" // TODO(erickson): Placeholder for (Optional) components currently not working. Fixed in another branch
-	filter := zarfFilters.Combine(
-		zarfFilters.ByLocalOS(runtime.GOOS),
-		zarfFilters.ForDeploy(components, false),
-	)
+
+	filter := r.packageFilter.ForDeploy(optionalComponents)
 	pkgLayout.Pkg.Components, err = filter.Apply(pkgLayout.Pkg)
 	if err != nil {
 		return plan, err
 	}
 
+	// Log components to enable for package deployment based on filter
+	tflog.Debug(ctx, fmt.Sprintf("%d components to include for package deployment:", len(pkgLayout.Pkg.Components)))
+	for _, component := range pkgLayout.Pkg.Components {
+		requiredStr := "nil"
+		if component.Required != nil {
+			requiredStr = fmt.Sprintf("%t", *component.Required)
+		}
+		tflog.Debug(ctx, fmt.Sprintf("include component: name=%s, required=%s, default=%t",
+			component.Name, requiredStr, component.Default))
+	}
+
 	tflog.Debug(ctx, "starting deploy")
-	_, err = zarfPackager.Deploy(ctx, pkgLayout, deployOpts)
+	_, err = r.packager.Deploy(ctx, pkgLayout, deployOpts)
 	if err != nil {
 		return plan, err
 	}
@@ -744,4 +808,13 @@ func getPackageName(pkg PackageResourceModel, archOverride string) string {
 		tarballRef)
 
 	return tarballName
+}
+
+func findPackageComponent(components []v1alpha1.ZarfComponent, name string) (v1alpha1.ZarfComponent, bool) {
+	for _, c := range components {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return v1alpha1.ZarfComponent{}, false // Not found
 }
