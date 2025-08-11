@@ -89,26 +89,22 @@ func NewBlockStringAttributeUniquenessValidator(blockName string, attributeName 
 }
 
 func validateBlockName(name string) error {
-	if name == "" {
-		return fmt.Errorf("block name cannot be empty")
-	}
-
-	validName := regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
-	if !validName.MatchString(name) {
-		return fmt.Errorf("invalid block name %q: must start with a letter or underscore, followed by letters, digits, or underscores", name)
-	}
-
-	return nil
+	return validateName(name, "block")
 }
 
 func validateAttributeName(name string) error {
+	return validateName(name, "attribute")
+}
+
+// validateName validates that a name follows Go identifier rules
+func validateName(name, nameType string) error {
 	if name == "" {
-		return fmt.Errorf("attribute name cannot be empty")
+		return fmt.Errorf("%s name cannot be empty", nameType)
 	}
 
 	validName := regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 	if !validName.MatchString(name) {
-		return fmt.Errorf("invalid attribute name %q: must start with a letter or underscore, followed by letters, digits, or underscores", name)
+		return fmt.Errorf("invalid %s name %q: must start with a letter or underscore, followed by letters, digits, or underscores", nameType, name)
 	}
 
 	return nil
