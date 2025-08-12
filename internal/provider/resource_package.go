@@ -504,6 +504,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	loadOpts := zarfPackager.LoadOptions{
 		Architecture: getArchitecture(data, *r.providerData),
 		Filter:       filter,
+		CachePath:    zarfConfig.ZarfDefaultCachePath,
 	}
 	pkg, err := zarfPackager.GetPackageFromSourceOrCluster(ctx, c, packageSource, "", loadOpts)
 	if err != nil {
@@ -661,6 +662,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		PublicKeyPath:           plan.Key.ValueString(), // TODO(erickson): Not sure this is correct. Do we need to write key to temp file and set path to that?
 		SkipSignatureValidation: false,                  // TODO(erickson): Make this configurable?
 		RemoteOptions:           remoteOpts,
+		CachePath:               zarfConfig.ZarfDefaultCachePath,
 	}
 
 	pkgLayout, err := r.packager.LoadPackage(ctx, sourcePath, loadOpt)
