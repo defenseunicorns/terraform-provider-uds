@@ -17,6 +17,9 @@ import (
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
 )
 
+//go:generate tofu fmt -recursive ../examples/
+//go:generate go tool tfplugindocs generate --provider-dir .. -provider-name uds
+
 // set by goreleaser at build time
 var version = "dev"
 

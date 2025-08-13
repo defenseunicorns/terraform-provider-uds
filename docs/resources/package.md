@@ -18,11 +18,12 @@ UDS Package resource
 ### Required
 
 - `architecture` (String) Architecture of the Zarf package
+- `name` (String) The name of the Zarf Package
 - `ref` (String) Red of the package that was deployed
 
 ### Optional
 
-- `components` (List of List of String) Explicit list of components to include in the package, if empty, all default components are included
+- `component` (Block List) Component configuration to include/exclude in the package deployment (see [below for nested schema](#nestedblock--component))
 - `key` (String) Path to the public key for signed Zarf Packages
 - `overrides` (Attributes List) List of overrides for Helm charts. (see [below for nested schema](#nestedatt--overrides))
 - `path` (String) Path to tar file of the package
@@ -34,6 +35,14 @@ UDS Package resource
 - `id` (String) Example identifier
 - `kind` (String) Kind of Zarf package; ZarfInitConfig or ZarfPackageConfig
 - `metadata` (Attributes) Metadata retrieved from the zarf.yaml in the package (see [below for nested schema](#nestedatt--metadata))
+
+<a id="nestedblock--component"></a>
+### Nested Schema for `component`
+
+Required:
+
+- `name` (String) Name of the component
+
 
 <a id="nestedatt--overrides"></a>
 ### Nested Schema for `overrides`
