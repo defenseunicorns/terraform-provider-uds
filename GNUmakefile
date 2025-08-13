@@ -1,9 +1,9 @@
-default: fmt lint install generate
+# default: lint install generate
 
 build:
 	go build -v ./...
 
-install: 
+install:
 	go install -v ./...
 
 lint:
@@ -11,9 +11,6 @@ lint:
 
 generate:
 	cd tools; go generate ./...
-
-fmt:
-	gofmt -s -w -e .
 
 test:
 	go test -v -cover -timeout=120s -parallel=10 ./...

@@ -21,11 +21,13 @@ import (
 var version = "dev"
 
 func main() {
+	ctx := context.Background()
+
 	// Check if the zarf command is being run
 	if fixzarf.IsZarf() {
 		zarfConfig.CommonOptions.Confirm = true
 		zarfConfig.ActionsCommandZarfPrefix = "zarf"
-		zarfCLI.Execute(context.TODO())
+		zarfCLI.Execute(ctx)
 		return
 	}
 
@@ -39,7 +41,7 @@ func main() {
 		Debug:   debug,
 	}
 
-	err := server.Serve(context.Background(), provider.New(version), opts)
+	err := server.Serve(ctx, provider.New(version), opts)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
