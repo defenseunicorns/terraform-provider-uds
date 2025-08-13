@@ -34,6 +34,12 @@ jobs:
             - name: Setup golang
               uses: ./.github/actions/setup-golang
 
+            - name: Install UDS CLI
+              uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1.0.1
+              with:
+                  # renovate: datasource=github-tags depName=defenseunicorns/uds-cli versioning=semver
+                  version: v0.21.0
+
             # - name: Import GPG key
             #   uses: crazy-max/ghaction-import-gpg@cb9bde2e2525e640591a934b1fd28eef1dcaf5e5 # v6.2.0
             #   id: import_gpg
@@ -55,12 +61,7 @@ jobs:
                   UDS_REGISTRY_TOKEN: ${{ secrets.UDS_REGISTRY_TOKEN  }}
 
             - name: Release to UDS Registry
-              working-directory: dist
-              run: |
-                  go tool oras push \
-                    registry.defenseunicorns.com/ops/terraform-provider-uds:${{ inputs.tag_name || github.ref }} \
-                    $(find . -name "*.tar.gz" | sed 's|$|:application/vnd.defenseunicorns.uds.provider.v1.tar+gzip|') \
-                    --artifact-type "application/vnd.defenseunicorns.uds.provider.release.manifest.v1"
+              run: uds run publish
 
             - name: Upload release assets (if any failed)
               if: failure()
