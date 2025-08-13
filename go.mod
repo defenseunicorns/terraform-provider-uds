@@ -2,6 +2,12 @@ module github.com/defenseunicorns/terraform-provider-uds
 
 go 1.24.4
 
+tool oras.land/oras/cmd/oras
+
+// leave this here for now, in the event we need to dig in to zarf code.
+// TODO(clint): remove this once we're closer to a release.
+//replace github.com/zarf-dev/zarf => ../../zarf-dev/zarf
+
 require (
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/terraform-plugin-framework v1.15.0
@@ -588,7 +594,3 @@ require (
 	sigs.k8s.io/structured-merge-diff/v4 v4.7.0 // indirect
 	sigs.k8s.io/yaml v1.5.0 // indirect
 )
-
-// leave this here for now, in the event we need to dig in to zarf code.
-// TODO(clint): remove this once we're closer to a release.
-//replace github.com/zarf-dev/zarf => ../../zarf-dev/zarf
