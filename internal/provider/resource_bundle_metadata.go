@@ -29,7 +29,7 @@ type BundleMetadataResource struct{}
 type BundleMetadataResourceModel struct {
 	ID      types.String `tfsdk:"id"`
 	Version types.String `tfsdk:"version"`
-	// Kind reflects the type of package; typicaly always UDSBundle
+	// Kind reflects the type of package; typically always UDSBundle
 	Kind         types.String `tfsdk:"kind"`
 	Description  types.String `tfsdk:"description"`
 	URL          types.String `tfsdk:"url"`

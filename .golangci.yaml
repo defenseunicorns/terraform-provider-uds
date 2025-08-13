@@ -36,8 +36,8 @@ linters:
   settings:
     goheader:
       template: |-
-        SPDX-License-Identifier: Apache-2.0
-        SPDX-FileCopyrightText: 2025-Present Defense Unicorns
+        Copyright 2024 Defense Unicorns
+        SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
     govet:
       disable:
         - shadow

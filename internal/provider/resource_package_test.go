@@ -189,6 +189,7 @@ func (m *MockPackager) LoadPackage(ctx context.Context, source string, opts pack
 
 type MockPackageComponentFilter struct {
 	mock.Mock
+
 	packageComponentFilter udsPackager.PackageComponentFilter
 }
 

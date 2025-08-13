@@ -1,4 +1,4 @@
-# default: lint install generate
+default: lint install generate
 
 build:
 	go build -v ./...
