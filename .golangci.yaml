@@ -88,7 +88,7 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/defenseunicorns/maru2
+        - github.com/defenseunicorns/terraform-provider-uds
   enable:
     - gofmt
     - goimports

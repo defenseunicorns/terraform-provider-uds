@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -19,6 +18,8 @@ import (
 	"github.com/zarf-dev/zarf/src/pkg/packager"
 	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
+
+	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 )
 
 // Unit test for flattenOverrides function

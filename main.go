@@ -10,11 +10,12 @@ import (
 
 	// Must be imported before Zarf to avoid init() ordering issues
 	// todo(jeff-mccoy): this is kind of gross and should be revisited
-	"github.com/defenseunicorns/terraform-provider-uds/internal/fixzarf"
-	"github.com/defenseunicorns/terraform-provider-uds/internal/provider"
 	server "github.com/hashicorp/terraform-plugin-framework/providerserver"
 	zarfCLI "github.com/zarf-dev/zarf/src/cmd"
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
+
+	"github.com/defenseunicorns/terraform-provider-uds/internal/fixzarf"
+	"github.com/defenseunicorns/terraform-provider-uds/internal/provider"
 )
 
 //go:generate tofu fmt -recursive examples/
