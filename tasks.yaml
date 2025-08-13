@@ -3,7 +3,6 @@
 
 includes:
   - test: tasks/test.yaml
-  - license: tasks/license.yaml
 
 tasks:
   - name: default
