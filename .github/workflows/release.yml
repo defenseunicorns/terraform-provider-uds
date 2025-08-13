@@ -49,11 +49,18 @@ jobs:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   # GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
 
-            - name: Release to UDS Registry
-              run: |
-                  cd dist
+            - run: echo "$UDS_REGISTRY_TOKEN" | go tool oras login -u "$UDS_REGISTRY_USER" --password-stdin registry.defenseunicorns.com
+              env:
+                  UDS_REGISTRY_USER: ${{ secrets.UDS_REGISTRY_USER  }}
+                  UDS_REGISTRY_TOKEN: ${{ secrets.UDS_REGISTRY_TOKEN  }}
 
-                  go tool ...
+            - name: Release to UDS Registry
+              working-directory: dist
+              run: |
+                  go tool oras push \
+                    registry.defenseunicorns.com/ops/terraform-provider-uds:${{ inputs.tag_name || github.ref }} \
+                    $(find . -name "*.tar.gz" | sed 's|$|:application/vnd.defenseunicorns.uds.provider.v1.tar+gzip|') \
+                    --artifact-type "application/vnd.defenseunicorns.uds.provider.release.manifest.v1"
 
             - name: Upload release assets (if any failed)
               if: failure()
