@@ -1,8 +1,6 @@
 # Copyright 2024 Defense Unicorns
 # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
-# yaml-language-server: $schema=https://github.com/defenseunicorns/maru-runner/raw/refs/heads/main/tasks.schema.json
-
 includes:
     - test: tasks/test.yaml
 
@@ -39,6 +37,7 @@ tasks:
       actions:
           - cmd: go generate ./...
 
+    # https://github.com/opentofu/opentofu/blob/main/website/docs/cli/oci_registries/provider-mirror.mdx
     - name: publish
       actions:
           - cmd: |
