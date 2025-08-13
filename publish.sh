@@ -4,17 +4,13 @@ set -euo pipefail
 
 cd dist
 
-# EXACTLY 1 descriptor whose mediatype: archive/zip
-
 layout="tmp-layout"
 
 cleanup() {
     rm -rf tmp-layout
 }
 
-# trap cleanup EXIT
-
-version=$(jq -r .version metadata.json)
+trap cleanup EXIT
 
 mkdir "$layout"
 
@@ -33,7 +29,28 @@ find . -name "*.zip" -printf "%f\n" | while read -r archive; do
 done
 
 index="$layout/index.json"
-tmp_index="$index.tmp"
-cp "$index" "$tmp_index"
+name=$(jq -r .project_name metadata.json)
+version=$(jq -r .version metadata.json)
+index_to_tag="${name}_$version.json"
 
-jq ".artifactType = \"${index_mediatype}\"" "$tmp_index"
+jq --arg mediatype "$index_mediatype" '
+  .artifactType = $mediatype |
+  .manifests = (.manifests | map(
+    if .annotations."org.opencontainers.image.ref.name" then
+      . + {
+        platform: {
+          os: (.annotations."org.opencontainers.image.ref.name" | split("_")[0]),
+          architecture: (.annotations."org.opencontainers.image.ref.name" | split("_")[1])
+        }
+      }
+    else
+      .
+    end
+  ))
+' "$index" > "$index_to_tag"
+
+oras manifest push --oci-layout "$layout:$version" "$index_to_tag"
+
+go tool oras cp \
+  --from-oci-layout "$layout:$version" \
+  "registry.defenseunicorns.com/ops/$name:$version"
