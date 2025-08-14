@@ -34,12 +34,6 @@ jobs:
             - name: Setup golang
               uses: ./.github/actions/setup-golang
 
-            - name: Install UDS CLI
-              uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1.0.1
-              with:
-                  # renovate: datasource=github-tags depName=defenseunicorns/uds-cli versioning=semver
-                  version: v0.21.0
-
             # - name: Import GPG key
             #   uses: crazy-max/ghaction-import-gpg@cb9bde2e2525e640591a934b1fd28eef1dcaf5e5 # v6.2.0
             #   id: import_gpg
@@ -60,8 +54,63 @@ jobs:
                   UDS_REGISTRY_USER: ${{ secrets.UDS_REGISTRY_USER  }}
                   UDS_REGISTRY_TOKEN: ${{ secrets.UDS_REGISTRY_TOKEN  }}
 
-            - name: Release to UDS Registry
-              run: uds run publish
+            # https://github.com/opentofu/opentofu/blob/main/website/docs/cli/oci_registries/provider-mirror.mdx
+            - name: Publish to UDS Registry
+              shell: bash
+              working-directory: dist
+              run: |
+                  set -euo pipefail
+
+                  layout="tmp-layout"
+
+                  cleanup() {
+                      rm -rf "$layout"
+                  }
+
+                  trap cleanup EXIT
+
+                  mkdir "$layout"
+
+                  index_mediatype="application/vnd.opentofu.provider"
+                  manifest_mediatype="application/vnd.opentofu.provider-target"
+                  layer_mediatype="archive/zip"
+
+                  find . -name "*.zip" -printf "%f\n" | while read -r archive; do
+                      entry=$(jq ".[] | select(.name == \"${archive}\")" artifacts.json)
+                      os_arch=$(echo "$entry" | jq -r '"\(.goos)_\(.goarch)"')
+
+                      go tool oras push \
+                        --artifact-type "$manifest_mediatype" \
+                        --oci-layout "$layout:$os_arch" \
+                        "$archive:$layer_mediatype"
+                  done
+
+                  index="$layout/index.json"
+                  name=$(jq -r .project_name metadata.json)
+                  version=$(jq -r .version metadata.json)
+                  index_to_tag="${name}_$version.json"
+
+                  jq --arg mediatype "$index_mediatype" '
+                    .artifactType = $mediatype |
+                    .manifests = (.manifests | map(
+                      if .annotations."org.opencontainers.image.ref.name" then
+                        . + {
+                          platform: {
+                            os: (.annotations."org.opencontainers.image.ref.name" | split("_")[0]),
+                            architecture: (.annotations."org.opencontainers.image.ref.name" | split("_")[1])
+                          }
+                        }
+                      else
+                        .
+                      end
+                    ))
+                  ' "$index" > "$index_to_tag"
+
+                  oras manifest push --oci-layout "$layout:$version" "$index_to_tag"
+
+                  go tool oras cp \
+                    --from-oci-layout "$layout:$version" \
+                    "registry.defenseunicorns.com/ops/$name:$version"
 
             - name: Upload release assets (if any failed)
               if: failure()
