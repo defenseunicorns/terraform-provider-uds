@@ -1,6 +1,7 @@
 // Copyright 2024 Defense Unicorns
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
+// Package validator provides custom validation functions for Terraform attributes.
 package validator
 
 import (
@@ -12,19 +13,23 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
+// BlockStringAttributeUniquenessValidator validates that string attributes within blocks are unique.
 type BlockStringAttributeUniquenessValidator struct {
 	blockName     string
 	attributeName string
 }
 
-func (v BlockStringAttributeUniquenessValidator) Description(ctx context.Context) string {
+// Description returns a plain text description of the validator.
+func (v BlockStringAttributeUniquenessValidator) Description(_ context.Context) string {
 	return fmt.Sprintf("Ensures that all %q blocks have unique values for the %q attribute", v.blockName, v.attributeName)
 }
 
+// MarkdownDescription returns the markdown description for the validator.
 func (v BlockStringAttributeUniquenessValidator) MarkdownDescription(ctx context.Context) string {
 	return v.Description(ctx)
 }
 
+// ValidateList validates that all blocks in the list have unique values for the specified attribute.
 func (v BlockStringAttributeUniquenessValidator) ValidateList(ctx context.Context, req validator.ListRequest, resp *validator.ListResponse) {
 	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
 		return
@@ -75,6 +80,7 @@ func (v BlockStringAttributeUniquenessValidator) ValidateList(ctx context.Contex
 	}
 }
 
+// NewBlockStringAttributeUniquenessValidator creates a new block string attribute uniqueness validator.
 func NewBlockStringAttributeUniquenessValidator(blockName string, attributeName string) (validator.List, error) {
 	if err := validateBlockName(blockName); err != nil {
 		return nil, err

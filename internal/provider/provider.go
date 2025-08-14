@@ -1,6 +1,7 @@
 // Copyright 2024 Defense Unicorns
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
+// Package provider implements the UDS Terraform provider.
 package provider
 
 import (
@@ -17,6 +18,7 @@ type customProviderData struct {
 	BundleArch        string
 }
 
+// New creates a new provider factory function that returns a provider instance.
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
 		return &udsProvider{

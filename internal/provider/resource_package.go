@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,11 +87,13 @@ type PackageResourceModel struct {
 	Architecture types.String     `tfsdk:"architecture"`
 }
 
+// ComponentModel represents a UDS package component configuration.
 type ComponentModel struct {
 	Name types.String `tfsdk:"name"`
 	// TODO(erickson): Move chart overrides into component model
 }
 
+// OverrideModel represents configuration overrides for a component.
 type OverrideModel struct {
 	ComponentName types.String       `tfsdk:"component_name"`
 	ChartName     types.String       `tfsdk:"chart_name"`
@@ -99,11 +102,13 @@ type OverrideModel struct {
 	Variables     []OverrideVariable `tfsdk:"variables"`
 }
 
+// OverrideValue represents a single value override with a path and value.
 type OverrideValue struct {
 	Path  types.String `tfsdk:"path"`
 	Value types.String `tfsdk:"value"`
 }
 
+// OverrideVariable represents a variable override with configuration options.
 type OverrideVariable struct {
 	Name        types.String `tfsdk:"name"`
 	Path        types.String `tfsdk:"path"`
@@ -111,10 +116,12 @@ type OverrideVariable struct {
 	Default     types.String `tfsdk:"default"`
 }
 
+// Metadata sets the resource type name.
 func (r *PackageResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_package"
 }
 
+// Schema defines the schema for the resource.
 func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		// This description is used by the documentation generator and the language server.
@@ -283,6 +290,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 	}
 }
 
+// Configure configures the resource with provider data.
 func (r *PackageResource) Configure(_ context.Context, req resource.ConfigureRequest, _ *resource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		return
@@ -466,6 +474,7 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	}
 }
 
+// Delete deletes the resource and removes the Terraform state on success.
 func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var data PackageResourceModel
 
@@ -532,6 +541,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 }
 
+// ImportState imports the resource state from an external system.
 func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
@@ -772,7 +782,7 @@ func getPackageSource(pkg PackageResourceModel, providerData customProviderData)
 		sourcePath = filepath.Join(providerData.LocalPathOverride, packageTarballName)
 	} else if pkg.Repository.ValueString() != "" {
 		// Generate the oci schema based string from the provided repository
-		sourcePath = fmt.Sprintf("oci://%s:%s", pkg.Repository.ValueString(), pkg.Ref.ValueString())
+		sourcePath = "oci://" + net.JoinHostPort(pkg.Repository.ValueString(), pkg.Ref.ValueString())
 	} else if pkg.Path.ValueString() != "" {
 		// Generate a path to the zarf package tarball
 		sourcePath = pkg.Path.ValueString()

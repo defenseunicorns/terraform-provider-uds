@@ -194,13 +194,6 @@ type MockPackageComponentFilter struct {
 	packageComponentFilter udsPackager.PackageComponentFilter
 }
 
-func (m *MockPackageComponentFilter) getPackageComponentFilter() udsPackager.PackageComponentFilter {
-	if m.packageComponentFilter == nil {
-		m.packageComponentFilter = udsPackager.NewPackageComponentFilter()
-	}
-	return m.packageComponentFilter
-}
-
 func (m *MockPackageComponentFilter) ForRemove() filters.ComponentFilterStrategy {
 	m.Called()
 	return m.getPackageComponentFilter().ForRemove()
@@ -209,6 +202,13 @@ func (m *MockPackageComponentFilter) ForRemove() filters.ComponentFilterStrategy
 func (m *MockPackageComponentFilter) ForDeploy(optionalComponents []string) filters.ComponentFilterStrategy {
 	m.Called(optionalComponents)
 	return m.getPackageComponentFilter().ForDeploy(optionalComponents)
+}
+
+func (m *MockPackageComponentFilter) getPackageComponentFilter() udsPackager.PackageComponentFilter {
+	if m.packageComponentFilter == nil {
+		m.packageComponentFilter = udsPackager.NewPackageComponentFilter()
+	}
+	return m.packageComponentFilter
 }
 
 type MockLoadPackageResult struct {
@@ -241,7 +241,7 @@ func NewPackageResourceModelFromTestData(packageModelData PackageModelTestData, 
 }
 
 func NewComponentModelsFromTestData(componentModelData []ComponentModelTestData) []ComponentModel {
-	var componentModels []ComponentModel
+	componentModels := make([]ComponentModel, 0, len(componentModelData))
 	for _, data := range componentModelData {
 		componentModels = append(componentModels, ComponentModel{
 			Name: types.StringValue(data.Name),

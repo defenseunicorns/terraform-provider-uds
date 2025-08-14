@@ -1,6 +1,7 @@
 // Copyright 2024 Defense Unicorns
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
+// Package fixzarf provides utilities to fix zarf argument handling and initialization ordering.
 package fixzarf
 
 import (
@@ -13,6 +14,8 @@ import (
 var isZarf bool
 
 // We must use an init() function so this code runs before any other init() functions.
+//
+//nolint:gochecknoinits // Required for Zarf initialization order
 func init() {
 	// Check if the zarf command is being run
 	if len(os.Args) > 1 && os.Args[1] == "zarf" {

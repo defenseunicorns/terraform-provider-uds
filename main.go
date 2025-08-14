@@ -1,6 +1,7 @@
 // Copyright 2024 Defense Unicorns
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
+// Package main provides the entrypoint for the UDS Terraform provider.
 package main
 
 import (

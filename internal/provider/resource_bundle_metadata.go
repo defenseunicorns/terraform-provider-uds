@@ -18,6 +18,7 @@ import (
 // Ensure provider defined types fully satisfy framework interfaces.
 var _ resource.Resource = &BundleMetadataResource{}
 
+// NewBundleMetadataResource creates a new bundle metadata resource.
 func NewBundleMetadataResource() resource.Resource {
 	return &BundleMetadataResource{}
 }
@@ -36,10 +37,12 @@ type BundleMetadataResourceModel struct {
 	Architecture types.String `tfsdk:"architecture"`
 }
 
+// Metadata sets the resource type name.
 func (r *BundleMetadataResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_bundle_metadata"
 }
 
+// Schema defines the schema for the resource.
 func (r *BundleMetadataResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		// This description is used by the documentation generator and the language server.
@@ -81,9 +84,11 @@ func (r *BundleMetadataResource) Schema(_ context.Context, _ resource.SchemaRequ
 	}
 }
 
+// Configure configures the resource with provider data.
 func (r *BundleMetadataResource) Configure(_ context.Context, _ resource.ConfigureRequest, _ *resource.ConfigureResponse) {
 }
 
+// Create creates the resource and sets the initial Terraform state.
 func (r *BundleMetadataResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var data BundleMetadataResourceModel
 
@@ -103,6 +108,7 @@ func (r *BundleMetadataResource) Create(ctx context.Context, req resource.Create
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
+// Read reads the resource data from Terraform state.
 func (r *BundleMetadataResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var data BundleMetadataResourceModel
 
@@ -116,6 +122,7 @@ func (r *BundleMetadataResource) Read(ctx context.Context, req resource.ReadRequ
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
+// Update updates the resource and sets the updated Terraform state.
 func (r *BundleMetadataResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var data BundleMetadataResourceModel
 
@@ -130,6 +137,7 @@ func (r *BundleMetadataResource) Update(ctx context.Context, req resource.Update
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
+// Delete deletes the resource and removes the Terraform state on success.
 func (r *BundleMetadataResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var data BundleMetadataResourceModel
 
