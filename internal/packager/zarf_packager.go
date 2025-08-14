@@ -1,6 +1,7 @@
 // Copyright 2024 Defense Unicorns
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
+// Package packager provides interfaces and implementations for Zarf package operations.
 package packager
 
 import (
@@ -14,6 +15,7 @@ import (
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 )
 
+// Packager provides operations for managing Zarf packages.
 type Packager interface {
 	Deploy(ctx context.Context, pkgLayout *layout.PackageLayout, opts zPackager.DeployOptions) (zPackager.DeployResult, error)
 	Remove(ctx context.Context, pkg v1alpha1.ZarfPackage, opts zPackager.RemoveOptions) error
@@ -22,6 +24,7 @@ type Packager interface {
 
 type zarfPackager struct{}
 
+// NewPackager creates a new instance of the Packager interface.
 func NewPackager() Packager {
 	return &zarfPackager{}
 }
@@ -38,6 +41,7 @@ func (z *zarfPackager) LoadPackage(ctx context.Context, source string, opts zPac
 	return zPackager.LoadPackage(ctx, source, opts)
 }
 
+// PackageComponentFilter provides filtering strategies for Zarf package components.
 type PackageComponentFilter interface {
 	ForRemove() filters.ComponentFilterStrategy
 	ForDeploy(optionalComponents []string) filters.ComponentFilterStrategy
@@ -57,6 +61,7 @@ func (z *zarfPackageComponentFilter) ForDeploy(optionalComponents []string) filt
 	)
 }
 
+// NewPackageComponentFilter creates a new instance of the PackageComponentFilter interface.
 func NewPackageComponentFilter() PackageComponentFilter {
 	return &zarfPackageComponentFilter{}
 }

@@ -20,7 +20,7 @@ jobs:
   nightly:
     runs-on: ubuntu-latest
     environment: release-nightly
-    timeout-minutes: 15  # Add timeout to prevent stuck workflows
+    timeout-minutes: 15 # Add timeout to prevent stuck workflows
     outputs:
       tag_name: ${{ steps.update_tag.outputs.tag }}
     steps:
@@ -41,25 +41,25 @@ jobs:
           # Configure git
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           # Find latest stable version and increment minor for nightly
           LATEST_STABLE=$(git tag -l --sort=-v:refname | grep -v nightly | head -n 1)
           MAJOR_VERSION=$(echo "$LATEST_STABLE" | awk -F. '{print $1}')
           MINOR_VERSION=$(echo "$LATEST_STABLE" | awk -F. '{print $2}')
           MINOR_VERSION=$((MINOR_VERSION + 1))
           TAG="${MAJOR_VERSION}.${MINOR_VERSION}.0-nightly"
-          
+
           # Clean up any existing nightly releases/tags
           gh release delete "${TAG}" --cleanup-tag -y || true
-          
+
           # Ensure tag is deleted locally and remotely (in case --cleanup-tag didn't work)
           git tag -d "${TAG}" 2>/dev/null || true
           git push origin --delete "${TAG}" 2>/dev/null || true
-          
+
           # Create new tag and push it
           git tag "${TAG}"
           git push origin "${TAG}"
-          
+
           # Set output for next job
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 

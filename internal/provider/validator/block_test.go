@@ -31,7 +31,7 @@ func newObjectListWithAttributeValues(attributeName string, values []string) typ
 }
 
 func TestBlockStringAttributeUniquenessValidator_ValidateList(t *testing.T) {
-	block_name := "test_block"
+	blockName := "test_block"
 	attributeName := "test_attr"
 	duplicateAttributeErrorSummary := "Duplicate block attribute."
 	incorrectAttributeTypeErrorSummary := "Incorrect block attribute type."
@@ -108,7 +108,7 @@ func TestBlockStringAttributeUniquenessValidator_ValidateList(t *testing.T) {
 		},
 	}
 
-	validator, _ := NewBlockStringAttributeUniquenessValidator(block_name, attributeName)
+	validator, _ := NewBlockStringAttributeUniquenessValidator(blockName, attributeName)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			req := tfvalidator.ListRequest{
