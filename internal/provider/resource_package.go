@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -782,7 +781,8 @@ func getPackageSource(pkg PackageResourceModel, providerData customProviderData)
 		sourcePath = filepath.Join(providerData.LocalPathOverride, packageTarballName)
 	} else if pkg.Repository.ValueString() != "" {
 		// Generate the oci schema based string from the provided repository
-		sourcePath = "oci://" + net.JoinHostPort(pkg.Repository.ValueString(), pkg.Ref.ValueString())
+		//nolint:nosprintfhostport
+		sourcePath = fmt.Sprintf("oci://%s:%s", pkg.Repository.ValueString(), pkg.Ref.ValueString())
 	} else if pkg.Path.ValueString() != "" {
 		// Generate a path to the zarf package tarball
 		sourcePath = pkg.Path.ValueString()
