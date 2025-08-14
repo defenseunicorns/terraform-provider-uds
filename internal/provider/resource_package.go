@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
-	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -25,6 +23,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+
+	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
+	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zarfConfig "github.com/zarf-dev/zarf/src/config"

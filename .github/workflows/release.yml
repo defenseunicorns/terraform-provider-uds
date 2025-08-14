@@ -4,55 +4,118 @@ name: Release
 # This GitHub action creates a release when a tag that matches the pattern
 # "v*" (e.g. v0.1.0) is created or when triggered by another workflow.
 on:
-  push:
-    tags:
-      - 'v*'
-  workflow_call:
-    inputs:
-      tag_name:
-        required: false
-        type: string
-        description: "The tag name to use for the release"
+    push:
+        tags:
+            - "v*"
+    workflow_call:
+        inputs:
+            tag_name:
+                required: false
+                type: string
+                description: "The tag name to use for the release"
 
 # Releases need permissions to read and write the repository contents.
 permissions:
-  contents: write
+    contents: write
 
 jobs:
-  goreleaser:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60  # Match the timeout in the goreleaser command
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ inputs.tag_name || github.ref }}
-          # Allow goreleaser to access older tag information
-          fetch-depth: 0
-          fetch-tags: true
-          
-      - name: Setup golang
-        uses: ./.github/actions/setup-golang
+    goreleaser:
+        runs-on: ubuntu-latest
+        timeout-minutes: 60 # Match the timeout in the goreleaser command
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+              with:
+                  ref: ${{ inputs.tag_name || github.ref }}
+                  # Allow goreleaser to access older tag information
+                  fetch-depth: 0
+                  fetch-tags: true
 
-      # - name: Import GPG key
-      #   uses: crazy-max/ghaction-import-gpg@cb9bde2e2525e640591a934b1fd28eef1dcaf5e5 # v6.2.0
-      #   id: import_gpg
-      #   with:
-      #     gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-      #     passphrase: ${{ secrets.PASSPHRASE }}
-      
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@9c156ee8a17a598857849441385a2041ef570552 # v6.3.0
-        with:
-          args: release --clean --timeout 60m
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
-          
-      - name: Upload release assets (if any failed)
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: goreleaser-dist
-          path: dist/
-          retention-days: 5
+            - name: Setup golang
+              uses: ./.github/actions/setup-golang
+
+            # - name: Import GPG key
+            #   uses: crazy-max/ghaction-import-gpg@cb9bde2e2525e640591a934b1fd28eef1dcaf5e5 # v6.2.0
+            #   id: import_gpg
+            #   with:
+            #     gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+            #     passphrase: ${{ secrets.PASSPHRASE }}
+
+            - name: Run GoReleaser
+              uses: goreleaser/goreleaser-action@9c156ee8a17a598857849441385a2041ef570552 # v6.3.0
+              with:
+                  args: release --clean --timeout 60m
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  # GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+
+            - run: echo "$UDS_REGISTRY_TOKEN" | go tool oras login -u "$UDS_REGISTRY_USER" --password-stdin registry.defenseunicorns.com
+              env:
+                  UDS_REGISTRY_USER: ${{ secrets.UDS_REGISTRY_USER  }}
+                  UDS_REGISTRY_TOKEN: ${{ secrets.UDS_REGISTRY_TOKEN  }}
+
+            # https://github.com/opentofu/opentofu/blob/main/website/docs/cli/oci_registries/provider-mirror.mdx
+            - name: Publish to UDS Registry
+              shell: bash
+              working-directory: dist
+              run: |
+                  set -euo pipefail
+
+                  layout="tmp-layout"
+
+                  cleanup() {
+                      rm -rf "$layout"
+                  }
+
+                  trap cleanup EXIT
+
+                  mkdir "$layout"
+
+                  index_mediatype="application/vnd.opentofu.provider"
+                  manifest_mediatype="application/vnd.opentofu.provider-target"
+                  layer_mediatype="archive/zip"
+
+                  find . -name "*.zip" -printf "%f\n" | while read -r archive; do
+                      entry=$(jq ".[] | select(.name == \"${archive}\")" artifacts.json)
+                      os_arch=$(echo "$entry" | jq -r '"\(.goos)_\(.goarch)"')
+
+                      go tool oras push \
+                        --artifact-type "$manifest_mediatype" \
+                        --oci-layout "$layout:$os_arch" \
+                        "$archive:$layer_mediatype"
+                  done
+
+                  index="$layout/index.json"
+                  name=$(jq -r .project_name metadata.json)
+                  version=$(jq -r .version metadata.json)
+                  index_to_tag="${name}_$version.json"
+
+                  jq --arg mediatype "$index_mediatype" '
+                    .artifactType = $mediatype |
+                    .manifests = (.manifests | map(
+                      if .annotations."org.opencontainers.image.ref.name" then
+                        . + {
+                          platform: {
+                            os: (.annotations."org.opencontainers.image.ref.name" | split("_")[0]),
+                            architecture: (.annotations."org.opencontainers.image.ref.name" | split("_")[1])
+                          }
+                        }
+                      else
+                        .
+                      end
+                    ))
+                  ' "$index" > "$index_to_tag"
+
+                  oras manifest push --oci-layout "$layout:$version" "$index_to_tag"
+
+                  go tool oras cp \
+                    --from-oci-layout "$layout:$version" \
+                    "registry.defenseunicorns.com/ops/$name:$version"
+
+            - name: Upload release assets (if any failed)
+              if: failure()
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+              with:
+                  name: goreleaser-dist
+                  path: dist/
+                  retention-days: 5

@@ -10,22 +10,28 @@ import (
 
 	// Must be imported before Zarf to avoid init() ordering issues
 	// todo(jeff-mccoy): this is kind of gross and should be revisited
-	"github.com/defenseunicorns/terraform-provider-uds/internal/fixzarf"
-	"github.com/defenseunicorns/terraform-provider-uds/internal/provider"
 	server "github.com/hashicorp/terraform-plugin-framework/providerserver"
 	zarfCLI "github.com/zarf-dev/zarf/src/cmd"
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
+
+	"github.com/defenseunicorns/terraform-provider-uds/internal/fixzarf"
+	"github.com/defenseunicorns/terraform-provider-uds/internal/provider"
 )
+
+//go:generate tofu fmt -recursive examples/
+//go:generate go tool tfplugindocs generate -provider-name uds
 
 // set by goreleaser at build time
 var version = "dev"
 
 func main() {
+	ctx := context.Background()
+
 	// Check if the zarf command is being run
 	if fixzarf.IsZarf() {
 		zarfConfig.CommonOptions.Confirm = true
 		zarfConfig.ActionsCommandZarfPrefix = "zarf"
-		zarfCLI.Execute(context.TODO())
+		zarfCLI.Execute(ctx)
 		return
 	}
 
@@ -39,7 +45,7 @@ func main() {
 		Debug:   debug,
 	}
 
-	err := server.Serve(context.Background(), provider.New(version), opts)
+	err := server.Serve(ctx, provider.New(version), opts)
 	if err != nil {
 		log.Fatal(err.Error())
 	}

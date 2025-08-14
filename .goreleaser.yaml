@@ -1,0 +1,43 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# vim: set ts=2 sw=2 tw=0 fo=cnqoj
+
+version: 2
+
+before:
+    hooks:
+        - go mod tidy
+
+builds:
+    - env:
+          - CGO_ENABLED=0
+      mod_timestamp: "{{ .CommitTimestamp }}"
+      flags:
+          - -trimpath
+      ldflags:
+          - "-s -w -X main.version={{.Version}} -X main.commit={{.Commit}}"
+      goos:
+          - linux
+          - darwin
+      goarch:
+          - amd64
+          - arm64
+      binary: "{{ .ProjectName }}_v{{ .Version }}"
+
+archives:
+    - formats: [zip]
+      name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+    extra_files:
+        - glob: "terraform-registry-manifest.json"
+          name_template: "{{ .ProjectName }}_{{ .Version }}_manifest.json"
+    name_template: "{{ .ProjectName }}_{{ .Version }}_SHA256SUMS"
+    algorithm: sha256
+
+release:
+    extra_files:
+        - glob: "terraform-registry-manifest.json"
+          name_template: "{{ .ProjectName }}_{{ .Version }}_manifest.json"
+
+changelog:
+    disable: true

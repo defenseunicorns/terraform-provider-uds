@@ -1,0 +1,100 @@
+version: "2"
+run:
+  concurrency: 8
+  allow-parallel-runners: true
+linters:
+  default: fast
+  enable:
+    - revive
+  disable:
+    - depguard
+    - funlen
+    - lll
+    - mnd
+    - wsl
+    # More linters to never use (not part of fast)
+    - containedctx
+    - exhaustive
+    - exhaustruct
+    - forbidigo
+    - gochecknoglobals
+    - tagliatelle
+    - varnamelen
+    - wrapcheck
+    # linters I disagree with
+    - whitespace
+    - testpackage
+    - nestif
+    - maintidx
+    - inamedparam
+    - godox
+    - godot
+    - gocognit
+    - cyclop
+    - gocyclo
+    - nlreturn
+  settings:
+    goheader:
+      template: |-
+        Copyright 2024 Defense Unicorns
+        SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+    govet:
+      disable:
+        - shadow
+        - fieldalignment
+        - unusedwrite
+      enable-all: true
+    nolintlint:
+      require-specific: true
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+        - name: if-return
+        - name: increment-decrement
+        - name: var-naming
+        - name: var-declaration
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unused-parameter
+        - name: unreachable-code
+        - name: redefines-builtin-id
+    testifylint:
+      enable-all: true
+  exclusions:
+    generated: lax
+    presets:
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/defenseunicorns/terraform-provider-uds
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
