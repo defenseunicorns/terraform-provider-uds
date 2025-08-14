@@ -57,7 +57,7 @@ jobs:
         uses: ./.github/actions/setup-golang
 
       - name: Run acceptance tests
-        run: uds run test:acc
+        run: uds run test-acc
 
       - name: Save Logs
         uses: defenseunicorns/uds-core/.github/actions/save-logs@5e37fe7d4fc6f9e35f75a846a4e59ec360f89d5a
@@ -81,7 +81,7 @@ jobs:
         uses: ./.github/actions/setup-golang
 
       - name: Run unit tests
-        run: uds run test:unit
+        run: uds run test-unit
 
       - name: Save Logs
         uses: defenseunicorns/uds-core/.github/actions/save-logs@5e37fe7d4fc6f9e35f75a846a4e59ec360f89d5a
