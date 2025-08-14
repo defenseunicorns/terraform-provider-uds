@@ -2,9 +2,7 @@
   "enabled": true,
   "forkProcessing": "enabled",
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:recommended"
-  ],
+  "extends": ["github>defenseunicorns/uds-common//config/renovate.json5", ":semanticCommits", ":semanticCommitTypeAll(chore)"],
   "branchConcurrentLimit": 0,
   "prConcurrentLimit": 0,
   "prHourlyLimit": 0,
@@ -13,35 +11,27 @@
   "dependencyDashboardTitle": "Renovate Dashboard 🤖",
   "rebaseWhen": "conflicted",
   "commitBodyTable": true,
-  "suppressNotifications": [
-    "prIgnoreNotification"
-  ],
-  "postUpdateOptions": [
-    "gomodTidy"
-  ],
+  "suppressNotifications": ["prIgnoreNotification"],
+  "postUpdateOptions": ["gomodTidy"],
   "packageRules": [
     {
-      "matchFileNames": [
-        ".github/**"
-      ],
+      "matchFileNames": [".github/**"],
       "groupName": "github-actions",
       "commitMessageTopic": "github actions"
     },
     {
-      "matchFileNames": [
-        "go.mod",
-        "go.sum"
-      ],
+      "matchFileNames": ["go.mod", "go.sum"],
       "groupName": "go-dependencies",
       "commitMessageTopic": "go dependencies"
     },
     {
-      "matchPackageNames": [
-        "zarf-dev/zarf",
-        "github.com/zarf-dev/zarf"
-      ],
+      "matchPackageNames": ["zarf-dev/zarf", "github.com/zarf-dev/zarf"],
       "groupName": "zarf",
       "commitMessageTopic": "zarf"
+    },
+    {
+      "matchDatasources": ["terraform-provider"],
+      "registryUrls": ["https://registry.opentofu.org"]
     }
   ]
 }
