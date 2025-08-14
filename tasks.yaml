@@ -2,37 +2,54 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
 includes:
-    - test: tasks/test.yaml
+  - test: tasks/test.yaml
 
 tasks:
-    - name: default
-      description: Run the default tasks
-      actions:
-          - task: lint
-          - task: install
-          - task: generate
+  - name: default
+    description: Run the default tasks
+    actions:
+      - task: lint
+      - task: install
+      - task: generate
 
-    - name: build
-      description: Compile the provider
-      actions:
-          - cmd: go build -v ./...
+  - name: build
+    description: Compile the provider
+    actions:
+      - cmd: go build -v ./...
 
-    - name: install
-      description: Install the provider
-      actions:
-          - cmd: go install -v ./...
+  - name: install
+    description: Install the provider
+    actions:
+      - cmd: go install -v ./...
 
-    - name: lint
-      description: Lint the code
-      actions:
-          - cmd: golangci-lint run
+  - name: lint
+    description: Lint the code
+    actions:
+      - cmd: golangci-lint run
 
-    - name: test
-      description: Run the tests
-      actions:
-          - cmd: go test -v -cover -timeout=120s -parallel=10 ./...
+  - name: test
+    description: Run the tests
+    actions:
+      - cmd: go test -v -cover -timeout=120s -parallel=10 ./...
 
-    - name: generate
-      description: Generate the code
-      actions:
-          - cmd: go generate ./...
+  - name: generate
+    description: Generate the code
+    actions:
+      - cmd: go generate ./...
+
+  - name: unit
+    description: "Run unit tests for the project"
+    actions:
+      - cmd: go test -v -cover -timeout 10m ./internal/...
+
+  - name: create-k3d-cluster
+    actions:
+      - description: "Create the K3d cluster"
+        # renovate: datasource=github-tags depName=defenseunicorns/uds-k3d versioning=semver
+        cmd: "uds zarf package deploy oci://defenseunicorns/uds-k3d:0.12.0 --confirm --no-progress"
+
+  - name: acc
+    description: "Run Acceptance Tests"
+    actions:
+      - task: create-k3d-cluster
+      - cmd: TF_ACC=1 go test -v -cover -timeout 10m ./test/acc/...
