@@ -13,6 +13,13 @@ on:
         required: false
         type: string
         description: "The tag name to use for the release"
+    secrets:
+      UDS_REGISTRY_USER:
+        required: true
+        description: "Username for UDS registry authentication"
+      UDS_REGISTRY_TOKEN:
+        required: true
+        description: "Token for UDS registry authentication"
 
 # Releases need permissions to read and write the repository contents.
 permissions:
@@ -51,8 +58,8 @@ jobs:
 
       - run: echo "$UDS_REGISTRY_TOKEN" | go tool oras login -u "$UDS_REGISTRY_USER" --password-stdin registry.defenseunicorns.com
         env:
-          UDS_REGISTRY_USER: ${{ secrets.UDS_REGISTRY_USER  }}
-          UDS_REGISTRY_TOKEN: ${{ secrets.UDS_REGISTRY_TOKEN  }}
+          UDS_REGISTRY_USER: ${{ secrets.UDS_REGISTRY_USER }}
+          UDS_REGISTRY_TOKEN: ${{ secrets.UDS_REGISTRY_TOKEN }}
 
       # https://github.com/opentofu/opentofu/blob/main/website/docs/cli/oci_registries/provider-mirror.mdx
       - name: Publish to UDS Registry

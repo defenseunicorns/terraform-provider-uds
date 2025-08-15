@@ -68,3 +68,6 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       tag_name: ${{ needs.nightly.outputs.tag_name }}
+    secrets:
+      UDS_REGISTRY_USER: ${{ secrets.UDS_REGISTRY_USER }}
+      UDS_REGISTRY_TOKEN: ${{ secrets.UDS_REGISTRY_TOKEN }}
