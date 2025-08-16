@@ -113,7 +113,7 @@ jobs:
             ))
           ' "$index" > "$index_to_tag"
 
-          oras manifest push --oci-layout "$layout:$version" "$index_to_tag"
+          go tool oras manifest push --oci-layout "$layout:$version" "$index_to_tag"
 
           go tool oras cp \
             --from-oci-layout "$layout:$version" \
