@@ -530,7 +530,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
-			expectedErrorContains:     []string{"Invalid package source"},
+			expectedErrorContains:     []string{"invalid package source"},
 		},
 		{
 			name:                      "http URL returns error",
@@ -538,7 +538,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
-			expectedErrorContains:     []string{"Invalid package source"},
+			expectedErrorContains:     []string{"invalid package source"},
 		},
 		{
 			name:                      "https URL returns error",
@@ -546,7 +546,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
-			expectedErrorContains:     []string{"Invalid package source"},
+			expectedErrorContains:     []string{"invalid package source"},
 		},
 		{
 			name:                      "empty source returns error",
@@ -554,7 +554,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
-			expectedErrorContains:     []string{"Invalid package source"},
+			expectedErrorContains:     []string{"invalid package source"},
 		},
 		{
 			name:                      "whitespace source returns error",
@@ -562,7 +562,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
-			expectedErrorContains:     []string{"Invalid package source"},
+			expectedErrorContains:     []string{"invalid package source"},
 		},
 	}
 

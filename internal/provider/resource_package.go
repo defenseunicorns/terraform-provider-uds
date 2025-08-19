@@ -737,7 +737,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 
 	// Populate/set resource computed values
 	// TODO: Supply namespace when computing package ID, when implemented
-	plan.ID = types.StringValue(computePackageId("", pkgLayout.Pkg.Metadata.Name))
+	plan.ID = types.StringValue(computePackageID("", pkgLayout.Pkg.Metadata.Name))
 	plan.Version = types.StringValue(pkgLayout.Pkg.Metadata.Version)
 	plan.Kind = types.StringValue(string(pkgLayout.Pkg.Kind))
 
@@ -772,6 +772,7 @@ func getArchitecture(pkg PackageResourceModel, providerData customProviderData) 
 }
 
 func getPackageSource(pkg PackageResourceModel, providerData customProviderData) (string, error) {
+	_ = providerData // TODO: Will be used for future local cache package download/lookup logic
 	source := pkg.Source.ValueString()
 
 	if ociRegex.MatchString(source) {
@@ -788,7 +789,7 @@ func getPackageSource(pkg PackageResourceModel, providerData customProviderData)
 			return source, nil
 		}
 	}
-	return "", fmt.Errorf("Invalid package source: %s. Must be a valid OCI distrubution reference (including oci:// scheme) or local file path (absolute or relative).", source)
+	return "", fmt.Errorf("invalid package source: %s. Must be a valid OCI distrubution reference (including oci:// scheme) or local file path (absolute or relative).", source)
 }
 
 func findPackageComponent(components []v1alpha1.ZarfComponent, name string) (v1alpha1.ZarfComponent, bool) {
@@ -800,7 +801,7 @@ func findPackageComponent(components []v1alpha1.ZarfComponent, name string) (v1a
 	return v1alpha1.ZarfComponent{}, false // Not found
 }
 
-func computePackageId(namespace string, pkgName string) string {
+func computePackageID(namespace string, pkgName string) string {
 	if namespace == "" {
 		return pkgName
 	}
