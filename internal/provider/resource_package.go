@@ -722,10 +722,13 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, errors.Join(componentErrors...)
 	}
 
-	setVariables := map[string]string{}
+	var setVariables map[string]string
 	diags := plan.ZarfDeploySets.ElementsAs(ctx, &setVariables, false)
 	if diags.HasError() {
 		return plan, fmt.Errorf("Unable to convert variables from a provided zarf-config file")
+	}
+	if setVariables == nil {
+		setVariables = make(map[string]string)
 	}
 
 	// variables from the HCL config take precidence over variables from the zarf config file.
