@@ -460,29 +460,6 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 }
 
 func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
-	// Helper function to create fresh MockLoadPackageResult for each test
-	newValidLoadPackageResult := func() MockLoadPackageResult {
-		return MockLoadPackageResult{
-			Layout: &layout.PackageLayout{
-				Pkg: v1alpha1.ZarfPackage{
-					Metadata: v1alpha1.ZarfMetadata{
-						Name:        "test-package",
-						Description: "Test package",
-						Version:     "0.0.1",
-					},
-					Components: []v1alpha1.ZarfComponent{
-						{
-							Name:     "test-component",
-							Required: boolPtr(true),
-							Default:  false,
-						},
-					},
-				},
-			},
-			Error: nil,
-		}
-	}
-
 	tests := []struct {
 		name                      string
 		source                    string
