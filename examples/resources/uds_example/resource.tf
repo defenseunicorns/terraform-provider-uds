@@ -17,13 +17,18 @@ resource "uds_bundle_metadata" "example_bundle" {
 }
 
 resource "uds_package" "init" {
-  repository   = "oci://ghcr.io/zarf-dev/packages/init:v0.48.0"
-  ref          = "v0.48.0"
+  name         = "init"
+  source       = "oci://ghcr.io/zarf-dev/packages/init:v0.48.0"
   architecture = uds_bundle_metadata.example_bundle.architecture
+
+  # Install optional git-server
+  component {
+    name = "git-server"
+  }
 }
 
 resource "uds_package" "podinfo" {
-  repository   = "oci://ghcr.io/defenseunicorns/uds-cli/podinfo:0.0.2"
-  ref          = "0.0.2"
+  name         = "podinfo"
+  source       = "oci://ghcr.io/defenseunicorns/uds-cli/podinfo:0.0.2"
   architecture = uds_package.init.architecture
 }
