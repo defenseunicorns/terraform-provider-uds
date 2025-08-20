@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/defenseunicorns/pkg/helpers/v2"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -23,11 +24,6 @@ import (
 
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 )
-
-// Helper function to create bool pointers
-func boolPtr(b bool) *bool {
-	return &b
-}
 
 // Unit test for flattenOverrides function
 func TestFlattenOverrides(t *testing.T) {
@@ -268,12 +264,12 @@ func newValidLoadPackageResult() MockLoadPackageResult {
 				Components: []v1alpha1.ZarfComponent{
 					{
 						Name:     "test-required-component-0",
-						Required: boolPtr(true),
+						Required: helpers.BoolPtr(true),
 						Default:  false,
 					},
 					{
 						Name:     "test-required-component-1",
-						Required: boolPtr(true),
+						Required: helpers.BoolPtr(true),
 						Default:  false,
 					},
 					{
@@ -283,7 +279,7 @@ func newValidLoadPackageResult() MockLoadPackageResult {
 					},
 					{
 						Name:     "test-optional-default-component-1",
-						Required: boolPtr(false),
+						Required: helpers.BoolPtr(false),
 						Default:  true,
 					},
 					{
@@ -293,7 +289,7 @@ func newValidLoadPackageResult() MockLoadPackageResult {
 					},
 					{
 						Name:     "test-optional-non-default-component-1",
-						Required: boolPtr(false),
+						Required: helpers.BoolPtr(false),
 						Default:  false,
 					},
 				},

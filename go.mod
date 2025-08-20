@@ -12,14 +12,15 @@ tool (
 //replace github.com/zarf-dev/zarf => ../../zarf-dev/zarf
 
 require (
+	github.com/defenseunicorns/pkg/helpers/v2 v2.0.4
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/terraform-plugin-framework v1.15.0
-	github.com/hashicorp/terraform-plugin-framework-validators v0.18.0
 	github.com/hashicorp/terraform-plugin-go v0.28.0
 	github.com/hashicorp/terraform-plugin-log v0.9.0
 	github.com/hashicorp/terraform-plugin-testing v1.13.2
 	github.com/stretchr/testify v1.10.0
 	github.com/zarf-dev/zarf v0.58.0
+	oras.land/oras-go/v2 v2.6.0
 )
 
 require (
@@ -193,7 +194,6 @@ require (
 	github.com/cyberphone/json-canonicalization v0.0.0-20241213102144-19d51d7fe467 // indirect
 	github.com/cyphar/filepath-securejoin v0.4.1 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/defenseunicorns/pkg/helpers/v2 v2.0.4 // indirect
 	github.com/defenseunicorns/pkg/oci v1.3.0 // indirect
 	github.com/deitch/magic v0.0.0-20230404182410-1ff89d7342da // indirect
 	github.com/derailed/k9s v0.50.6 // indirect
@@ -595,7 +595,6 @@ require (
 	modernc.org/sqlite v1.38.0 // indirect
 	oras.land/oras v1.2.3 // indirect
 	oras.land/oras-go v1.2.5 // indirect
-	oras.land/oras-go/v2 v2.6.0 // indirect
 	sigs.k8s.io/cli-utils v0.37.2 // indirect
 	sigs.k8s.io/controller-runtime v0.21.0 // indirect
 	sigs.k8s.io/json v0.0.0-20241014173422-cfa47c3a1cc8 // indirect
