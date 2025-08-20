@@ -37,7 +37,7 @@ import (
 
 const (
 	ociPattern           = `^oci:\/\/([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]{2,63}(?::[0-9]{1,5})?\/[a-z0-9-][a-z0-9-./_~]{0,255}(:[a-z0-9._-]+)?(?:@[a-z0-9]+:[a-f0-9]{64})?$`
-	localFilePathPattern = `^(?:[a-zA-Z]:)?\/?(?:[a-zA-Z0-9._-]+\/)*[a-zA-Z0-9._-]+\.tar\.zst$`
+	localFilePathPattern = `^(?:[a-zA-Z]:)?\/?(?:[a-zA-Z0-9._-]+\/)*[a-zA-Z0-9._-]+\.tar(?:\.zst)?$`
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.

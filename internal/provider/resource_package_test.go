@@ -501,6 +501,14 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			expectedErrorContains:     []string{},
 		},
 		{
+			name:                      "existent uncompressed tarfile loads specified source",
+			source:                    "existent-test-package-without-path.tar",
+			localFilePathExists:       true,
+			expectedCallToLoadPackage: true,
+			expectedCallToDeploy:      true,
+			expectedErrorContains:     []string{},
+		},
+		{
 			name:                      "nonexistent local absolute file path returns error",
 			source:                    "/tmp/absolute/path/to/nonexistenttest-package.tar.zst",
 			localFilePathExists:       false,
@@ -519,6 +527,14 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 		{
 			name:                      "nonexistent file without path returns error",
 			source:                    "nonexistent-test-package-without-path.tar.zst",
+			localFilePathExists:       false,
+			expectedCallToLoadPackage: false,
+			expectedCallToDeploy:      false,
+			expectedErrorContains:     []string{"no such file or directory"},
+		},
+		{
+			name:                      "nonexistent uncompressed tarfile loads specified source",
+			source:                    "nonexistent-test-package-without-path.tar",
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
