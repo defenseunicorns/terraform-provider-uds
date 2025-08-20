@@ -722,11 +722,14 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, errors.Join(componentErrors...)
 	}
 
-	var setVariables map[string]string
-	diags := plan.ZarfDeploySets.ElementsAs(ctx, &setVariables, false)
-	if diags.HasError() {
-		return plan, fmt.Errorf("Unable to convert variables from a provided zarf-config file")
+	setVariables := make(map[string]string)
+	if !plan.ZarfDeploySets.IsNull() {
+		diags := plan.ZarfDeploySets.ElementsAs(ctx, &setVariables, false)
+		if diags.HasError() {
+			return plan, fmt.Errorf("Unable to convert variables from a provided zarf-config file")
+		}
 	}
+
 	if setVariables == nil {
 		setVariables = make(map[string]string)
 	}
