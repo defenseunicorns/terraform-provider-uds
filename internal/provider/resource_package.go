@@ -8,11 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
-	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -35,18 +33,10 @@ import (
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
 )
 
-const (
-	ociPattern           = `^oci:\/\/([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]{2,63}(?::[0-9]{1,5})?\/[a-z0-9-][a-z0-9-./_~]{0,255}(:[a-z0-9._-]+)?(?:@[a-z0-9]+:[a-f0-9]{64})?$`
-	localFilePathPattern = `^(?:[a-zA-Z]:)?\/?(?:[a-zA-Z0-9._-]+\/)*[a-zA-Z0-9._-]+\.tar(?:\.zst)?$`
-)
-
 // Ensure provider defined types fully satisfy framework interfaces.
 var (
-	_                  resource.Resource                = &PackageResource{}
-	_                  resource.ResourceWithImportState = &PackageResource{}
-	ociRegex           *regexp.Regexp                   = regexp.MustCompile(fmt.Sprintf("^(?:%s)$", ociPattern))
-	localPathRegex     *regexp.Regexp                   = regexp.MustCompile(fmt.Sprintf("^(?:%s)$", localFilePathPattern))
-	packageSourceRegex *regexp.Regexp                   = regexp.MustCompile(fmt.Sprintf("^(?:%s|%s)$", ociPattern, localFilePathPattern))
+	_ resource.Resource                = &PackageResource{}
+	_ resource.ResourceWithImportState = &PackageResource{}
 )
 
 // NewPackageResource creates a new instance of the package resource.
@@ -150,10 +140,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					stringplanmodifier.RequiresReplace(),
 				},
 				Validators: []validator.String{
-					stringvalidator.RegexMatches(
-						packageSourceRegex,
-						"Must be a valid OCI distribution reference (including oci:// scheme) or a local file path (absolute or relative).",
-					),
+					udsValidator.PackageSourceValidator(),
 				},
 			},
 			"architecture": schema.StringAttribute{
@@ -775,11 +762,11 @@ func getPackageSource(pkg PackageResourceModel, providerData customProviderData)
 	_ = providerData // TODO: Will be used for future local cache package download/lookup logic
 	source := pkg.Source.ValueString()
 
-	if ociRegex.MatchString(source) {
+	if udsValidator.ValidateOCIReferencePackageSource(source) == nil {
 		// TODO: Add future local cache package download/lookup logic
 		return source, nil
 	}
-	if localPathRegex.MatchString(source) {
+	if udsValidator.ValidateLocalFilePathPackageSource(source) == nil {
 		info, err := os.Stat(source)
 		if err != nil {
 			return "", err

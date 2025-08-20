@@ -470,7 +470,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 	}{
 		{
 			name:                      "OCI distribution source with oci:// scheme loads specified source",
-			source:                    "oci://ghcr.io/defenseunicorns/packages/test-package:v1.0.0",
+			source:                    "oci://ghcr.io/defenseunicornstest/packages/test-package:v1.0.0",
 			localFilePathExists:       true,
 			expectedCallToLoadPackage: true,
 			expectedCallToDeploy:      true,
@@ -542,7 +542,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 		},
 		{
 			name:                      "missing oci:// scheme for OCI reference returns error",
-			source:                    "ghcr.io/defenseunicorns/packages/test-package:v1.0.0",
+			source:                    "ghcr.io/defenseunicornstest/packages/test-package:v1.0.0",
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
