@@ -8,10 +8,14 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"oras.land/oras-go/v2/registry"
 )
+
+var localPathRegex *regexp.Regexp = regexp.MustCompile(`^(?:[a-zA-Z]:)?\/?(?:[a-zA-Z0-9._-]+\/)*[a-zA-Z0-9._-]+\.tar(?:\.zst)?$`)
 
 // BlockStringAttributeUniquenessValidator validates that string attributes within blocks are unique.
 type BlockStringAttributeUniquenessValidator struct {
@@ -19,17 +23,14 @@ type BlockStringAttributeUniquenessValidator struct {
 	attributeName string
 }
 
-// Description returns a plain text description of the validator.
 func (v BlockStringAttributeUniquenessValidator) Description(_ context.Context) string {
 	return fmt.Sprintf("Ensures that all %q blocks have unique values for the %q attribute", v.blockName, v.attributeName)
 }
 
-// MarkdownDescription returns the markdown description for the validator.
 func (v BlockStringAttributeUniquenessValidator) MarkdownDescription(ctx context.Context) string {
 	return v.Description(ctx)
 }
 
-// ValidateList validates that all blocks in the list have unique values for the specified attribute.
 func (v BlockStringAttributeUniquenessValidator) ValidateList(ctx context.Context, req validator.ListRequest, resp *validator.ListResponse) {
 	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
 		return
@@ -113,5 +114,60 @@ func validateName(name, nameType string) error {
 		return fmt.Errorf("invalid %s name %q: must start with a letter or underscore, followed by letters, digits, or underscores", nameType, name)
 	}
 
+	return nil
+}
+
+type packageSourceValidator struct{}
+
+func (v packageSourceValidator) Description(_ context.Context) string {
+	return "value must be a valid OCI distribution reference (including oci:// scheme) or local file path (absolute or relative)"
+}
+
+func (v packageSourceValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v packageSourceValidator) ValidateString(ctx context.Context, request validator.StringRequest, response *validator.StringResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+
+	value := request.ConfigValue.ValueString()
+	if ValidateLocalFilePathPackageSource(value) == nil {
+		return
+	}
+	if ValidateOCIReferencePackageSource(value) == nil {
+		return
+	}
+	response.Diagnostics.AddAttributeError(
+		request.Path,
+		"Invalid Package Source",
+		fmt.Sprintf("The provided value %q must be a valid OCI distribution reference (including oci:// scheme) or local file path (absolute or relative).", value),
+	)
+}
+
+func PackageSourceValidator() validator.String {
+	return packageSourceValidator{}
+}
+
+func ValidateLocalFilePathPackageSource(value string) error {
+	if !localPathRegex.MatchString(value) {
+		return fmt.Errorf("%q is not a valid local file path", value)
+	}
+	return nil
+}
+
+func ValidateOCIReferencePackageSource(value string) error {
+	if !strings.HasPrefix(value, "oci://") {
+		return fmt.Errorf("%q missing oci:// scheme", value)
+	}
+	ref, err := registry.ParseReference(strings.TrimPrefix(value, "oci://"))
+	if err != nil {
+		return err
+	}
+	err = ref.Validate()
+	if err != nil {
+		return err
+	}
 	return nil
 }

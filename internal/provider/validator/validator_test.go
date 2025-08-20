@@ -5,14 +5,63 @@ package validator
 
 import (
 	"context"
-	"testing"
-
 	"strings"
+	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	tfvalidator "github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+)
+
+const (
+	// Package source local file path test values
+	localTarFilePathWithoutPath                 = "test-package.tar"
+	localTarZstFilePathWithoutPath              = "test-package.tar.zst"
+	localTarFilePathWithExplicitRelativePath    = "./path/to/test-package.tar"
+	localTarZstFilePathWithExplicitRelativePath = "./path/to/test-package.tar.zst"
+	localTarFilePathWithImplicitRelativePath    = "path/to/test-package.tar"
+	localTarZstFilePathWithImplicitRelativePath = "path/to/test-package.tar.zst"
+	localTarFilePathWithAbsoluteUnixPath        = "/absolute/path/to/test-package.tar"
+	localTarZstFilePathWithAbsoluteUnixPath     = "/absolute/path/to/test-package.tar.zst"
+	localTarFilePathWithWindowsDriveLetter      = "C:/path/to/test-package.tar"
+	localTarZstFilePathWithWindowsDriveLetter   = "C:/path/to/test-package.tar.zst"
+	localTarFilePathWithUnixHomePath            = "~/path/to/test-package.tar"
+	localTarZstFilePathWithUnixHomePath         = "~/path/to/test-package.tar.zst"
+	localFilePathWithUnderscoresAndDashes       = "some-dir/sub_dir/test-package-1.0.tar.zst"
+	localFilePathWithPathSpecialCharacters      = "my_test-package-v1.0.tar"
+	localFilePathWithoutTarOrTarZstExtension    = "test-package.zip"
+	localFilePathWithoutExtension               = "test-package"
+	localFilePathJustTarExtension               = ".tar"
+	localFilePathJustTarZstExtension            = ".tar.zst"
+	localFilePathWithInvalidCharacters          = "pack@ge.tar"
+	localFilePathWithSpaces                     = "path with spaces/test-package.tar"
+	localFilePathWithDoubleSlash                = "path//test-package.tar"
+	localFilePathEndsWithSlash                  = "path/test-package.tar/"
+
+	// Package source OCI reference test values
+	ociReferenceWithVersionTag                = "oci://ghcr.io/defenseunicornstest/packages/test-package:v1.0.0"
+	ociReferenceWithLatestTag                 = "oci://ghcr.io/defenseunicornstest/packages/test-package:latest"
+	ociReferenceWithDigest                    = "oci://ghcr.io/defenseunicornstest/packages/test-package@sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+	ociReferenceWithoutTagOrDigest            = "oci://ghcr.io/defenseunicornstest/packages/test-package"
+	ociReferenceWithPort                      = "oci://registry.example.com:5000/namespace/test-package:v1.0.0"
+	ociReferenceWithLocalhost                 = "oci://localhost:5000/test-package:latest"
+	ociReferenceWithNestedNamespace           = "oci://ghcr.io/defenseunicornstest/team/project/test-package:v1.0.0"
+	ociReferenceWithoutScheme                 = "ghcr.io/defenseunicornstest/packages/test-package:v1.0.0"
+	ociReferenceWithRepositoryOnly            = "ghcr.io/defenseunicornstest/packages/test-package:v1.0.0"
+	ociReferenceWithInvalidRepoNameCharacters = "oci://ghcr.io/INVALID/test-package:v1.0.0"
+	ociReferenceWithInvalidTagFormat          = "oci://ghcr.io/defenseunicornstest/packages/test-package:invalid tag with spaces"
+	ociReferenceWithOnlyScheme                = "oci://"
+	ociReferenceWithOnlyHostname              = "oci://ghcr.io"
+	ociReferenceWithInvalidDigest             = "oci://ghcr.io/defenseunicornstest/packages/test-package@invalid-digest"
+	ociReferenceWithDoubleSlash               = "oci://ghcr.io//defenseunicornstest/packages/test-package:v1.0.0"
+	ociReferenceWithTrailingSlash             = "oci://ghcr.io/defenseunicornstest/packages/test-package:v1.0.0/"
+
+	// Package source misc test values
+	httpPackageReference  = "http://defenseunicornstest.com/test-package"
+	httpsPackageReference = "https://defenseunicornstest.com/test-package"
 )
 
 func newObjectListWithAttributeValues(attributeName string, values []string) types.List {
@@ -31,6 +80,8 @@ func newObjectListWithAttributeValues(attributeName string, values []string) typ
 }
 
 func TestBlockStringAttributeUniquenessValidator_ValidateList(t *testing.T) {
+	t.Parallel()
+
 	blockName := "test_block"
 	attributeName := "test_attr"
 	duplicateAttributeErrorSummary := "Duplicate block attribute."
@@ -141,6 +192,8 @@ func TestBlockStringAttributeUniquenessValidator_ValidateList(t *testing.T) {
 }
 
 func TestNewBlockStringAttributeUniquenessValidator(t *testing.T) {
+	t.Parallel()
+
 	validBlockName := "test_block"
 	validAttributeName := "test_attr"
 
@@ -321,6 +374,390 @@ func TestNewBlockStringAttributeUniquenessValidator(t *testing.T) {
 				if validator == nil {
 					t.Errorf("Expected validator to be non-nil for valid block name %q and attribute name %q", tc.blockName, tc.attributeName)
 					return
+				}
+			}
+		})
+	}
+}
+
+func TestPackageSourceValidator(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		value       string
+		expectError bool
+	}{
+		{
+			name:        "OCI reference with oci:// scheme is valid",
+			value:       ociReferenceWithVersionTag,
+			expectError: false,
+		},
+		{
+			name:        "OCI reference with latest tag is valid",
+			value:       ociReferenceWithLatestTag,
+			expectError: false,
+		},
+		{
+			name:        "OCI reference with digest is valid",
+			value:       ociReferenceWithDigest,
+			expectError: false,
+		},
+		{
+			name:        "OCI reference with port is valid",
+			value:       ociReferenceWithPort,
+			expectError: false,
+		},
+		{
+			name:        "OCI reference without oci:// scheme is invalid",
+			value:       ociReferenceWithoutScheme,
+			expectError: true,
+		},
+		{
+			name:        "empty string is invalid",
+			value:       "",
+			expectError: true,
+		},
+		{
+			name:        "all whitespace is invalid",
+			value:       "  ",
+			expectError: true,
+		},
+		{
+			name:        "OCI reference without repository only is invalid",
+			value:       ociReferenceWithRepositoryOnly,
+			expectError: true,
+		},
+		{
+			name:        "OCI reference with invalid characters in repository name is invalid",
+			value:       ociReferenceWithInvalidRepoNameCharacters,
+			expectError: true,
+		},
+		{
+			name:        "OCI reference with invalid tag format is invalid",
+			value:       ociReferenceWithInvalidTagFormat,
+			expectError: true,
+		},
+		{
+			name:        "HTTP reference is invalid",
+			value:       httpPackageReference,
+			expectError: true,
+		},
+	}
+
+	expectedErrorContains := "Invalid Package Source"
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			request := validator.StringRequest{
+				Path:           path.Root("test"),
+				PathExpression: path.MatchRoot("test"),
+				ConfigValue:    types.StringValue(tc.value),
+			}
+			response := &validator.StringResponse{}
+
+			PackageSourceValidator().ValidateString(context.Background(), request, response)
+
+			if tc.expectError {
+				if !response.Diagnostics.HasError() {
+					t.Errorf("Expected error but got none")
+					return
+				}
+				found := false
+				for _, diag := range response.Diagnostics.Errors() {
+					if diag.Summary() == expectedErrorContains {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Expected error to contain %q, but got: %v", expectedErrorContains, response.Diagnostics.Errors())
+				}
+			} else {
+				if response.Diagnostics.HasError() {
+					t.Errorf("Expected no error but got: %v", response.Diagnostics.Errors())
+				}
+			}
+		})
+	}
+}
+
+func TestPackageSourceValidator_NullAndUnknown(t *testing.T) {
+	t.Parallel()
+
+	validator := PackageSourceValidator()
+
+	for _, configValue := range []types.String{types.StringNull(), types.StringUnknown()} {
+		request := tfvalidator.StringRequest{
+			Path:           path.Root("test"),
+			PathExpression: path.MatchRoot("test"),
+			ConfigValue:    configValue,
+		}
+		response := &tfvalidator.StringResponse{}
+
+		validator.ValidateString(context.Background(), request, response)
+
+		if response.Diagnostics.HasError() {
+			t.Errorf("Expected no error for null value but got: %v", response.Diagnostics.Errors())
+		}
+	}
+}
+
+func TestValidateLocalFilePathPackageSource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		value       string
+		expectError bool
+	}{
+		// Valid cases
+		{
+			name:        "tar file without path is valid",
+			value:       localTarFilePathWithoutPath,
+			expectError: false,
+		},
+		{
+			name:        "tar.zst file without path is valid",
+			value:       localTarZstFilePathWithoutPath,
+			expectError: false,
+		},
+		{
+			name:        "tar file with explicit relative path is valid",
+			value:       localTarFilePathWithExplicitRelativePath,
+			expectError: false,
+		},
+		{
+			name:        "tar.zst file with implicit relative path is valid",
+			value:       localTarZstFilePathWithImplicitRelativePath,
+			expectError: false,
+		},
+		{
+			name:        "tar file with implicit relative path is valid",
+			value:       localTarFilePathWithImplicitRelativePath,
+			expectError: false,
+		},
+		{
+			name:        "tar.zst file with explicit relative path is valid",
+			value:       localTarZstFilePathWithExplicitRelativePath,
+			expectError: false,
+		},
+		{
+			name:        "tar file with absolute unix path is valid",
+			value:       localTarFilePathWithAbsoluteUnixPath,
+			expectError: false,
+		},
+		{
+			name:        "tar.zst file with absolute unix path is valid",
+			value:       localTarZstFilePathWithAbsoluteUnixPath,
+			expectError: false,
+		},
+		{
+			name:        "tar file with windows drive letter is valid",
+			value:       localTarFilePathWithWindowsDriveLetter,
+			expectError: false,
+		},
+		{
+			name:        "tar.zst file with windows drive letter is valid",
+			value:       localTarZstFilePathWithWindowsDriveLetter,
+			expectError: false,
+		},
+		{
+			name:        "file with underscores and dashes is valid",
+			value:       localFilePathWithUnderscoresAndDashes,
+			expectError: false,
+		},
+		{
+			name:        "nested path with special chars is valid",
+			value:       localFilePathWithPathSpecialCharacters,
+			expectError: false,
+		},
+		// Invalid cases
+		{
+			name:        "tar file with unix home path is invalid",
+			value:       localTarFilePathWithUnixHomePath,
+			expectError: true,
+		},
+		{
+			name:        "tar.zst file with unix home path is invalid",
+			value:       localTarZstFilePathWithUnixHomePath,
+			expectError: true,
+		},
+		{
+			name:        "missing tar or tar.zst extension is invalid",
+			value:       localFilePathWithoutTarOrTarZstExtension,
+			expectError: true,
+		},
+		{
+			name:        "no extension is invalid",
+			value:       localFilePathWithoutExtension,
+			expectError: true,
+		},
+		{
+			name:        "empty string is invalid",
+			value:       "",
+			expectError: true,
+		},
+		{
+			name:        "just tar extension is invalid",
+			value:       localFilePathJustTarExtension,
+			expectError: true,
+		},
+		{
+			name:        "just tar.zst extension is invalid",
+			value:       localFilePathJustTarZstExtension,
+			expectError: true,
+		},
+		{
+			name:        "invalid characters are invalid",
+			value:       localFilePathWithInvalidCharacters,
+			expectError: true,
+		},
+		{
+			name:        "spaces in path is invalid",
+			value:       localFilePathWithSpaces,
+			expectError: true,
+		},
+		{
+			name:        "double slash is invalid",
+			value:       localFilePathWithDoubleSlash,
+			expectError: true,
+		},
+		{
+			name:        "ends with slash is invalid",
+			value:       localFilePathEndsWithSlash,
+			expectError: true,
+		},
+		{
+			name:        "tar but not at end is invalid",
+			value:       "package.tar.something",
+			expectError: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := ValidateLocalFilePathPackageSource(tc.value)
+
+			if tc.expectError {
+				if err == nil {
+					t.Errorf("Expected error for value %q, but got none", tc.value)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Expected no error for value %q, but got: %v", tc.value, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateOCIReferencePackageSource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		value       string
+		expectError bool
+	}{
+		// Valid cases
+		{
+			name:        "value with version tag is valid",
+			value:       ociReferenceWithVersionTag,
+			expectError: false,
+		},
+		{
+			name:        "OCI reference with latest tag is valid",
+			value:       ociReferenceWithLatestTag,
+			expectError: false,
+		},
+		{
+			name:        "OCI reference with digest is valid",
+			value:       ociReferenceWithDigest,
+			expectError: false,
+		},
+		{
+			name:        "OCI reference without tag or digest is valid",
+			value:       ociReferenceWithoutTagOrDigest,
+			expectError: false,
+		},
+		{
+			name:        "OCI reference with port is valid",
+			value:       ociReferenceWithPort,
+			expectError: false,
+		},
+		{
+			name:        "OCI reference with localhost is valid",
+			value:       ociReferenceWithLocalhost,
+			expectError: false,
+		},
+		{
+			name:        "OCI reference with nested namespace is valid",
+			value:       ociReferenceWithNestedNamespace,
+			expectError: false,
+		},
+		// Invalid cases
+		{
+			name:        "OCI reference without scheme is invalid",
+			value:       ociReferenceWithoutScheme,
+			expectError: true,
+		},
+		{
+			name:        "OCI reference with empty string is invalid",
+			value:       "",
+			expectError: true,
+		},
+		{
+			name:        "OCI reference with only oci:// scheme is invalid",
+			value:       ociReferenceWithOnlyScheme,
+			expectError: true,
+		},
+		{
+			name:        "OCI reference with only hostname is invalid",
+			value:       ociReferenceWithOnlyHostname,
+			expectError: true,
+		},
+		{
+			name:        "OCI reference with invalid characters in repository name is invalid",
+			value:       ociReferenceWithInvalidRepoNameCharacters,
+			expectError: true,
+		},
+		{
+			name:        "OCI reference with invalid tag with spaces is invalid",
+			value:       ociReferenceWithInvalidTagFormat,
+			expectError: true,
+		},
+		{
+			name:        "OCI reference with invalid digest format is invalid",
+			value:       ociReferenceWithInvalidDigest,
+			expectError: true,
+		},
+		{
+			name:        "OCI reference with double slash in path is invalid",
+			value:       ociReferenceWithDoubleSlash,
+			expectError: true,
+		},
+		{
+			name:        "OCI reference with trailing slash is invalid",
+			value:       ociReferenceWithTrailingSlash,
+			expectError: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := ValidateOCIReferencePackageSource(tc.value)
+
+			if tc.expectError {
+				if err == nil {
+					t.Errorf("Expected error for value %q, but got none", tc.value)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Expected no error for value %q, but got: %v", tc.value, err)
 				}
 			}
 		})
