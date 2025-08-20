@@ -789,7 +789,7 @@ func getPackageSource(pkg PackageResourceModel, providerData customProviderData)
 			return source, nil
 		}
 	}
-	return "", fmt.Errorf("invalid package source: %s. Must be a valid OCI distrubution reference (including oci:// scheme) or local file path (absolute or relative)", source)
+	return "", fmt.Errorf("invalid package source: %s. Must be a valid OCI distribution reference (including oci:// scheme) or local file path (absolute or relative)", source)
 }
 
 func findPackageComponent(components []v1alpha1.ZarfComponent, name string) (v1alpha1.ZarfComponent, bool) {
