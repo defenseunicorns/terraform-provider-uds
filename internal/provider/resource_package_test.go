@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -164,10 +163,8 @@ func TestFlattenOverrides(t *testing.T) {
 	// Run the test cases
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := flattenOverrides(tc.input)
-			if !reflect.DeepEqual(got, tc.expected) {
-				t.Errorf("flattenOverrides() = %v, expected %v", got, tc.expected)
-			}
+			actual := flattenOverrides(tc.input)
+			assert.Equal(t, tc.expected, actual)
 		})
 	}
 }
@@ -423,26 +420,22 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter).(*PackageResource)
 			testModel := NewPackageResourceModelFromTestData(tc.packageModelData, tc.componentModelData)
+			expectErrors := len(tc.expectedErrorContains) > 0
 
 			_, err := packageResource.upsert(context.Background(), testModel)
 
-			if err == nil && len(tc.expectedErrorContains) > 0 {
-				t.Errorf("Expected error, got none")
-				return
-			}
-			if err != nil && len(tc.expectedErrorContains) == 0 {
-				t.Errorf("Expected no error, got %v", err)
-				return
-			}
-			for _, expectedErrorMsg := range tc.expectedErrorContains {
-				if !strings.Contains(err.Error(), expectedErrorMsg) {
-					t.Errorf("Expected error to contain %q, but got: %v", expectedErrorMsg, err)
-					return
+			if expectErrors {
+				assert.NotNil(t, err, "Expected error, got none")
+				for _, expectedErrorMsg := range tc.expectedErrorContains {
+					assert.Contains(t, err.Error(), expectedErrorMsg, "Expected error to contain %q, but got: %v", expectedErrorMsg, err.Error())
 				}
+			} else {
+				assert.Nil(t, err, "Expected no error, got %v", err)
 			}
+			mockPackager.AssertExpectations(t)
+			mockPackageComponentFilter.AssertExpectations(t)
 
 			// Check that ForDeploy was called with expected optional components
-			mockPackageComponentFilter.AssertExpectations(t)
 			var actualOptionalComponents []string
 			for _, call := range mockPackageComponentFilter.Calls {
 				if call.Method == "ForDeploy" && len(call.Arguments) > 0 {
@@ -462,7 +455,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 		localFilePathExists       bool
 		expectedCallToLoadPackage bool
 		expectedCallToDeploy      bool
-		expectedErrorContains     []string
+		expectedErrorContains     string
 	}{
 		{
 			name:                      "OCI distribution source with oci:// scheme loads specified source",
@@ -470,7 +463,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       true,
 			expectedCallToLoadPackage: true,
 			expectedCallToDeploy:      true,
-			expectedErrorContains:     []string{},
+			expectedErrorContains:     "",
 		},
 		{
 			name:                      "existent local absolute file path loads specified source",
@@ -478,7 +471,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       true,
 			expectedCallToLoadPackage: true,
 			expectedCallToDeploy:      true,
-			expectedErrorContains:     []string{},
+			expectedErrorContains:     "",
 		},
 		{
 			name:                      "existent local relative file path loads specified source",
@@ -486,7 +479,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       true,
 			expectedCallToLoadPackage: true,
 			expectedCallToDeploy:      true,
-			expectedErrorContains:     []string{},
+			expectedErrorContains:     "",
 		},
 		{
 			name:                      "existent file without path loads specified source",
@@ -494,7 +487,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       true,
 			expectedCallToLoadPackage: true,
 			expectedCallToDeploy:      true,
-			expectedErrorContains:     []string{},
+			expectedErrorContains:     "",
 		},
 		{
 			name:                      "existent uncompressed tarfile loads specified source",
@@ -502,7 +495,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       true,
 			expectedCallToLoadPackage: true,
 			expectedCallToDeploy:      true,
-			expectedErrorContains:     []string{},
+			expectedErrorContains:     "",
 		},
 		{
 			name:                      "nonexistent local absolute file path returns error",
@@ -510,7 +503,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
-			expectedErrorContains:     []string{"no such file or directory"},
+			expectedErrorContains:     "no such file or directory",
 		},
 		{
 			name:                      "nonexistent local relative file path returns error",
@@ -518,7 +511,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
-			expectedErrorContains:     []string{"no such file or directory"},
+			expectedErrorContains:     "no such file or directory",
 		},
 		{
 			name:                      "nonexistent file without path returns error",
@@ -526,7 +519,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
-			expectedErrorContains:     []string{"no such file or directory"},
+			expectedErrorContains:     "no such file or directory",
 		},
 		{
 			name:                      "nonexistent uncompressed tarfile loads specified source",
@@ -534,7 +527,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
-			expectedErrorContains:     []string{"no such file or directory"},
+			expectedErrorContains:     "no such file or directory",
 		},
 		{
 			name:                      "missing oci:// scheme for OCI reference returns error",
@@ -542,7 +535,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
-			expectedErrorContains:     []string{"invalid package source"},
+			expectedErrorContains:     "invalid package source",
 		},
 		{
 			name:                      "http URL returns error",
@@ -550,7 +543,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
-			expectedErrorContains:     []string{"invalid package source"},
+			expectedErrorContains:     "invalid package source",
 		},
 		{
 			name:                      "https URL returns error",
@@ -558,7 +551,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
-			expectedErrorContains:     []string{"invalid package source"},
+			expectedErrorContains:     "invalid package source",
 		},
 		{
 			name:                      "empty source returns error",
@@ -566,7 +559,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
-			expectedErrorContains:     []string{"invalid package source"},
+			expectedErrorContains:     "invalid package source",
 		},
 		{
 			name:                      "whitespace source returns error",
@@ -574,7 +567,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			localFilePathExists:       false,
 			expectedCallToLoadPackage: false,
 			expectedCallToDeploy:      false,
-			expectedErrorContains:     []string{"invalid package source"},
+			expectedErrorContains:     "invalid package source",
 		},
 	}
 
@@ -584,7 +577,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			mockPackageComponentFilter := &MockPackageComponentFilter{}
 
 			// Create temporary file if test expects local file to exist
-			if tc.localFilePathExists && !strings.HasPrefix(tc.source, "oci://") {
+			if tc.localFilePathExists && !strings.HasPrefix(tc.source, helpers.OCIURLPrefix) {
 				dir := filepath.Dir(tc.source)
 				if dir != "." {
 					err := os.MkdirAll(dir, 0755)
@@ -623,31 +616,23 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter).(*PackageResource)
 			testModel := NewPackageResourceModelFromTestData(packageModelData, []ComponentModelTestData{})
+			expectErrors := len(tc.expectedErrorContains) > 0
 
 			_, err := packageResource.upsert(context.Background(), testModel)
 
-			if err == nil && len(tc.expectedErrorContains) > 0 {
-				t.Errorf("Expected error, got none")
-				return
+			if expectErrors {
+				assert.NotNil(t, err, "Expected error, got none")
+				assert.Contains(t, err.Error(), tc.expectedErrorContains)
+			} else {
+				assert.Nil(t, err, "Expected no error, got %v", err)
 			}
-			if err != nil && len(tc.expectedErrorContains) == 0 {
-				t.Errorf("Expected no error, got %v", err)
-				return
-			}
-			for _, expectedErrorMsg := range tc.expectedErrorContains {
-				if !strings.Contains(err.Error(), expectedErrorMsg) {
-					t.Errorf("Expected error to contain %q, but got: %v", expectedErrorMsg, err)
-					return
-				}
-			}
+			mockPackager.AssertExpectations(t)
+			mockPackageComponentFilter.AssertExpectations(t)
 
 			// Verify that LoadPackage was called with the correct source
 			if tc.expectedCallToLoadPackage {
 				mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, tc.source, mock.Anything)
 			}
-
-			mockPackager.AssertExpectations(t)
-			mockPackageComponentFilter.AssertExpectations(t)
 		})
 	}
 }

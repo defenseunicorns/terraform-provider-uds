@@ -5,7 +5,6 @@ package validator
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -14,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	tfvalidator "github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/stretchr/testify/assert"
 )
 
 const (
@@ -77,6 +77,18 @@ func newObjectListWithAttributeValues(attributeName string, values []string) typ
 		types.ObjectType{AttrTypes: map[string]attr.Type{attributeName: types.StringType}},
 		attrValues,
 	)
+}
+
+func assertValidatorResponseDiagnosticsContainsErrorSummary(t *testing.T, diagnostics diag.Diagnostics, expectedErrorSummary string) {
+	// Check that at least one error has the expected summary
+	found := false
+	for _, d := range diagnostics {
+		if d.Summary() == expectedErrorSummary {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "Expected error with summary %q, but it was not found in diagnostics: %v", expectedErrorSummary, diagnostics)
 }
 
 func TestBlockStringAttributeUniquenessValidator_ValidateList(t *testing.T) {
@@ -170,22 +182,10 @@ func TestBlockStringAttributeUniquenessValidator_ValidateList(t *testing.T) {
 			}
 
 			validator.ValidateList(context.Background(), req, resp)
-
-			if len(resp.Diagnostics) != tc.expectedErrorCount {
-				t.Errorf("Expected %d errors, got %d. Diagnostics: %v", tc.expectedErrorCount, len(resp.Diagnostics), resp.Diagnostics)
-			}
+			assert.Equal(t, tc.expectedErrorCount, len(resp.Diagnostics), "Expected %d errors, got %d. Diagnostics: %v", tc.expectedErrorCount, len(resp.Diagnostics), resp.Diagnostics)
 
 			if tc.expectedErrorSummary != "" && len(resp.Diagnostics) > 0 {
-				found := false
-				for _, diag := range resp.Diagnostics {
-					if diag.Summary() == tc.expectedErrorSummary {
-						found = true
-						break
-					}
-				}
-				if !found {
-					t.Errorf("Expected error with summary %q, but it was not found in diagnostics: %v", tc.expectedErrorSummary, resp.Diagnostics)
-				}
+				assertValidatorResponseDiagnosticsContainsErrorSummary(t, resp.Diagnostics, tc.expectedErrorSummary)
 			}
 		})
 	}
@@ -356,25 +356,12 @@ func TestNewBlockStringAttributeUniquenessValidator(t *testing.T) {
 			validator, err := NewBlockStringAttributeUniquenessValidator(tc.blockName, tc.attributeName)
 
 			if tc.expectError {
-				if err == nil {
-					t.Errorf("Expected error for block name %q and attribute name %q, but got none", tc.blockName, tc.attributeName)
-					return
-				}
-				if tc.errorContains != "" && !strings.Contains(err.Error(), tc.errorContains) {
-					t.Errorf("Expected error to contain %q, but got: %s", tc.errorContains, err.Error())
-				}
-				if validator != nil {
-					t.Errorf("Expected validator to be nil when error occurs, but got %T", validator)
-				}
+				assert.Nil(t, validator, "Expected validator to be nil when error occurs, but got %T", validator)
+				assert.NotNil(t, err, "Expected error for block name %q and attribute name %q, but got none", tc.blockName, tc.attributeName)
+				assert.Contains(t, err.Error(), tc.errorContains, "Expected error to contain %q", tc.errorContains)
 			} else {
-				if err != nil {
-					t.Errorf("Expected no error for block name %q and attribute name %q, but got: %s", tc.blockName, tc.attributeName, err.Error())
-					return
-				}
-				if validator == nil {
-					t.Errorf("Expected validator to be non-nil for valid block name %q and attribute name %q", tc.blockName, tc.attributeName)
-					return
-				}
+				assert.NotNil(t, validator, "Expected validator to be non-nil for valid block name %q and attribute name %q", tc.blockName, tc.attributeName)
+				assert.Nil(t, err, "Expected no error for block name %q and attribute name %q, but got error: %v", tc.blockName, tc.attributeName, err)
 			}
 		})
 	}
@@ -458,24 +445,10 @@ func TestPackageSourceValidator(t *testing.T) {
 			PackageSourceValidator().ValidateString(context.Background(), request, response)
 
 			if tc.expectError {
-				if !response.Diagnostics.HasError() {
-					t.Errorf("Expected error but got none")
-					return
-				}
-				found := false
-				for _, diag := range response.Diagnostics.Errors() {
-					if diag.Summary() == expectedErrorContains {
-						found = true
-						break
-					}
-				}
-				if !found {
-					t.Errorf("Expected error to contain %q, but got: %v", expectedErrorContains, response.Diagnostics.Errors())
-				}
+				assert.True(t, response.Diagnostics.HasError(), "Expected error but got none")
+				assertValidatorResponseDiagnosticsContainsErrorSummary(t, response.Diagnostics, expectedErrorContains)
 			} else {
-				if response.Diagnostics.HasError() {
-					t.Errorf("Expected no error but got: %v", response.Diagnostics.Errors())
-				}
+				assert.False(t, response.Diagnostics.HasError(), "Expected no error but got: %v", response.Diagnostics.Errors())
 			}
 		})
 	}
@@ -496,9 +469,7 @@ func TestPackageSourceValidator_NullAndUnknown(t *testing.T) {
 
 		validator.ValidateString(context.Background(), request, response)
 
-		if response.Diagnostics.HasError() {
-			t.Errorf("Expected no error for null value but got: %v", response.Diagnostics.Errors())
-		}
+		assert.False(t, response.Diagnostics.HasError(), "Expected no error for null value but got: %v", response.Diagnostics.Errors())
 	}
 }
 
@@ -641,13 +612,9 @@ func TestValidateLocalFilePathPackageSource(t *testing.T) {
 			err := ValidateLocalFilePathPackageSource(tc.value)
 
 			if tc.expectError {
-				if err == nil {
-					t.Errorf("Expected error for value %q, but got none", tc.value)
-				}
+				assert.NotNil(t, err, "Expected error for value %q, but got none", tc.value)
 			} else {
-				if err != nil {
-					t.Errorf("Expected no error for value %q, but got: %v", tc.value, err)
-				}
+				assert.Nil(t, err, "Expected no error for value %q, but got: %v", tc.value, err)
 			}
 		})
 	}
@@ -752,13 +719,9 @@ func TestValidateOCIReferencePackageSource(t *testing.T) {
 			err := ValidateOCIReferencePackageSource(tc.value)
 
 			if tc.expectError {
-				if err == nil {
-					t.Errorf("Expected error for value %q, but got none", tc.value)
-				}
+				assert.NotNil(t, err, "Expected error for value %q, but got none", tc.value)
 			} else {
-				if err != nil {
-					t.Errorf("Expected no error for value %q, but got: %v", tc.value, err)
-				}
+				assert.Nil(t, err, "Expected no error for value %q, but got: %v", tc.value, err)
 			}
 		})
 	}
