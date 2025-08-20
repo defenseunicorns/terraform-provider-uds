@@ -11,7 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
-const initPackageVersion = "v0.59.0"
+const initPackageVersion = "v0.60.0"
 
 func TestAccPackageResource(t *testing.T) {
 	resource.Test(t, resource.TestCase{
@@ -35,7 +35,7 @@ var testAccPackageResourceConfig = fmt.Sprintf(`
 resource "uds_bundle_metadata" "example_bundle" {
   version      = "0.0.1"
   kind         = "UDSBundle"
-  description  = "A demo bundle for the podinfo and nginx packages"
+  description  = "A demo bundle for the init package"
   architecture = "%s"
 }
 
