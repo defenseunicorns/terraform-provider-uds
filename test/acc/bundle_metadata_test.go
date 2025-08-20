@@ -31,7 +31,7 @@ var testAccMetadataResourceConfig = `
 resource "uds_bundle_metadata" "example_bundle" {
   version      = "0.0.1"
   kind         = "UDSBundle"
-  description  = "A demo bundle for the podinfo and nginx packages"
+  description  = "An example bundle"
   architecture = "arm64"
 }
 `

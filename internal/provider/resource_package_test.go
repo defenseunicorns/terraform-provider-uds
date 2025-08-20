@@ -6,11 +6,13 @@ package provider
 import (
 	"context"
 	"fmt"
-	"reflect"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/defenseunicorns/pkg/helpers/v2"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -161,10 +163,8 @@ func TestFlattenOverrides(t *testing.T) {
 	// Run the test cases
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := flattenOverrides(tc.input)
-			if !reflect.DeepEqual(got, tc.expected) {
-				t.Errorf("flattenOverrides() = %v, expected %v", got, tc.expected)
-			}
+			actual := flattenOverrides(tc.input)
+			assert.Equal(t, tc.expected, actual)
 		})
 	}
 }
@@ -218,10 +218,9 @@ type MockLoadPackageResult struct {
 
 type PackageModelTestData struct {
 	Name         string
-	Repository   string
-	Ref          string
-	Timeout      string
+	Source       string
 	Architecture string
+	Timeout      string
 }
 
 type ComponentModelTestData struct {
@@ -232,10 +231,9 @@ type ComponentModelTestData struct {
 func NewPackageResourceModelFromTestData(packageModelData PackageModelTestData, componentModelData []ComponentModelTestData) PackageResourceModel {
 	return PackageResourceModel{
 		Name:         types.StringValue(packageModelData.Name),
-		Repository:   types.StringValue(packageModelData.Repository),
-		Ref:          types.StringValue(packageModelData.Ref),
-		Timeout:      types.StringValue(packageModelData.Timeout),
+		Source:       types.StringValue(packageModelData.Source),
 		Architecture: types.StringValue(packageModelData.Architecture),
+		Timeout:      types.StringValue(packageModelData.Timeout),
 		Component:    NewComponentModelsFromTestData(componentModelData),
 	}
 }
@@ -250,62 +248,61 @@ func NewComponentModelsFromTestData(componentModelData []ComponentModelTestData)
 	return componentModels
 }
 
+// Helper function to create fresh MockLoadPackageResult for each test
+func newValidLoadPackageResult() MockLoadPackageResult {
+	return MockLoadPackageResult{
+		Layout: &layout.PackageLayout{
+			Pkg: v1alpha1.ZarfPackage{
+				Metadata: v1alpha1.ZarfMetadata{
+					Name:        "test-package",
+					Description: "Test package",
+					Version:     "0.0.1",
+				},
+				Components: []v1alpha1.ZarfComponent{
+					{
+						Name:     "test-required-component-0",
+						Required: helpers.BoolPtr(true),
+						Default:  false,
+					},
+					{
+						Name:     "test-required-component-1",
+						Required: helpers.BoolPtr(true),
+						Default:  false,
+					},
+					{
+						Name:     "test-optional-default-component-0",
+						Required: nil, // Why zarf, why?
+						Default:  true,
+					},
+					{
+						Name:     "test-optional-default-component-1",
+						Required: helpers.BoolPtr(false),
+						Default:  true,
+					},
+					{
+						Name:     "test-optional-non-default-component-0",
+						Required: nil,
+						Default:  false,
+					},
+					{
+						Name:     "test-optional-non-default-component-1",
+						Required: helpers.BoolPtr(false),
+						Default:  false,
+					},
+				},
+			},
+		},
+		Error: nil,
+	}
+}
+
 func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 
 	validPackageModelData := PackageModelTestData{
 		Name:         "test-package",
-		Repository:   "ghcr.io/defenseunicornstest/packages/test-package",
-		Ref:          "v0.0.1",
-		Timeout:      "10m",
+		Source:       "oci://ghcr.io/defenseunicornstest/packages/test-package",
 		Architecture: runtime.GOARCH,
-	}
-
-	// Helper function to create fresh MockLoadPackageResult for each test
-	newValidLoadPackageResult := func() MockLoadPackageResult {
-		return MockLoadPackageResult{
-			Layout: &layout.PackageLayout{
-				Pkg: v1alpha1.ZarfPackage{
-					Metadata: v1alpha1.ZarfMetadata{
-						Name:        "test-package",
-						Description: "Test package",
-						Version:     "0.0.1",
-					},
-					Components: []v1alpha1.ZarfComponent{
-						{
-							Name:     "test-required-component-0",
-							Required: boolPtr(true),
-							Default:  false,
-						},
-						{
-							Name:     "test-required-component-1",
-							Required: boolPtr(true),
-							Default:  false,
-						},
-						{
-							Name:     "test-optional-default-component-0",
-							Required: nil, // Why zarf, why?
-							Default:  true,
-						},
-						{
-							Name:     "test-optional-default-component-1",
-							Required: boolPtr(false),
-							Default:  true,
-						},
-						{
-							Name:     "test-optional-non-default-component-0",
-							Required: nil,
-							Default:  false,
-						},
-						{
-							Name:     "test-optional-non-default-component-1",
-							Required: boolPtr(false),
-							Default:  false,
-						},
-					},
-				},
-			},
-			Error: nil,
-		}
+		Timeout:      "10m",
 	}
 
 	tests := []struct {
@@ -423,26 +420,22 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter).(*PackageResource)
 			testModel := NewPackageResourceModelFromTestData(tc.packageModelData, tc.componentModelData)
+			expectErrors := len(tc.expectedErrorContains) > 0
 
 			_, err := packageResource.upsert(context.Background(), testModel)
 
-			if err == nil && len(tc.expectedErrorContains) > 0 {
-				t.Errorf("Expected error, got none")
-				return
-			}
-			if err != nil && len(tc.expectedErrorContains) == 0 {
-				t.Errorf("Expected no error, got %v", err)
-				return
-			}
-			for _, expectedErrorMsg := range tc.expectedErrorContains {
-				if !strings.Contains(err.Error(), expectedErrorMsg) {
-					t.Errorf("Expected error to contain %q, but got: %v", expectedErrorMsg, err)
-					return
+			if expectErrors {
+				assert.NotNil(t, err, "Expected error, got none")
+				for _, expectedErrorMsg := range tc.expectedErrorContains {
+					assert.Contains(t, err.Error(), expectedErrorMsg, "Expected error to contain %q, but got: %v", expectedErrorMsg, err.Error())
 				}
+			} else {
+				assert.Nil(t, err, "Expected no error, got %v", err)
 			}
+			mockPackager.AssertExpectations(t)
+			mockPackageComponentFilter.AssertExpectations(t)
 
 			// Check that ForDeploy was called with expected optional components
-			mockPackageComponentFilter.AssertExpectations(t)
 			var actualOptionalComponents []string
 			for _, call := range mockPackageComponentFilter.Calls {
 				if call.Method == "ForDeploy" && len(call.Arguments) > 0 {
@@ -455,7 +448,191 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 	}
 }
 
-// Helper function to create bool pointers
-func boolPtr(b bool) *bool {
-	return &b
+func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
+	tests := []struct {
+		name                      string
+		source                    string
+		localFilePathExists       bool
+		expectedCallToLoadPackage bool
+		expectedCallToDeploy      bool
+		expectedErrorContains     string
+	}{
+		{
+			name:                      "OCI distribution source with oci:// scheme loads specified source",
+			source:                    "oci://ghcr.io/defenseunicornstest/packages/test-package:v1.0.0",
+			localFilePathExists:       true,
+			expectedCallToLoadPackage: true,
+			expectedCallToDeploy:      true,
+			expectedErrorContains:     "",
+		},
+		{
+			name:                      "existent local absolute file path loads specified source",
+			source:                    "/tmp/absolute/path/to/existenttest-package.tar.zst",
+			localFilePathExists:       true,
+			expectedCallToLoadPackage: true,
+			expectedCallToDeploy:      true,
+			expectedErrorContains:     "",
+		},
+		{
+			name:                      "existent local relative file path loads specified source",
+			source:                    "./relative/path/to/existenttest-package.tar.zst",
+			localFilePathExists:       true,
+			expectedCallToLoadPackage: true,
+			expectedCallToDeploy:      true,
+			expectedErrorContains:     "",
+		},
+		{
+			name:                      "existent file without path loads specified source",
+			source:                    "existent-test-package-without-path.tar.zst",
+			localFilePathExists:       true,
+			expectedCallToLoadPackage: true,
+			expectedCallToDeploy:      true,
+			expectedErrorContains:     "",
+		},
+		{
+			name:                      "existent uncompressed tarfile loads specified source",
+			source:                    "existent-test-package-without-path.tar",
+			localFilePathExists:       true,
+			expectedCallToLoadPackage: true,
+			expectedCallToDeploy:      true,
+			expectedErrorContains:     "",
+		},
+		{
+			name:                      "nonexistent local absolute file path returns error",
+			source:                    "/tmp/absolute/path/to/nonexistenttest-package.tar.zst",
+			localFilePathExists:       false,
+			expectedCallToLoadPackage: false,
+			expectedCallToDeploy:      false,
+			expectedErrorContains:     "no such file or directory",
+		},
+		{
+			name:                      "nonexistent local relative file path returns error",
+			source:                    "./relative/path/to/nonexistenttest-package.tar.zst",
+			localFilePathExists:       false,
+			expectedCallToLoadPackage: false,
+			expectedCallToDeploy:      false,
+			expectedErrorContains:     "no such file or directory",
+		},
+		{
+			name:                      "nonexistent file without path returns error",
+			source:                    "nonexistent-test-package-without-path.tar.zst",
+			localFilePathExists:       false,
+			expectedCallToLoadPackage: false,
+			expectedCallToDeploy:      false,
+			expectedErrorContains:     "no such file or directory",
+		},
+		{
+			name:                      "nonexistent uncompressed tarfile loads specified source",
+			source:                    "nonexistent-test-package-without-path.tar",
+			localFilePathExists:       false,
+			expectedCallToLoadPackage: false,
+			expectedCallToDeploy:      false,
+			expectedErrorContains:     "no such file or directory",
+		},
+		{
+			name:                      "missing oci:// scheme for OCI reference returns error",
+			source:                    "ghcr.io/defenseunicornstest/packages/test-package:v1.0.0",
+			localFilePathExists:       false,
+			expectedCallToLoadPackage: false,
+			expectedCallToDeploy:      false,
+			expectedErrorContains:     "invalid package source",
+		},
+		{
+			name:                      "http URL returns error",
+			source:                    "http://defenseunicornstest.com/test-package.tar.zst",
+			localFilePathExists:       false,
+			expectedCallToLoadPackage: false,
+			expectedCallToDeploy:      false,
+			expectedErrorContains:     "invalid package source",
+		},
+		{
+			name:                      "https URL returns error",
+			source:                    "https://defenseunicornstest.com/test-package.tar.zst",
+			localFilePathExists:       false,
+			expectedCallToLoadPackage: false,
+			expectedCallToDeploy:      false,
+			expectedErrorContains:     "invalid package source",
+		},
+		{
+			name:                      "empty source returns error",
+			source:                    "",
+			localFilePathExists:       false,
+			expectedCallToLoadPackage: false,
+			expectedCallToDeploy:      false,
+			expectedErrorContains:     "invalid package source",
+		},
+		{
+			name:                      "whitespace source returns error",
+			source:                    "     ",
+			localFilePathExists:       false,
+			expectedCallToLoadPackage: false,
+			expectedCallToDeploy:      false,
+			expectedErrorContains:     "invalid package source",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+			// Create temporary file if test expects local file to exist
+			if tc.localFilePathExists && !strings.HasPrefix(tc.source, helpers.OCIURLPrefix) {
+				dir := filepath.Dir(tc.source)
+				if dir != "." {
+					err := os.MkdirAll(dir, 0755)
+					if err != nil {
+						t.Fatalf("Failed to create test directory %s: %v", dir, err)
+					}
+					defer os.RemoveAll(strings.Split(tc.source, "/")[0])
+				}
+
+				file, err := os.Create(tc.source)
+				if err != nil {
+					t.Fatalf("Failed to create test file %s: %v", tc.source, err)
+				}
+				file.Close()
+				defer os.Remove(tc.source)
+			}
+
+			packageModelData := PackageModelTestData{
+				Name:         "test-package",
+				Source:       tc.source,
+				Architecture: runtime.GOARCH,
+				Timeout:      "10m",
+			}
+
+			if tc.expectedCallToLoadPackage {
+				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+					newValidLoadPackageResult().Layout,
+					newValidLoadPackageResult().Error,
+				)
+			}
+
+			if tc.expectedCallToDeploy {
+				mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+				mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+			}
+
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter).(*PackageResource)
+			testModel := NewPackageResourceModelFromTestData(packageModelData, []ComponentModelTestData{})
+			expectErrors := len(tc.expectedErrorContains) > 0
+
+			_, err := packageResource.upsert(context.Background(), testModel)
+
+			if expectErrors {
+				assert.NotNil(t, err, "Expected error, got none")
+				assert.Contains(t, err.Error(), tc.expectedErrorContains)
+			} else {
+				assert.Nil(t, err, "Expected no error, got %v", err)
+			}
+			mockPackager.AssertExpectations(t)
+			mockPackageComponentFilter.AssertExpectations(t)
+
+			// Verify that LoadPackage was called with the correct source
+			if tc.expectedCallToLoadPackage {
+				mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, tc.source, mock.Anything)
+			}
+		})
+	}
 }

@@ -8,11 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -68,22 +66,19 @@ type PackageResource struct {
 
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
-	ID         types.String `tfsdk:"id"`
-	Name       types.String `tfsdk:"name"`
-	Timeout    types.String `tfsdk:"timeout"`
-	Kind       types.String `tfsdk:"kind"` // Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
-	Path       types.String `tfsdk:"path"`
-	Repository types.String `tfsdk:"repository"`
-	Ref        types.String `tfsdk:"ref"`
-
-	Key types.String `tfsdk:"key"`
+	ID           types.String     `tfsdk:"id"`
+	Name         types.String     `tfsdk:"name"`
+	Source       types.String     `tfsdk:"source"`
+	Architecture types.String     `tfsdk:"architecture"`
+	Timeout      types.String     `tfsdk:"timeout"`
+	Key          types.String     `tfsdk:"key"`
+	Component    []ComponentModel `tfsdk:"component"`
+	Overrides    []OverrideModel  `tfsdk:"overrides"`
 
 	// readonly metadata
-	Metadata  types.Object    `tfsdk:"metadata"`
-	Overrides []OverrideModel `tfsdk:"overrides"`
-
-	Component    []ComponentModel `tfsdk:"component"`
-	Architecture types.String     `tfsdk:"architecture"`
+	Metadata types.Object `tfsdk:"metadata"`
+	Kind     types.String `tfsdk:"kind"` // Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
+	Version  types.String `tfsdk:"version"`
 }
 
 // ComponentModel represents a UDS package component configuration.
@@ -138,38 +133,31 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Required:            true,
 				MarkdownDescription: "The name of the Zarf Package",
 			},
-			"path": schema.StringAttribute{
-				Optional:            true,
-				MarkdownDescription: "Path to tar file of the package",
+			"source": schema.StringAttribute{
+				Required:            true,
+				MarkdownDescription: "OCI distribution reference (including oci:// scheme) or local file path (absolute or relative) to the package",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 				Validators: []validator.String{
-					// Validate at least this attribute or other_attr should be configured.
-					stringvalidator.ExactlyOneOf(path.Expressions{
-						path.MatchRoot("repository"),
-						path.MatchRoot("path"),
-					}...),
+					udsValidator.PackageSourceValidator(),
 				},
-			},
-			"repository": schema.StringAttribute{
-				Optional:            true,
-				MarkdownDescription: "url to the repository of the package",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
-			},
-			"ref": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "Red of the package that was deployed",
-			},
-			"key": schema.StringAttribute{
-				Optional:            true,
-				MarkdownDescription: "Path to the public key for signed Zarf Packages",
 			},
 			"architecture": schema.StringAttribute{
 				Required:            true,
 				MarkdownDescription: "Architecture of the Zarf package",
+				// TODO(erickson): Add validator for architecture values?
+				//Validators: []validator.String{
+				//	stringvalidator.OneOf("amd64", "arm64"),
+				//},
+			},
+			"version": schema.StringAttribute{
+				Computed:            true,
+				MarkdownDescription: "Version of the package that was deployed",
+			},
+			"key": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Path to the public key for signed Zarf Packages",
 			},
 			"timeout": schema.StringAttribute{
 				Optional:            true,
@@ -178,13 +166,11 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				MarkdownDescription: "Timeout for the deploy operation",
 				// TODO(erickson): Add duration validator
 			},
-
 			"kind": schema.StringAttribute{
 				Computed: true,
 				// Optional:            true,
 				MarkdownDescription: "Kind of Zarf package; ZarfInitConfig or ZarfPackageConfig",
 			},
-
 			"metadata": &schema.SingleNestedAttribute{
 				Computed:    true,
 				Description: "Metadata retrieved from the zarf.yaml in the package",
@@ -203,8 +189,6 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					},
 				},
 			},
-
-			// overrides
 			"overrides": schema.ListNestedAttribute{
 				Description: "List of overrides for Helm charts.",
 				Optional:    true,
@@ -438,7 +422,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 	data.Metadata = pkgMetadata
-	data.Ref = types.StringValue(pkgUpdate.Data.Metadata.Version)
+	data.Version = types.StringValue(pkgUpdate.Data.Metadata.Version)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -654,7 +638,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 
 	valuesMap := flattenOverrides(plan.Overrides)
-	sourcePath, err := getPackageSource(plan, *r.providerData)
+	packageSource, err := getPackageSource(plan, *r.providerData)
 	if err != nil {
 		return plan, err
 	}
@@ -675,7 +659,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		CachePath:               zarfConfig.ZarfDefaultCachePath,
 	}
 
-	pkgLayout, err := r.packager.LoadPackage(ctx, sourcePath, loadOpt)
+	pkgLayout, err := r.packager.LoadPackage(ctx, packageSource, loadOpt)
 	if err != nil {
 		return plan, err
 	}
@@ -738,7 +722,10 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 	tflog.Debug(ctx, "ending deploy")
 
-	plan.ID = types.StringValue(plan.Path.ValueString())
+	// Populate/set resource computed values
+	// TODO: Supply namespace when computing package ID, when implemented
+	plan.ID = types.StringValue(computePackageID("", pkgLayout.Pkg.Metadata.Name))
+	plan.Version = types.StringValue(pkgLayout.Pkg.Metadata.Version)
 	plan.Kind = types.StringValue(string(pkgLayout.Pkg.Kind))
 
 	// populate the package metadata type.
@@ -761,8 +748,6 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 	plan.Metadata = pkgMetaData
 
-	// explicitly set the version
-	plan.Ref = types.StringValue(pkgLayout.Pkg.Metadata.Version)
 	return plan, err
 }
 
@@ -774,53 +759,24 @@ func getArchitecture(pkg PackageResourceModel, providerData customProviderData) 
 }
 
 func getPackageSource(pkg PackageResourceModel, providerData customProviderData) (string, error) {
-	packageTarballName := getPackageName(pkg, providerData.BundleArch)
-	sourcePath := ""
+	_ = providerData // TODO: Will be used for future local cache package download/lookup logic
+	source := pkg.Source.ValueString()
 
-	// Determine the proper sourcePath depending on provided overrides from UDS-CLI
-	if providerData != (customProviderData{}) {
-		// Check if UDS CLI sent overrides we need to use
-		sourcePath = filepath.Join(providerData.LocalPathOverride, packageTarballName)
-	} else if pkg.Repository.ValueString() != "" {
-		// Generate the oci schema based string from the provided repository
-		//nolint:nosprintfhostport
-		sourcePath = fmt.Sprintf("oci://%s:%s", pkg.Repository.ValueString(), pkg.Ref.ValueString())
-	} else if pkg.Path.ValueString() != "" {
-		// Generate a path to the zarf package tarball
-		sourcePath = pkg.Path.ValueString()
-		info, err := os.Stat(sourcePath)
+	if udsValidator.ValidateOCIReferencePackageSource(source) == nil {
+		// TODO: Add future local cache package download/lookup logic
+		return source, nil
+	}
+	if udsValidator.ValidateLocalFilePathPackageSource(source) == nil {
+		info, err := os.Stat(source)
 		if err != nil {
 			return "", err
 		}
-		if info.IsDir() {
-			sourcePath = filepath.Join(sourcePath, packageTarballName)
+		if !info.IsDir() {
+			// TODO: Add future local cache package download/lookup logic
+			return source, nil
 		}
 	}
-	return sourcePath, nil
-}
-
-func getPackageName(pkg PackageResourceModel, archOverride string) string {
-	tarballName := ""
-	packageName := pkg.Name.ValueString()
-	tarballArch := pkg.Architecture.ValueString()
-	tarballRef := pkg.Ref.ValueString()
-
-	if archOverride != "" {
-		tarballArch = archOverride
-	}
-
-	// zarf-init packages are 'special' and don't have the 'zarf-package' prefix
-	tarballNameTemplate := "zarf-package-%s-%s-%s.tar.zst"
-	if packageName == "init" {
-		tarballNameTemplate = "zarf-%s-%s-%s.tar.zst"
-	}
-
-	tarballName = fmt.Sprintf(tarballNameTemplate,
-		packageName,
-		tarballArch,
-		tarballRef)
-
-	return tarballName
+	return "", fmt.Errorf("invalid package source: %s. Must be a valid OCI distribution reference (including oci:// scheme) or local file path (absolute or relative)", source)
 }
 
 func findPackageComponent(components []v1alpha1.ZarfComponent, name string) (v1alpha1.ZarfComponent, bool) {
@@ -830,4 +786,11 @@ func findPackageComponent(components []v1alpha1.ZarfComponent, name string) (v1a
 		}
 	}
 	return v1alpha1.ZarfComponent{}, false // Not found
+}
+
+func computePackageID(namespace string, pkgName string) string {
+	if namespace == "" {
+		return pkgName
+	}
+	return fmt.Sprintf("%s:%s", namespace, pkgName)
 }

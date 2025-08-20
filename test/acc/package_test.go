@@ -11,6 +11,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
+const initPackageVersion = "v0.60.0"
+
 func TestAccPackageResource(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
@@ -21,7 +23,7 @@ func TestAccPackageResource(t *testing.T) {
 				Config: testAccPackageResourceConfig,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("uds_bundle_metadata.example_bundle", "version", "0.0.1"),
-					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", "v0.48.0"),
+					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", initPackageVersion),
 				),
 			},
 			// Delete testing automatically occurs in TestCase
@@ -33,17 +35,16 @@ var testAccPackageResourceConfig = fmt.Sprintf(`
 resource "uds_bundle_metadata" "example_bundle" {
   version      = "0.0.1"
   kind         = "UDSBundle"
-  description  = "A demo bundle for the podinfo and nginx packages"
+  description  = "A demo bundle for the init package"
   architecture = "%s"
 }
 
 resource "uds_package" "init" {
   name         = "init"
-  repository   = "ghcr.io/zarf-dev/packages/init"
-  ref          = "v0.48.0"
+  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
   architecture = uds_bundle_metadata.example_bundle.architecture
 }
-`, runtime.GOARCH)
+`, runtime.GOARCH, initPackageVersion)
 
 func TestInitPackage(t *testing.T) {
 	resource.Test(t, resource.TestCase{
@@ -54,7 +55,7 @@ func TestInitPackage(t *testing.T) {
 			{
 				Config: testAccInitPackageResourceConfig,
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", "v0.59.0"),
+					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", initPackageVersion),
 				),
 			},
 			// Delete testing automatically occurs in TestCase
@@ -65,8 +66,7 @@ func TestInitPackage(t *testing.T) {
 var testAccInitPackageResourceConfig = fmt.Sprintf(`
 resource "uds_package" "init" {
   name         = "init"
-  repository   = "ghcr.io/zarf-dev/packages/init"
-  ref          = "v0.59.0"
+  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
   architecture = "%s"
 }
-`, runtime.GOARCH)
+`, initPackageVersion, runtime.GOARCH)

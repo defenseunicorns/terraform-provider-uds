@@ -18,20 +18,18 @@ locals {
 
 resource "uds_package" "uds-k3d-dev" {
   name         = "uds_k3d"
-  repository   = "ghcr.io/defenseunicorns/packages/uds-k3d"
-  ref          = "0.13.0"
+  source       = "oci://ghcr.io/defenseunicorns/packages/uds-k3d:0.13.0"
   architecture = local.architecture
 }
 
 resource "uds_package" "init" {
-  depends_on   = [uds_package.uds-k3d-dev]
   name         = "init"
-  repository   = "ghcr.io/zarf-dev/packages/init"
-  ref          = "v0.59.0"
+  source       = "oci://ghcr.io/zarf-dev/packages/init:v0.60.0"
   architecture = local.architecture
 
   # Uncomment the component block below to install the git-server optional component
   #component {
   #  name = "git-server"
   #}
+  depends_on = [uds_package.uds-k3d-dev]
 }
