@@ -23,14 +23,17 @@ type BlockStringAttributeUniquenessValidator struct {
 	attributeName string
 }
 
+// Description returns a plain text description of the validator.
 func (v BlockStringAttributeUniquenessValidator) Description(_ context.Context) string {
 	return fmt.Sprintf("Ensures that all %q blocks have unique values for the %q attribute", v.blockName, v.attributeName)
 }
 
+// MarkdownDescription returns the markdown description for the validator.
 func (v BlockStringAttributeUniquenessValidator) MarkdownDescription(ctx context.Context) string {
 	return v.Description(ctx)
 }
 
+// ValidateList validates that all blocks in the list have unique values for the specified attribute.
 func (v BlockStringAttributeUniquenessValidator) ValidateList(ctx context.Context, req validator.ListRequest, resp *validator.ListResponse) {
 	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
 		return
@@ -127,7 +130,7 @@ func (v packageSourceValidator) MarkdownDescription(ctx context.Context) string 
 	return v.Description(ctx)
 }
 
-func (v packageSourceValidator) ValidateString(ctx context.Context, request validator.StringRequest, response *validator.StringResponse) {
+func (v packageSourceValidator) ValidateString(_ context.Context, request validator.StringRequest, response *validator.StringResponse) {
 	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
 		return
 	}
@@ -146,10 +149,12 @@ func (v packageSourceValidator) ValidateString(ctx context.Context, request vali
 	)
 }
 
+// PackageSourceValidator creates a new package source validator.
 func PackageSourceValidator() validator.String {
 	return packageSourceValidator{}
 }
 
+// ValidateLocalFilePathPackageSource validates that a value is a valid package source local file path.
 func ValidateLocalFilePathPackageSource(value string) error {
 	if !localPathRegex.MatchString(value) {
 		return fmt.Errorf("%q is not a valid local file path", value)
@@ -157,6 +162,7 @@ func ValidateLocalFilePathPackageSource(value string) error {
 	return nil
 }
 
+// ValidateOCIReferencePackageSource validates that a value is a valid package source OCI reference.
 func ValidateOCIReferencePackageSource(value string) error {
 	if !strings.HasPrefix(value, "oci://") {
 		return fmt.Errorf("%q missing oci:// scheme", value)
