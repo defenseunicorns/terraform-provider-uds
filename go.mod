@@ -14,10 +14,10 @@ tool (
 require (
 	github.com/defenseunicorns/pkg/helpers/v2 v2.0.4
 	github.com/google/uuid v1.6.0
-	github.com/hashicorp/terraform-plugin-framework v1.15.0
+	github.com/hashicorp/terraform-plugin-framework v1.15.1
 	github.com/hashicorp/terraform-plugin-go v0.28.0
 	github.com/hashicorp/terraform-plugin-log v0.9.0
-	github.com/hashicorp/terraform-plugin-testing v1.13.2
+	github.com/hashicorp/terraform-plugin-testing v1.13.3
 	github.com/stretchr/testify v1.10.0
 	github.com/zarf-dev/zarf v0.58.0
 	oras.land/oras-go/v2 v2.6.0
