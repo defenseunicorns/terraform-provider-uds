@@ -13,11 +13,13 @@ import (
 	"testing"
 
 	"github.com/defenseunicorns/pkg/helpers/v2"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	"github.com/zarf-dev/zarf/src/pkg/packager"
+	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 
@@ -293,6 +295,104 @@ func newValidLoadPackageResult() MockLoadPackageResult {
 			},
 		},
 		Error: nil,
+	}
+}
+
+func TestPackageResource_Upsert_ZarfVars(t *testing.T) {
+	validPackageModelData := PackageModelTestData{
+		Name:         "test-package",
+		Repository:   "ghcr.io/defenseunicornstest/packages/test-package",
+		Ref:          "v0.0.1",
+		Timeout:      "10m",
+		Architecture: runtime.GOARCH,
+	}
+
+	packageLayout := layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Metadata: v1alpha1.ZarfMetadata{
+				Name:        "test-package",
+				Description: "Test package",
+				Version:     "0.0.1",
+			},
+			Components: []v1alpha1.ZarfComponent{
+				{
+					Name:     "test-required-component-0",
+					Required: boolPtr(true),
+					Default:  false,
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name             string
+		zarfVarList      []ZarfVar
+		zarfVarMap       types.Map
+		expectedZarfVars map[string]string
+	}{
+		{
+			name:        "vars list and map",
+			zarfVarList: []ZarfVar{{Name: types.StringValue("listKey"), Value: types.StringValue("listsValue")}},
+			zarfVarMap:  types.MapValueMust(types.StringType, map[string]attr.Value{"mapKey": types.StringValue("mapValue")}),
+			expectedZarfVars: map[string]string{
+				"listKey": "listsValue",
+				"mapKey":  "mapValue",
+			},
+		},
+		{
+			name:        "vars list only",
+			zarfVarList: []ZarfVar{{Name: types.StringValue("listKey"), Value: types.StringValue("listsValue")}},
+			zarfVarMap:  types.Map{},
+			expectedZarfVars: map[string]string{
+				"listKey": "listsValue",
+			},
+		},
+		{
+			name:        "vars map only",
+			zarfVarList: []ZarfVar{},
+			zarfVarMap:  types.MapValueMust(types.StringType, map[string]attr.Value{"mapKey": types.StringValue("mapValue")}),
+			expectedZarfVars: map[string]string{
+				"mapKey": "mapValue",
+			},
+		},
+		{
+			name:             "no vars",
+			zarfVarList:      []ZarfVar{},
+			zarfVarMap:       types.Map{},
+			expectedZarfVars: map[string]string{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+				&packageLayout,
+				nil,
+			)
+			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter).(*PackageResource)
+			testModel := NewPackageResourceModelFromTestData(validPackageModelData, []ComponentModelTestData{})
+			testModel.ZarfVars = tc.zarfVarList
+			testModel.ZarfDeploySets = tc.zarfVarMap
+
+			_, err := packageResource.upsert(context.Background(), testModel)
+			assert.NoError(t, err)
+
+			// Check that Deploy was called and the variables map was provided with the correct values
+			mockPackageComponentFilter.AssertExpectations(t)
+			for _, call := range mockPackager.Calls {
+				if call.Method == "Deploy" {
+					deployOptions := call.Arguments[2].(zarfPackager.DeployOptions)
+					assert.NotNil(t, deployOptions.SetVariables)
+					assert.Len(t, deployOptions.SetVariables, len(tc.expectedZarfVars))
+					assert.Equal(t, deployOptions.SetVariables, tc.expectedZarfVars)
+				}
+			}
+		})
 	}
 }
 
