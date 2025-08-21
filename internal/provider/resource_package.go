@@ -67,17 +67,19 @@ type PackageResource struct {
 
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
-	ID                      types.String     `tfsdk:"id"`
-	Name                    types.String     `tfsdk:"name"`
-	Source                  types.String     `tfsdk:"source"`
-	Architecture            types.String     `tfsdk:"architecture"`
-	Timeout                 types.String     `tfsdk:"timeout"`
-	Key                     types.String     `tfsdk:"key"`
-	SkipSignatureValidation types.Bool       `tfsdk:"skip_signature_validation"`
-	Component               []ComponentModel `tfsdk:"component"`
-	Overrides               []OverrideModel  `tfsdk:"overrides"`
-	Vars                    []VariableModel  `tfsdk:"vars"`
-	SensitiveVars           []VariableModel  `tfsdk:"sensitive_vars"`
+	ID                      types.String `tfsdk:"id"`
+	Name                    types.String `tfsdk:"name"`
+	Source                  types.String `tfsdk:"source"`
+	Architecture            types.String `tfsdk:"architecture"`
+	Timeout                 types.String `tfsdk:"timeout"`
+	Key                     types.String `tfsdk:"key"`
+	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
+	NamespaceOverride       types.String `tfsdk:"namespace_override"`
+
+	Component     []ComponentModel `tfsdk:"component"`
+	Overrides     []OverrideModel  `tfsdk:"overrides"`
+	Vars          []VariableModel  `tfsdk:"vars"`
+	SensitiveVars []VariableModel  `tfsdk:"sensitive_vars"`
 
 	// readonly metadata
 	Metadata types.Object `tfsdk:"metadata"`
@@ -311,6 +313,10 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						},
 					},
 				},
+			},
+			"namespace_override": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "[Alpha] Namespace used to override the default for package deployment.",
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -766,12 +772,13 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		setVariables[sensitiveVar.Name.ValueString()] = sensitiveVar.Value.ValueString()
 	}
 
-	// TODO(erickson): Add support for Retries, OCIConcurrency, NamespaceOverride?
+	// TODO(erickson): Add support for Retries, OCIConcurrency?
 	deployOpts := zarfPackager.DeployOptions{
 		SetVariables:           setVariables,
 		AdoptExistingResources: false,
 		Timeout:                timeout,
 		RemoteOptions:          remoteOpts,
+		NamespaceOverride:      plan.NamespaceOverride.ValueString(),
 		GitServer: zarfState.GitServerInfo{
 			PushUsername: zarfState.ZarfGitPushUser,
 		},
@@ -806,8 +813,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	tflog.Debug(ctx, "ending deploy")
 
 	// Populate/set resource computed values
-	// TODO: Supply namespace when computing package ID, when implemented
-	plan.ID = types.StringValue(computePackageID("", pkgLayout.Pkg.Metadata.Name))
+	plan.ID = types.StringValue(computePackageID(plan.NamespaceOverride.ValueString(), pkgLayout.Pkg.Metadata.Name))
 	plan.Version = types.StringValue(pkgLayout.Pkg.Metadata.Version)
 	plan.Kind = types.StringValue(string(pkgLayout.Pkg.Kind))
 
