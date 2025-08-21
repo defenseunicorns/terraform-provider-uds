@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -71,7 +72,7 @@ type PackageResourceModel struct {
 	Source       types.String     `tfsdk:"source"`
 	Architecture types.String     `tfsdk:"architecture"`
 	Timeout      types.String     `tfsdk:"timeout"`
-	Key          types.String     `tfsdk:"key"`
+	PackageKey   PackageKey       `tfsdk:"package_key"`
 	Component    []ComponentModel `tfsdk:"component"`
 	Overrides    []OverrideModel  `tfsdk:"overrides"`
 
@@ -79,6 +80,12 @@ type PackageResourceModel struct {
 	Metadata types.Object `tfsdk:"metadata"`
 	Kind     types.String `tfsdk:"kind"` // Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
 	Version  types.String `tfsdk:"version"`
+}
+
+// PackageKey represents configuration for signed Zarf packages.
+type PackageKey struct {
+	Key                     types.String `tfsdk:"key"`
+	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
 }
 
 // ComponentModel represents a UDS package component configuration.
@@ -155,9 +162,18 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Computed:            true,
 				MarkdownDescription: "Version of the package that was deployed",
 			},
-			"key": schema.StringAttribute{
-				Optional:            true,
-				MarkdownDescription: "Path to the public key for signed Zarf Packages",
+			"package_key": schema.SingleNestedAttribute{
+				Attributes: map[string]schema.Attribute{
+					"key": schema.StringAttribute{
+						Description: "Path or URL to the public key for signed Zarf Packages.",
+						Optional:    true,
+					},
+					"skip_signature_validation": schema.BoolAttribute{
+						Description: "Skip validating the signature of a signed Zarf package.",
+						Optional:    true,
+						Default:     booldefault.StaticBool(false),
+					},
+				},
 			},
 			"timeout": schema.StringAttribute{
 				Optional:            true,
@@ -653,8 +669,8 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	loadOpt := zarfPackager.LoadOptions{
 		Filter:                  zarfFilters.Empty(),
 		Architecture:            getArchitecture(plan, *r.providerData),
-		PublicKeyPath:           plan.Key.ValueString(), // TODO(erickson): Not sure this is correct. Do we need to write key to temp file and set path to that?
-		SkipSignatureValidation: false,                  // TODO(erickson): Make this configurable?
+		PublicKeyPath:           plan.PackageKey.Key.ValueString(),
+		SkipSignatureValidation: plan.PackageKey.SkipSignatureValidation.ValueBool(),
 		RemoteOptions:           remoteOpts,
 		CachePath:               zarfConfig.ZarfDefaultCachePath,
 	}
