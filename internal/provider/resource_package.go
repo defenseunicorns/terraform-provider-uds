@@ -170,6 +170,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					},
 					"skip_signature_validation": schema.BoolAttribute{
 						Description: "Skip validating the signature of a signed Zarf package.",
+						Computed:    true,
 						Optional:    true,
 						Default:     booldefault.StaticBool(false),
 					},
