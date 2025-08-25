@@ -67,25 +67,21 @@ type PackageResource struct {
 
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
-	ID           types.String     `tfsdk:"id"`
-	Name         types.String     `tfsdk:"name"`
-	Source       types.String     `tfsdk:"source"`
-	Architecture types.String     `tfsdk:"architecture"`
-	Timeout      types.String     `tfsdk:"timeout"`
-	PackageKey   PackageKey       `tfsdk:"package_key"`
-	Component    []ComponentModel `tfsdk:"component"`
-	Overrides    []OverrideModel  `tfsdk:"overrides"`
+	ID                      types.String `tfsdk:"id"`
+	Name                    types.String `tfsdk:"name"`
+	Source                  types.String `tfsdk:"source"`
+	Architecture            types.String `tfsdk:"architecture"`
+	Timeout                 types.String `tfsdk:"timeout"`
+	Key                     types.String `tfsdk:"key"`
+	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
+
+	Component []ComponentModel `tfsdk:"component"`
+	Overrides []OverrideModel  `tfsdk:"overrides"`
 
 	// readonly metadata
 	Metadata types.Object `tfsdk:"metadata"`
 	Kind     types.String `tfsdk:"kind"` // Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
 	Version  types.String `tfsdk:"version"`
-}
-
-// PackageKey represents configuration for signed Zarf packages.
-type PackageKey struct {
-	Key                     types.String `tfsdk:"key"`
-	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
 }
 
 // ComponentModel represents a UDS package component configuration.
@@ -162,19 +158,15 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Computed:            true,
 				MarkdownDescription: "Version of the package that was deployed",
 			},
-			"package_key": schema.SingleNestedAttribute{
-				Attributes: map[string]schema.Attribute{
-					"key": schema.StringAttribute{
-						Description: "Path or URL to the public key for signed Zarf Packages.",
-						Optional:    true,
-					},
-					"skip_signature_validation": schema.BoolAttribute{
-						Description: "Skip validating the signature of a signed Zarf package.",
-						Computed:    true,
-						Optional:    true,
-						Default:     booldefault.StaticBool(false),
-					},
-				},
+			"key": schema.StringAttribute{
+				Description: "Path or URL to the public key for signed Zarf Packages.",
+				Optional:    true,
+			},
+			"skip_signature_validation": schema.BoolAttribute{
+				Description: "Skip validating the signature of a signed Zarf package.",
+				Computed:    true,
+				Optional:    true,
+				Default:     booldefault.StaticBool(false),
 			},
 			"timeout": schema.StringAttribute{
 				Optional:            true,
@@ -670,8 +662,8 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	loadOpt := zarfPackager.LoadOptions{
 		Filter:                  zarfFilters.Empty(),
 		Architecture:            getArchitecture(plan, *r.providerData),
-		PublicKeyPath:           plan.PackageKey.Key.ValueString(),
-		SkipSignatureValidation: plan.PackageKey.SkipSignatureValidation.ValueBool(),
+		PublicKeyPath:           plan.Key.ValueString(),
+		SkipSignatureValidation: plan.SkipSignatureValidation.ValueBool(),
 		RemoteOptions:           remoteOpts,
 		CachePath:               zarfConfig.ZarfDefaultCachePath,
 	}
