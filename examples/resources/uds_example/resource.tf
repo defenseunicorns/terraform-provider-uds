@@ -34,11 +34,11 @@ resource "uds_package" "podinfo" {
   depends_on   = [uds_package.init]
   zarf_vars = [
     {
-      name = "this is a variable"
+      name = "this_is_a_variable"
       value = "this is the value"
     },
     {
-      name = "this is another variable"
+      name = "this_is_another_variable"
       value = "this is another value"
     }
   ] 

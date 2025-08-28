@@ -77,7 +77,8 @@ type PackageResourceModel struct {
 	Component               []ComponentModel `tfsdk:"component"`
 	Overrides               []OverrideModel  `tfsdk:"overrides"`
 	ZarfVars                []ZarfVar        `tfsdk:"zarf_vars"`
-	ZarfDeploySets          types.Map        `tfsdk:"zarf_deploy_sets"` // TODO(jperry): I'm not really liking this name
+	Vars                    []ZarfVar        `tfsdk:"vars"`
+	SensitiveVars           []ZarfVar        `tfsdk:"sensitive_vars"`
 
 	// readonly metadata
 	Metadata types.Object `tfsdk:"metadata"`
@@ -205,12 +206,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					},
 				},
 			},
-			"zarf_deploy_sets": schema.MapAttribute{
-				ElementType: types.StringType,
-				Optional:    true,
-				Description: "A map of zarf values for the package, usually provided from a zarf config file",
-			},
-			"zarf_vars": schema.ListNestedAttribute{
+			"vars": schema.ListNestedAttribute{
 				Description: "List of Zarf variables for the package.",
 				Optional:    true,
 				NestedObject: schema.NestedAttributeObject{
@@ -222,6 +218,23 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						"value": schema.StringAttribute{
 							Description: "Value for the Zarf Variable.",
 							Required:    true,
+						},
+					},
+				},
+			},
+			"sensitive_vars": schema.ListNestedAttribute{
+				Description: "Sensitive Zarf Varlues",
+				Optional:    true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							Description: "Name of the Zarf Variable being set.",
+							Required:    true,
+						},
+						"value": schema.StringAttribute{
+							Description: "Value for the Zarf Variable.",
+							Required:    true,
+							Sensitive:   true,
 						},
 					},
 				},
@@ -723,20 +736,12 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 
 	setVariables := make(map[string]string)
-	if !plan.ZarfDeploySets.IsNull() {
-		diags := plan.ZarfDeploySets.ElementsAs(ctx, &setVariables, false)
-		if diags.HasError() {
-			return plan, fmt.Errorf("Unable to convert variables from a provided zarf-config file")
-		}
-	}
-
-	if setVariables == nil {
-		setVariables = make(map[string]string)
-	}
-
-	// variables from the HCL config take precidence over variables from the zarf config file.
-	for _, zarfVar := range plan.ZarfVars {
+	for _, zarfVar := range plan.Vars {
 		setVariables[zarfVar.Name.ValueString()] = zarfVar.Value.ValueString()
+	}
+	for _, sensitiveVar := range plan.SensitiveVars {
+		// TODO: @JPERRY Verify that the keys are unique...
+		setVariables[sensitiveVar.Name.ValueString()] = sensitiveVar.Value.ValueString()
 	}
 
 	// TODO(erickson): Add support for Retries, OCIConcurrency, NamespaceOverride?
