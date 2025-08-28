@@ -221,6 +221,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						},
 					},
 				},
+				Validators: []validator.List{udsValidator.UniqueVarNameValidator{}},
 			},
 			"sensitive_vars": schema.ListNestedAttribute{
 				Description: "Sensitive Zarf Varlues",
@@ -238,6 +239,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						},
 					},
 				},
+				Validators: []validator.List{udsValidator.UniqueVarNameValidator{}},
 			},
 			// overrides
 			"overrides": schema.ListNestedAttribute{
@@ -322,6 +324,17 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 		},
 	}
+}
+
+func (r *PackageResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var model PackageResourceModel
+
+	diags := req.Config.Get(ctx, &model)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	validateUniqueVarNames(model, resp)
 }
 
 // Configure configures the resource with provider data.
@@ -854,4 +867,43 @@ func computePackageID(namespace string, pkgName string) string {
 		return pkgName
 	}
 	return fmt.Sprintf("%s:%s", namespace, pkgName)
+}
+
+// validate that the 'vars' and 'sensitive_vars' all have unique names
+func validateUniqueVarNames(model PackageResourceModel, resp *resource.ValidateConfigResponse) {
+	// Map of normalized name -> where it appears
+	seen := map[string][]path.Path{}
+
+	// Helper to add entries from a slice
+	add := func(listName string, items []ZarfVar) {
+		for i, v := range items {
+			// Skip unknown/null names (can’t validate yet)
+			if v.Name.IsNull() || v.Name.IsUnknown() {
+				continue
+			}
+			k := v.Name.ValueString()
+			if k == "" {
+				continue
+			}
+			k = strings.ToLower(k) // duplicates are case insensitive
+
+			p := path.Root(listName).AtListIndex(i).AtName("name")
+			seen[k] = append(seen[k], p)
+		}
+	}
+
+	add("vars", model.Vars)
+	add("sensitive_vars", model.SensitiveVars)
+
+	// raise errors for any duplicates
+	for name, occurrences := range seen {
+		if len(occurrences) <= 1 {
+			continue
+		}
+
+		resp.Diagnostics.AddError(
+			"Duplicate variable name",
+			fmt.Sprintf("The variable name %q is defined more than once across `vars` and `sensitive_vars`. Names must be unique.", name),
+		)
+	}
 }
