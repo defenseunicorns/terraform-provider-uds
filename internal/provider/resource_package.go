@@ -76,7 +76,6 @@ type PackageResourceModel struct {
 	SkipSignatureValidation types.Bool       `tfsdk:"skip_signature_validation"`
 	Component               []ComponentModel `tfsdk:"component"`
 	Overrides               []OverrideModel  `tfsdk:"overrides"`
-	ZarfVars                []ZarfVar        `tfsdk:"zarf_vars"`
 	Vars                    []ZarfVar        `tfsdk:"vars"`
 	SensitiveVars           []ZarfVar        `tfsdk:"sensitive_vars"`
 

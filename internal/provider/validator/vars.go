@@ -1,3 +1,6 @@
+// Copyright 2024 Defense Unicorns
+// SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
 package validator
 
 import (
@@ -14,7 +17,7 @@ import (
 type UniqueVarNameValidator struct{}
 
 // Description returns a plain text description of the validator.
-func (v UniqueVarNameValidator) Description(ctx context.Context) string {
+func (v UniqueVarNameValidator) Description(_ context.Context) string {
 	return "Ensures each object's `name` is unique within the list"
 }
 
