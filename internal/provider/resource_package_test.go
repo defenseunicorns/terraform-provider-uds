@@ -300,8 +300,7 @@ func newValidLoadPackageResult() MockLoadPackageResult {
 func TestPackageResource_Upsert_ZarfVars(t *testing.T) {
 	validPackageModelData := PackageModelTestData{
 		Name:         "test-package",
-		Repository:   "ghcr.io/defenseunicornstest/packages/test-package",
-		Ref:          "v0.0.1",
+		Source:       "oci://ghcr.io/defenseunicornstest/packages/test-package:v0.0.1",
 		Timeout:      "10m",
 		Architecture: runtime.GOARCH,
 	}
@@ -316,7 +315,7 @@ func TestPackageResource_Upsert_ZarfVars(t *testing.T) {
 			Components: []v1alpha1.ZarfComponent{
 				{
 					Name:     "test-required-component-0",
-					Required: boolPtr(true),
+					Required: helpers.BoolPtr(true),
 					Default:  false,
 				},
 			},
