@@ -326,6 +326,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 	}
 }
 
+// ValidateConfig ensures validation between interdependant fields within a PackageResourceModel.
 func (r *PackageResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var model PackageResourceModel
 

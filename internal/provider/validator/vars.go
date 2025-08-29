@@ -10,15 +10,20 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
+// UniqueVarNameValidator validates the Name field within a list of Objects are all unique.
 type UniqueVarNameValidator struct{}
 
+// Description returns a plain text description of the validator.
 func (v UniqueVarNameValidator) Description(ctx context.Context) string {
 	return "Ensures each object's `name` is unique within the list"
 }
+
+// MarkdownDescription returns the markdown description for the validator.
 func (v UniqueVarNameValidator) MarkdownDescription(ctx context.Context) string {
 	return v.Description(ctx)
 }
 
+// ValidateList validates that all blocks in the list have unique values for the specified attribute.
 func (v UniqueVarNameValidator) ValidateList(ctx context.Context, req validator.ListRequest, resp *validator.ListResponse) {
 	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() || req.ConfigValue.ElementType(ctx) == nil {
 		return
@@ -57,6 +62,7 @@ func (v UniqueVarNameValidator) ValidateList(ctx context.Context, req validator.
 	}
 }
 
+// NewUniqueVarNameValidator creates a new validator.
 func NewUniqueVarNameValidator() validator.List {
 	return UniqueVarNameValidator{}
 }

@@ -1,3 +1,6 @@
+// Copyright 2024 Defense Unicorns
+// SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
 package validator
 
 import (
@@ -10,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
+// TestBlockObjectNameUniquenessValidator_ValidateList tests to ensure a list of ZarfVar objects all have unique Var names.
 func TestBlockObjectNameUniquenessValidator_ValidateList(t *testing.T) {
 	attributeName := "name"
 
