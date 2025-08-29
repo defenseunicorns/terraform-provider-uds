@@ -753,7 +753,6 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		setVariables[zarfVar.Name.ValueString()] = zarfVar.Value.ValueString()
 	}
 	for _, sensitiveVar := range plan.SensitiveVars {
-		// TODO: @JPERRY Verify that the keys are unique...
 		setVariables[sensitiveVar.Name.ValueString()] = sensitiveVar.Value.ValueString()
 	}
 

@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/defenseunicorns/pkg/helpers/v2"
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -326,39 +325,40 @@ func TestPackageResource_Upsert_ZarfVars(t *testing.T) {
 
 	tests := []struct {
 		name             string
-		zarfVarList      []ZarfVar
+		vars             []ZarfVar
+		sensitiveVars    []ZarfVar
 		zarfVarMap       types.Map
 		expectedZarfVars map[string]string
 	}{
 		{
-			name:        "vars list and map",
-			zarfVarList: []ZarfVar{{Name: types.StringValue("listKey"), Value: types.StringValue("listsValue")}},
-			zarfVarMap:  types.MapValueMust(types.StringType, map[string]attr.Value{"mapKey": types.StringValue("mapValue")}),
+			name:          "vars and sensitiveVars",
+			vars:          []ZarfVar{{Name: types.StringValue("listKey"), Value: types.StringValue("listsValue")}},
+			sensitiveVars: []ZarfVar{{Name: types.StringValue("sensitive_listKey"), Value: types.StringValue("sensitive listValue")}},
+			expectedZarfVars: map[string]string{
+				"listKey":           "listsValue",
+				"sensitive_listKey": "sensitive listValue",
+			},
+		},
+		{
+			name:          "vars only",
+			vars:          []ZarfVar{{Name: types.StringValue("listKey"), Value: types.StringValue("listsValue")}},
+			sensitiveVars: []ZarfVar{},
 			expectedZarfVars: map[string]string{
 				"listKey": "listsValue",
-				"mapKey":  "mapValue",
 			},
 		},
 		{
-			name:        "vars list only",
-			zarfVarList: []ZarfVar{{Name: types.StringValue("listKey"), Value: types.StringValue("listsValue")}},
-			zarfVarMap:  types.Map{},
+			name:          "sensitiveVars only",
+			vars:          []ZarfVar{},
+			sensitiveVars: []ZarfVar{{Name: types.StringValue("sensitive_listKey"), Value: types.StringValue("sensitive listValue")}},
 			expectedZarfVars: map[string]string{
-				"listKey": "listsValue",
+				"sensitive_listKey": "sensitive listValue",
 			},
 		},
 		{
-			name:        "vars map only",
-			zarfVarList: []ZarfVar{},
-			zarfVarMap:  types.MapValueMust(types.StringType, map[string]attr.Value{"mapKey": types.StringValue("mapValue")}),
-			expectedZarfVars: map[string]string{
-				"mapKey": "mapValue",
-			},
-		},
-		{
-			name:             "no vars",
-			zarfVarList:      []ZarfVar{},
-			zarfVarMap:       types.Map{},
+			name:             "no vars at all",
+			vars:             []ZarfVar{},
+			sensitiveVars:    []ZarfVar{},
 			expectedZarfVars: map[string]string{},
 		},
 	}
@@ -376,8 +376,8 @@ func TestPackageResource_Upsert_ZarfVars(t *testing.T) {
 
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter).(*PackageResource)
 			testModel := NewPackageResourceModelFromTestData(validPackageModelData, []ComponentModelTestData{})
-			testModel.ZarfVars = tc.zarfVarList
-			testModel.ZarfDeploySets = tc.zarfVarMap
+			testModel.Vars = tc.vars
+			testModel.SensitiveVars = tc.sensitiveVars
 
 			_, err := packageResource.upsert(context.Background(), testModel)
 			assert.NoError(t, err)
