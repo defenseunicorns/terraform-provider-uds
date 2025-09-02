@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/defenseunicorns/pkg/helpers/v2"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -732,6 +733,147 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			if tc.expectedCallToLoadPackage {
 				mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, tc.source, mock.Anything)
 			}
+		})
+	}
+}
+
+func TestPackageResource_validateUniqueVarNames(t *testing.T) {
+	tests := []struct {
+		name               string
+		model              PackageResourceModel
+		expectedErrorCount int
+	}{
+		{
+			name:               "no vars at all",
+			expectedErrorCount: 0,
+			model: PackageResourceModel{
+				Vars:          []VariableModel{},
+				SensitiveVars: []VariableModel{},
+			},
+		},
+		{
+			name:               "only regular vars, no duplicates",
+			expectedErrorCount: 0,
+			model: PackageResourceModel{
+				Vars: []VariableModel{
+					{
+						Name:  types.StringValue("variable_1"),
+						Value: types.StringValue("value 1"),
+					},
+				},
+				SensitiveVars: []VariableModel{},
+			},
+		},
+		{
+			name:               "only regular vars, with duplicates",
+			expectedErrorCount: 1,
+			model: PackageResourceModel{
+				Vars: []VariableModel{
+					{
+						Name:  types.StringValue("variable_1"),
+						Value: types.StringValue("value 1"),
+					},
+					{
+						Name:  types.StringValue("variable_1"),
+						Value: types.StringValue("duplicate value"),
+					},
+				},
+				SensitiveVars: []VariableModel{},
+			},
+		},
+		{
+			name:               "only sensitive vars, no duplicates",
+			expectedErrorCount: 0,
+			model: PackageResourceModel{
+				Vars: []VariableModel{},
+				SensitiveVars: []VariableModel{
+					{
+						Name:  types.StringValue("sensitive variable_1"),
+						Value: types.StringValue("sensitive value"),
+					},
+					{
+						Name:  types.StringValue("sensitive variable_2"),
+						Value: types.StringValue("sensitive value"),
+					},
+				},
+			},
+		},
+		{
+			name:               "only sensitive vars, with duplicates",
+			expectedErrorCount: 1,
+			model: PackageResourceModel{
+				Vars: []VariableModel{},
+				SensitiveVars: []VariableModel{
+					{
+						Name:  types.StringValue("sensitive variable_1"),
+						Value: types.StringValue("sensitive value"),
+					},
+					{
+						Name:  types.StringValue("sensitive variable_1"),
+						Value: types.StringValue("sensitive value"),
+					},
+				},
+			},
+		},
+		{
+			name:               "both var types, no duplicates",
+			expectedErrorCount: 0,
+			model: PackageResourceModel{
+				Vars: []VariableModel{
+					{
+						Name:  types.StringValue("variable_1"),
+						Value: types.StringValue("value 1"),
+					},
+					{
+						Name:  types.StringValue("variable_2"),
+						Value: types.StringValue("duplicate value"),
+					},
+				},
+				SensitiveVars: []VariableModel{
+					{
+						Name:  types.StringValue("sensitive variable_1"),
+						Value: types.StringValue("sensitive value"),
+					},
+					{
+						Name:  types.StringValue("sensitive varjable_2"),
+						Value: types.StringValue("sensitive value"),
+					},
+				},
+			},
+		},
+		{
+			name:               "both var types, with duplicates",
+			expectedErrorCount: 2,
+			model: PackageResourceModel{
+				Vars: []VariableModel{
+					{
+						Name:  types.StringValue("variable_1"),
+						Value: types.StringValue("value 1"),
+					},
+					{
+						Name:  types.StringValue("variable_2"),
+						Value: types.StringValue("duplicate value"),
+					},
+				},
+				SensitiveVars: []VariableModel{
+					{
+						Name:  types.StringValue("variable_1"),
+						Value: types.StringValue("sensitive value"),
+					},
+					{
+						Name:  types.StringValue("variable_2"),
+						Value: types.StringValue("sensitive value"),
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := resource.ValidateConfigResponse{}
+			validateUniqueVarNames(tc.model, &resp)
+			assert.Equal(t, tc.expectedErrorCount, resp.Diagnostics.ErrorsCount())
 		})
 	}
 }
