@@ -220,7 +220,12 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						},
 					},
 				},
-				Validators: []validator.List{udsValidator.UniqueVarNameValidator{}},
+				Validators: []validator.List{
+					func() validator.List {
+						v, _ := udsValidator.NewBlockStringAttributeUniquenessValidator("var", "name")
+						return v
+					}(),
+				},
 			},
 			"sensitive_vars": schema.ListNestedAttribute{
 				Description: "Sensitive Zarf Varlues",
@@ -238,7 +243,12 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						},
 					},
 				},
-				Validators: []validator.List{udsValidator.UniqueVarNameValidator{}},
+				Validators: []validator.List{
+					func() validator.List {
+						v, _ := udsValidator.NewBlockStringAttributeUniquenessValidator("sensitive_var", "name")
+						return v
+					}(),
+				},
 			},
 			// overrides
 			"overrides": schema.ListNestedAttribute{

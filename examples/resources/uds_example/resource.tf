@@ -32,7 +32,7 @@ resource "uds_package" "podinfo" {
   source       = "oci://ghcr.io/defenseunicorns/uds-cli/podinfo:0.0.2"
   architecture = uds_package.init.architecture
   depends_on   = [uds_package.init]
-  zarf_vars = [
+  vars = [
     {
       name = "this_is_a_variable"
       value = "this is the value"
@@ -42,4 +42,15 @@ resource "uds_package" "podinfo" {
       value = "this is another value"
     }
   ] 
+  sensitive_vars = [
+    {
+      name = "this_is_a_sensitive_variable"
+      value = "this is the value"
+    },
+    {
+      name = "this_is_another_sensitive_variable"
+      value = "this is another value"
+    }
+
+  ]
 }
