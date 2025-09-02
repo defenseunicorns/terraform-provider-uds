@@ -76,8 +76,8 @@ type PackageResourceModel struct {
 	SkipSignatureValidation types.Bool       `tfsdk:"skip_signature_validation"`
 	Component               []ComponentModel `tfsdk:"component"`
 	Overrides               []OverrideModel  `tfsdk:"overrides"`
-	Vars                    []ZarfVar        `tfsdk:"vars"`
-	SensitiveVars           []ZarfVar        `tfsdk:"sensitive_vars"`
+	Vars                    []VariableModel  `tfsdk:"vars"`
+	SensitiveVars           []VariableModel  `tfsdk:"sensitive_vars"`
 
 	// readonly metadata
 	Metadata types.Object `tfsdk:"metadata"`
@@ -91,8 +91,8 @@ type ComponentModel struct {
 	// TODO(erickson): Move chart overrides into component model
 }
 
-// ZarfVar represents a Zarf Variable name and value pairing.
-type ZarfVar struct {
+// VariableModel represents a Zarf Variable name and value pairing.
+type VariableModel struct {
 	Name  types.String `tfsdk:"name"`
 	Value types.String `tfsdk:"value"`
 }
@@ -884,7 +884,7 @@ func validateUniqueVarNames(model PackageResourceModel, resp *resource.ValidateC
 	seen := map[string][]path.Path{}
 
 	// Helper to add entries from a slice
-	add := func(listName string, items []ZarfVar) {
+	add := func(listName string, items []VariableModel) {
 		for i, v := range items {
 			// Skip unknown/null names (can’t validate yet)
 			if v.Name.IsNull() || v.Name.IsUnknown() {

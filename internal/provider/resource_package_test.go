@@ -297,7 +297,7 @@ func newValidLoadPackageResult() MockLoadPackageResult {
 	}
 }
 
-func TestPackageResource_Upsert_ZarfVars(t *testing.T) {
+func TestPackageResource_Upsert_VariableModels(t *testing.T) {
 	validPackageModelData := PackageModelTestData{
 		Name:         "test-package",
 		Source:       "oci://ghcr.io/defenseunicornstest/packages/test-package:v0.0.1",
@@ -323,42 +323,42 @@ func TestPackageResource_Upsert_ZarfVars(t *testing.T) {
 	}
 
 	tests := []struct {
-		name             string
-		vars             []ZarfVar
-		sensitiveVars    []ZarfVar
-		zarfVarMap       types.Map
-		expectedZarfVars map[string]string
+		name                   string
+		vars                   []VariableModel
+		sensitiveVars          []VariableModel
+		VariableModelMap       types.Map
+		expectedVariableModels map[string]string
 	}{
 		{
 			name:          "vars and sensitiveVars",
-			vars:          []ZarfVar{{Name: types.StringValue("listKey"), Value: types.StringValue("listsValue")}},
-			sensitiveVars: []ZarfVar{{Name: types.StringValue("sensitive_listKey"), Value: types.StringValue("sensitive listValue")}},
-			expectedZarfVars: map[string]string{
+			vars:          []VariableModel{{Name: types.StringValue("listKey"), Value: types.StringValue("listsValue")}},
+			sensitiveVars: []VariableModel{{Name: types.StringValue("sensitive_listKey"), Value: types.StringValue("sensitive listValue")}},
+			expectedVariableModels: map[string]string{
 				"listKey":           "listsValue",
 				"sensitive_listKey": "sensitive listValue",
 			},
 		},
 		{
 			name:          "vars only",
-			vars:          []ZarfVar{{Name: types.StringValue("listKey"), Value: types.StringValue("listsValue")}},
-			sensitiveVars: []ZarfVar{},
-			expectedZarfVars: map[string]string{
+			vars:          []VariableModel{{Name: types.StringValue("listKey"), Value: types.StringValue("listsValue")}},
+			sensitiveVars: []VariableModel{},
+			expectedVariableModels: map[string]string{
 				"listKey": "listsValue",
 			},
 		},
 		{
 			name:          "sensitiveVars only",
-			vars:          []ZarfVar{},
-			sensitiveVars: []ZarfVar{{Name: types.StringValue("sensitive_listKey"), Value: types.StringValue("sensitive listValue")}},
-			expectedZarfVars: map[string]string{
+			vars:          []VariableModel{},
+			sensitiveVars: []VariableModel{{Name: types.StringValue("sensitive_listKey"), Value: types.StringValue("sensitive listValue")}},
+			expectedVariableModels: map[string]string{
 				"sensitive_listKey": "sensitive listValue",
 			},
 		},
 		{
-			name:             "no vars at all",
-			vars:             []ZarfVar{},
-			sensitiveVars:    []ZarfVar{},
-			expectedZarfVars: map[string]string{},
+			name:                   "no vars at all",
+			vars:                   []VariableModel{},
+			sensitiveVars:          []VariableModel{},
+			expectedVariableModels: map[string]string{},
 		},
 	}
 
@@ -387,8 +387,8 @@ func TestPackageResource_Upsert_ZarfVars(t *testing.T) {
 				if call.Method == "Deploy" {
 					deployOptions := call.Arguments[2].(zarfPackager.DeployOptions)
 					assert.NotNil(t, deployOptions.SetVariables)
-					assert.Len(t, deployOptions.SetVariables, len(tc.expectedZarfVars))
-					assert.Equal(t, deployOptions.SetVariables, tc.expectedZarfVars)
+					assert.Len(t, deployOptions.SetVariables, len(tc.expectedVariableModels))
+					assert.Equal(t, deployOptions.SetVariables, tc.expectedVariableModels)
 				}
 			}
 		})
