@@ -74,7 +74,7 @@ type PackageResourceModel struct {
 	Timeout                 types.String `tfsdk:"timeout"`
 	Key                     types.String `tfsdk:"key"`
 	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
-	NamespaceOverride       types.String `tfsdk:"namespace_override"`
+	Namespace               types.String `tfsdk:"namespace"`
 
 	Component     []ComponentModel `tfsdk:"component"`
 	Overrides     []OverrideModel  `tfsdk:"overrides"`
@@ -314,7 +314,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					},
 				},
 			},
-			"namespace_override": schema.StringAttribute{
+			"namespace": schema.StringAttribute{
 				Optional:            true,
 				MarkdownDescription: "[Alpha] Namespace used to override the default for package deployment.",
 			},
@@ -778,7 +778,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		AdoptExistingResources: false,
 		Timeout:                timeout,
 		RemoteOptions:          remoteOpts,
-		NamespaceOverride:      plan.NamespaceOverride.ValueString(),
+		Namespace:              plan.NamespaceOverride.ValueString(),
 		GitServer: zarfState.GitServerInfo{
 			PushUsername: zarfState.ZarfGitPushUser,
 		},
@@ -813,7 +813,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	tflog.Debug(ctx, "ending deploy")
 
 	// Populate/set resource computed values
-	plan.ID = types.StringValue(computePackageID(plan.NamespaceOverride.ValueString(), pkgLayout.Pkg.Metadata.Name))
+	plan.ID = types.StringValue(computePackageID(plan.Namespace.ValueString(), pkgLayout.Pkg.Metadata.Name))
 	plan.Version = types.StringValue(pkgLayout.Pkg.Metadata.Version)
 	plan.Kind = types.StringValue(string(pkgLayout.Pkg.Kind))
 
