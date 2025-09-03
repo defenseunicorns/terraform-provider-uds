@@ -13,11 +13,13 @@ import (
 	"testing"
 
 	"github.com/defenseunicorns/pkg/helpers/v2"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	"github.com/zarf-dev/zarf/src/pkg/packager"
+	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 
@@ -293,6 +295,104 @@ func newValidLoadPackageResult() MockLoadPackageResult {
 			},
 		},
 		Error: nil,
+	}
+}
+
+func TestPackageResource_Upsert_VariableModels(t *testing.T) {
+	validPackageModelData := PackageModelTestData{
+		Name:         "test-package",
+		Source:       "oci://ghcr.io/defenseunicornstest/packages/test-package:v0.0.1",
+		Timeout:      "10m",
+		Architecture: runtime.GOARCH,
+	}
+
+	packageLayout := layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Metadata: v1alpha1.ZarfMetadata{
+				Name:        "test-package",
+				Description: "Test package",
+				Version:     "0.0.1",
+			},
+			Components: []v1alpha1.ZarfComponent{
+				{
+					Name:     "test-required-component-0",
+					Required: helpers.BoolPtr(true),
+					Default:  false,
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name                   string
+		vars                   []VariableModel
+		sensitiveVars          []VariableModel
+		VariableModelMap       types.Map
+		expectedVariableModels map[string]string
+	}{
+		{
+			name:          "vars and sensitiveVars",
+			vars:          []VariableModel{{Name: types.StringValue("listKey"), Value: types.StringValue("listsValue")}},
+			sensitiveVars: []VariableModel{{Name: types.StringValue("sensitive_listKey"), Value: types.StringValue("sensitive listValue")}},
+			expectedVariableModels: map[string]string{
+				"listKey":           "listsValue",
+				"sensitive_listKey": "sensitive listValue",
+			},
+		},
+		{
+			name:          "vars only",
+			vars:          []VariableModel{{Name: types.StringValue("listKey"), Value: types.StringValue("listsValue")}},
+			sensitiveVars: []VariableModel{},
+			expectedVariableModels: map[string]string{
+				"listKey": "listsValue",
+			},
+		},
+		{
+			name:          "sensitiveVars only",
+			vars:          []VariableModel{},
+			sensitiveVars: []VariableModel{{Name: types.StringValue("sensitive_listKey"), Value: types.StringValue("sensitive listValue")}},
+			expectedVariableModels: map[string]string{
+				"sensitive_listKey": "sensitive listValue",
+			},
+		},
+		{
+			name:                   "no vars at all",
+			vars:                   []VariableModel{},
+			sensitiveVars:          []VariableModel{},
+			expectedVariableModels: map[string]string{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+				&packageLayout,
+				nil,
+			)
+			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter).(*PackageResource)
+			testModel := NewPackageResourceModelFromTestData(validPackageModelData, []ComponentModelTestData{})
+			testModel.Vars = tc.vars
+			testModel.SensitiveVars = tc.sensitiveVars
+
+			_, err := packageResource.upsert(context.Background(), testModel)
+			assert.NoError(t, err)
+
+			// Check that Deploy was called and the variables map was provided with the correct values
+			mockPackageComponentFilter.AssertExpectations(t)
+			for _, call := range mockPackager.Calls {
+				if call.Method == "Deploy" {
+					deployOptions := call.Arguments[2].(zarfPackager.DeployOptions)
+					assert.NotNil(t, deployOptions.SetVariables)
+					assert.Len(t, deployOptions.SetVariables, len(tc.expectedVariableModels))
+					assert.Equal(t, deployOptions.SetVariables, tc.expectedVariableModels)
+				}
+			}
+		})
 	}
 }
 
@@ -633,6 +733,147 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			if tc.expectedCallToLoadPackage {
 				mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, tc.source, mock.Anything)
 			}
+		})
+	}
+}
+
+func TestPackageResource_validateUniqueVarNames(t *testing.T) {
+	tests := []struct {
+		name               string
+		model              PackageResourceModel
+		expectedErrorCount int
+	}{
+		{
+			name:               "no vars at all",
+			expectedErrorCount: 0,
+			model: PackageResourceModel{
+				Vars:          []VariableModel{},
+				SensitiveVars: []VariableModel{},
+			},
+		},
+		{
+			name:               "only regular vars, no duplicates",
+			expectedErrorCount: 0,
+			model: PackageResourceModel{
+				Vars: []VariableModel{
+					{
+						Name:  types.StringValue("variable_1"),
+						Value: types.StringValue("value 1"),
+					},
+				},
+				SensitiveVars: []VariableModel{},
+			},
+		},
+		{
+			name:               "only regular vars, with duplicates",
+			expectedErrorCount: 1,
+			model: PackageResourceModel{
+				Vars: []VariableModel{
+					{
+						Name:  types.StringValue("variable_1"),
+						Value: types.StringValue("value 1"),
+					},
+					{
+						Name:  types.StringValue("variable_1"),
+						Value: types.StringValue("duplicate value"),
+					},
+				},
+				SensitiveVars: []VariableModel{},
+			},
+		},
+		{
+			name:               "only sensitive vars, no duplicates",
+			expectedErrorCount: 0,
+			model: PackageResourceModel{
+				Vars: []VariableModel{},
+				SensitiveVars: []VariableModel{
+					{
+						Name:  types.StringValue("sensitive variable_1"),
+						Value: types.StringValue("sensitive value"),
+					},
+					{
+						Name:  types.StringValue("sensitive variable_2"),
+						Value: types.StringValue("sensitive value"),
+					},
+				},
+			},
+		},
+		{
+			name:               "only sensitive vars, with duplicates",
+			expectedErrorCount: 1,
+			model: PackageResourceModel{
+				Vars: []VariableModel{},
+				SensitiveVars: []VariableModel{
+					{
+						Name:  types.StringValue("sensitive variable_1"),
+						Value: types.StringValue("sensitive value"),
+					},
+					{
+						Name:  types.StringValue("sensitive variable_1"),
+						Value: types.StringValue("sensitive value"),
+					},
+				},
+			},
+		},
+		{
+			name:               "both var types, no duplicates",
+			expectedErrorCount: 0,
+			model: PackageResourceModel{
+				Vars: []VariableModel{
+					{
+						Name:  types.StringValue("variable_1"),
+						Value: types.StringValue("value 1"),
+					},
+					{
+						Name:  types.StringValue("variable_2"),
+						Value: types.StringValue("duplicate value"),
+					},
+				},
+				SensitiveVars: []VariableModel{
+					{
+						Name:  types.StringValue("sensitive variable_1"),
+						Value: types.StringValue("sensitive value"),
+					},
+					{
+						Name:  types.StringValue("sensitive varjable_2"),
+						Value: types.StringValue("sensitive value"),
+					},
+				},
+			},
+		},
+		{
+			name:               "both var types, with duplicates",
+			expectedErrorCount: 2,
+			model: PackageResourceModel{
+				Vars: []VariableModel{
+					{
+						Name:  types.StringValue("variable_1"),
+						Value: types.StringValue("value 1"),
+					},
+					{
+						Name:  types.StringValue("variable_2"),
+						Value: types.StringValue("duplicate value"),
+					},
+				},
+				SensitiveVars: []VariableModel{
+					{
+						Name:  types.StringValue("variable_1"),
+						Value: types.StringValue("sensitive value"),
+					},
+					{
+						Name:  types.StringValue("variable_2"),
+						Value: types.StringValue("sensitive value"),
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := resource.ValidateConfigResponse{}
+			validateUniqueVarNames(tc.model, &resp)
+			assert.Equal(t, tc.expectedErrorCount, resp.Diagnostics.ErrorsCount())
 		})
 	}
 }

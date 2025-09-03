@@ -67,16 +67,17 @@ type PackageResource struct {
 
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
-	ID                      types.String `tfsdk:"id"`
-	Name                    types.String `tfsdk:"name"`
-	Source                  types.String `tfsdk:"source"`
-	Architecture            types.String `tfsdk:"architecture"`
-	Timeout                 types.String `tfsdk:"timeout"`
-	Key                     types.String `tfsdk:"key"`
-	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
-
-	Component []ComponentModel `tfsdk:"component"`
-	Overrides []OverrideModel  `tfsdk:"overrides"`
+	ID                      types.String     `tfsdk:"id"`
+	Name                    types.String     `tfsdk:"name"`
+	Source                  types.String     `tfsdk:"source"`
+	Architecture            types.String     `tfsdk:"architecture"`
+	Timeout                 types.String     `tfsdk:"timeout"`
+	Key                     types.String     `tfsdk:"key"`
+	SkipSignatureValidation types.Bool       `tfsdk:"skip_signature_validation"`
+	Component               []ComponentModel `tfsdk:"component"`
+	Overrides               []OverrideModel  `tfsdk:"overrides"`
+	Vars                    []VariableModel  `tfsdk:"vars"`
+	SensitiveVars           []VariableModel  `tfsdk:"sensitive_vars"`
 
 	// readonly metadata
 	Metadata types.Object `tfsdk:"metadata"`
@@ -88,6 +89,12 @@ type PackageResourceModel struct {
 type ComponentModel struct {
 	Name types.String `tfsdk:"name"`
 	// TODO(erickson): Move chart overrides into component model
+}
+
+// VariableModel represents a Zarf Variable name and value pairing.
+type VariableModel struct {
+	Name  types.String `tfsdk:"name"`
+	Value types.String `tfsdk:"value"`
 }
 
 // OverrideModel represents configuration overrides for a component.
@@ -198,6 +205,52 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					},
 				},
 			},
+			"vars": schema.ListNestedAttribute{
+				Description: "List of Zarf variables for the package.",
+				Optional:    true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							Description: "Name of the Zarf Variable being set.",
+							Required:    true,
+						},
+						"value": schema.StringAttribute{
+							Description: "Value for the Zarf Variable.",
+							Required:    true,
+						},
+					},
+				},
+				Validators: []validator.List{
+					func() validator.List {
+						v, _ := udsValidator.NewBlockStringAttributeUniquenessValidator("var", "name")
+						return v
+					}(),
+				},
+			},
+			"sensitive_vars": schema.ListNestedAttribute{
+				Description: "Sensitive Zarf Varlues",
+				Optional:    true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							Description: "Name of the Zarf Variable being set.",
+							Required:    true,
+						},
+						"value": schema.StringAttribute{
+							Description: "Value for the Zarf Variable.",
+							Required:    true,
+							Sensitive:   true,
+						},
+					},
+				},
+				Validators: []validator.List{
+					func() validator.List {
+						v, _ := udsValidator.NewBlockStringAttributeUniquenessValidator("sensitive_var", "name")
+						return v
+					}(),
+				},
+			},
+			// overrides
 			"overrides": schema.ListNestedAttribute{
 				Description: "List of overrides for Helm charts.",
 				Optional:    true,
@@ -280,6 +333,18 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 		},
 	}
+}
+
+// ValidateConfig ensures validation between interdependant fields within a PackageResourceModel.
+func (r *PackageResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var model PackageResourceModel
+
+	diags := req.Config.Get(ctx, &model)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	validateUniqueVarNames(model, resp)
 }
 
 // Configure configures the resource with provider data.
@@ -693,8 +758,17 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, errors.Join(componentErrors...)
 	}
 
+	setVariables := make(map[string]string)
+	for _, zarfVar := range plan.Vars {
+		setVariables[zarfVar.Name.ValueString()] = zarfVar.Value.ValueString()
+	}
+	for _, sensitiveVar := range plan.SensitiveVars {
+		setVariables[sensitiveVar.Name.ValueString()] = sensitiveVar.Value.ValueString()
+	}
+
 	// TODO(erickson): Add support for Retries, OCIConcurrency, NamespaceOverride?
 	deployOpts := zarfPackager.DeployOptions{
+		SetVariables:           setVariables,
 		AdoptExistingResources: false,
 		Timeout:                timeout,
 		RemoteOptions:          remoteOpts,
@@ -802,4 +876,43 @@ func computePackageID(namespace string, pkgName string) string {
 		return pkgName
 	}
 	return fmt.Sprintf("%s:%s", namespace, pkgName)
+}
+
+// validate that the 'vars' and 'sensitive_vars' all have unique names
+func validateUniqueVarNames(model PackageResourceModel, resp *resource.ValidateConfigResponse) {
+	// Map of normalized name -> where it appears
+	seen := map[string][]path.Path{}
+
+	// Helper to add entries from a slice
+	add := func(listName string, items []VariableModel) {
+		for i, v := range items {
+			// Skip unknown/null names (can’t validate yet)
+			if v.Name.IsNull() || v.Name.IsUnknown() {
+				continue
+			}
+			k := v.Name.ValueString()
+			if k == "" {
+				continue
+			}
+			k = strings.ToLower(k) // duplicates are case insensitive
+
+			p := path.Root(listName).AtListIndex(i).AtName("name")
+			seen[k] = append(seen[k], p)
+		}
+	}
+
+	add("vars", model.Vars)
+	add("sensitive_vars", model.SensitiveVars)
+
+	// raise errors for any duplicates
+	for name, occurrences := range seen {
+		if len(occurrences) <= 1 {
+			continue
+		}
+
+		resp.Diagnostics.AddError(
+			"Duplicate variable name",
+			fmt.Sprintf("The variable name %q is defined more than once across `vars` and `sensitive_vars`. Names must be unique.", name),
+		)
+	}
 }
