@@ -778,7 +778,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		AdoptExistingResources: false,
 		Timeout:                timeout,
 		RemoteOptions:          remoteOpts,
-		Namespace:              plan.NamespaceOverride.ValueString(),
+		NamespaceOverride:      plan.Namespace.ValueString(),
 		GitServer: zarfState.GitServerInfo{
 			PushUsername: zarfState.ZarfGitPushUser,
 		},

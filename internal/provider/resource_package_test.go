@@ -877,3 +877,103 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 		})
 	}
 }
+
+func TestPackageResource_Upsert_NamespaceOverride(t *testing.T) {
+	validPackageModelData := PackageModelTestData{
+		Name:         "test-package",
+		Source:       "oci://ghcr.io/defenseunicornstest/packages/test-package:v0.0.1",
+		Timeout:      "10m",
+		Architecture: runtime.GOARCH,
+	}
+
+	packageLayout := layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Metadata: v1alpha1.ZarfMetadata{
+				Name:        "test-package",
+				Description: "Test package",
+				Version:     "0.0.1",
+			},
+			Components: []v1alpha1.ZarfComponent{
+				{
+					Name:     "test-required-component-0",
+					Required: helpers.BoolPtr(true),
+					Default:  false,
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name                      string
+		namespace                 string
+		expectedNamespaceOverride string
+	}{
+		{
+			name:                      "no namespace",
+			namespace:                 "",
+			expectedNamespaceOverride: "",
+		},
+		{
+			name:                      "namespace provided",
+			namespace:                 "aBrandNewNamespace",
+			expectedNamespaceOverride: "aBrandNewNamespace",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+				&packageLayout,
+				nil,
+			)
+			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter).(*PackageResource)
+			testModel := NewPackageResourceModelFromTestData(validPackageModelData, []ComponentModelTestData{})
+			testModel.Namespace = types.StringValue(tc.namespace)
+
+			_, err := packageResource.upsert(context.Background(), testModel)
+			assert.NoError(t, err)
+
+			// Check that Deploy was called and the variables map was provided with the correct values
+			mockPackageComponentFilter.AssertExpectations(t)
+			for _, call := range mockPackager.Calls {
+				if call.Method == "Deploy" {
+					deployOptions := call.Arguments[2].(zarfPackager.DeployOptions)
+					assert.Equal(t, deployOptions.NamespaceOverride, tc.expectedNamespaceOverride)
+				}
+			}
+		})
+	}
+}
+
+func TestComputePackageID(t *testing.T) {
+	tests := []struct {
+		name       string
+		namespace  string
+		pkgName    string
+		expectedID string
+	}{
+		{
+			name:       "No namespace provided",
+			namespace:  "",
+			pkgName:    "my-package-name",
+			expectedID: "my-package-name",
+		},
+		{
+			name:       "namespace provided",
+			namespace:  "my-namespace",
+			pkgName:    "my-package-name",
+			expectedID: "my-namespace:my-package-name",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expectedID, computePackageID(tc.namespace, tc.pkgName))
+		})
+	}
+}
