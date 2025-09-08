@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -517,6 +518,79 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+
+	// Retrieve state of the existing resource model
+	var oldPlan PackageResourceModel
+	diags = req.State.Get(ctx, &oldPlan)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Collect all component names in the new plan
+	newPlanComponents := make(map[string]struct{}, len(plan.Component))
+	for _, component := range plan.Component {
+		newPlanComponents[component.Name.ValueString()] = struct{}{}
+	}
+
+	// Check which old components are missing in the new plan
+	var componentsToRemove []string
+	for _, component := range oldPlan.Component {
+		name := component.Name.ValueString()
+		if _, found := newPlanComponents[name]; !found {
+			componentsToRemove = append(componentsToRemove, name)
+		}
+	}
+
+	// Remove identified components
+	if len(componentsToRemove) > 0 {
+		// create a filter so we only remove the specific component we identified as being missing from the curent plan
+		filter := zarfFilters.Combine(
+			zarfFilters.ByLocalOS(runtime.GOOS),
+			zarfFilters.BySelectState(strings.Join(componentsToRemove, ",")),
+		)
+
+		// load the zarf package & cluster
+		loadOpts := zarfPackager.LoadOptions{
+			Architecture: getArchitecture(plan, *r.providerData),
+			Filter:       filter,
+			CachePath:    zarfConfig.ZarfDefaultCachePath,
+		}
+		packageSource, err := getPackageSource(plan, *r.providerData)
+		timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		zarfCluster, err := zarfCluster.NewWithWait(timeoutCtx)
+		pkg, err := zarfPackager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, "", loadOpts)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Error loading package",
+				"Could not load package: "+err.Error(),
+			)
+			return
+		}
+
+		// Remove the component from the cluster
+		deleteTimeout, err := time.ParseDuration(plan.Timeout.ValueString())
+		removeOpt := zarfPackager.RemoveOptions{
+			Cluster: zarfCluster,
+			Timeout: deleteTimeout,
+		}
+		if err := r.packager.Remove(ctx, pkg, removeOpt); err != nil {
+			resp.Diagnostics.AddError(
+				"Error removing components from package",
+				"Could not remove components from package: "+err.Error(),
+			)
+			return
+		}
+
+		// TODO: If we were unable to remove the component(s), should we stop the upgrade?
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		// TODO: Should i be updating the state after this removal? What is the terraform approach here?
+		// If we don't update state and something were to go wrong with the 'upsert' function our state would not accuratly represent the cluster
 	}
 
 	var err error
