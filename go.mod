@@ -1,6 +1,8 @@
 module github.com/defenseunicorns/terraform-provider-uds
 
-go 1.24.4
+go 1.24.6
+
+toolchain go1.24.7
 
 tool (
 	github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs
@@ -114,7 +116,7 @@ require (
 	github.com/anchore/grype v0.95.0 // indirect
 	github.com/anchore/packageurl-go v0.1.1-0.20250220190351-d62adb6e1115 // indirect
 	github.com/anchore/stereoscope v0.1.8 // indirect
-	github.com/anchore/syft v1.29.1 // indirect
+	github.com/anchore/syft v1.31.0 // indirect
 	github.com/andybalholm/brotli v1.1.2-0.20250424173009-453214e765f3 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/aquasecurity/go-pep440-version v0.0.1 // indirect
@@ -228,7 +230,7 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/exponent-io/jsonpath v0.0.0-20210407135951-1de76d718b3f // indirect
 	github.com/facebookincubator/nvdtools v0.1.5 // indirect
-	github.com/fairwindsops/pluto/v5 v5.22.2 // indirect
+	github.com/fairwindsops/pluto/v5 v5.22.5 // indirect
 	github.com/fatih/camelcase v1.0.0 // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/felixge/fgprof v0.9.5 // indirect
@@ -508,7 +510,7 @@ require (
 	github.com/transparency-dev/formats v0.0.0-20250421220931-bb8ad4d07c26 // indirect
 	github.com/transparency-dev/merkle v0.0.2 // indirect
 	github.com/transparency-dev/tessera v0.2.1-0.20250610150926-8ee4e93b2823 // indirect
-	github.com/ulikunitz/xz v0.5.12 // indirect
+	github.com/ulikunitz/xz v0.5.14 // indirect
 	github.com/vbatts/go-mtree v0.5.4 // indirect
 	github.com/vbatts/tar-split v0.12.1 // indirect
 	github.com/vektah/gqlparser/v2 v2.5.28 // indirect
@@ -556,17 +558,17 @@ require (
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
-	golang.org/x/crypto v0.40.0 // indirect
+	golang.org/x/crypto v0.41.0 // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
-	golang.org/x/mod v0.26.0 // indirect
-	golang.org/x/net v0.42.0 // indirect
+	golang.org/x/mod v0.27.0 // indirect
+	golang.org/x/net v0.43.0 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
 	golang.org/x/sync v0.16.0 // indirect
-	golang.org/x/sys v0.34.0 // indirect
-	golang.org/x/term v0.33.0 // indirect
-	golang.org/x/text v0.27.0 // indirect
+	golang.org/x/sys v0.35.0 // indirect
+	golang.org/x/term v0.34.0 // indirect
+	golang.org/x/text v0.28.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
-	golang.org/x/tools v0.34.0 // indirect
+	golang.org/x/tools v0.35.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240716161551-93cc26a95ae9 // indirect
 	google.golang.org/api v0.241.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect
@@ -584,18 +586,18 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/gorm v1.30.0 // indirect
 	helm.sh/helm/v3 v3.18.4 // indirect
-	k8s.io/api v0.33.3 // indirect
-	k8s.io/apiextensions-apiserver v0.33.2 // indirect
-	k8s.io/apimachinery v0.33.3 // indirect
-	k8s.io/apiserver v0.33.2 // indirect
-	k8s.io/cli-runtime v0.33.3 // indirect
-	k8s.io/client-go v0.33.3 // indirect
-	k8s.io/component-base v0.33.3 // indirect
-	k8s.io/component-helpers v0.33.3 // indirect
+	k8s.io/api v0.33.4 // indirect
+	k8s.io/apiextensions-apiserver v0.33.3 // indirect
+	k8s.io/apimachinery v0.33.4 // indirect
+	k8s.io/apiserver v0.33.3 // indirect
+	k8s.io/cli-runtime v0.33.4 // indirect
+	k8s.io/client-go v0.33.4 // indirect
+	k8s.io/component-base v0.33.4 // indirect
+	k8s.io/component-helpers v0.33.4 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250318190949-c8a335a9a2ff // indirect
-	k8s.io/kubectl v0.33.3 // indirect
-	k8s.io/metrics v0.33.3 // indirect
+	k8s.io/kubectl v0.33.4 // indirect
+	k8s.io/metrics v0.33.4 // indirect
 	k8s.io/utils v0.0.0-20250502105355-0f33e8f1c979 // indirect
 	modernc.org/libc v1.66.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
