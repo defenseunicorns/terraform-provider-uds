@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 
@@ -551,11 +550,7 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	// Remove identified components
 	namespaceOverride := plan.Namespace.ValueString()
 	if len(componentsToRemove) > 0 {
-		// create a filter so we only remove the specific component we identified as being missing from the current plan
-		filter := zarfFilters.Combine(
-			zarfFilters.ByLocalOS(runtime.GOOS),
-			zarfFilters.BySelectState(strings.Join(componentsToRemove, ",")),
-		)
+		filter := r.packageFilter.ForRemove(componentsToRemove)
 
 		// load the zarf package & cluster
 		loadOpts := zarfPackager.LoadOptions{
@@ -671,7 +666,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 
-	filter := r.packageFilter.ForRemove()
+	filter := r.packageFilter.ForRemove([]string{})
 	loadOpts := zarfPackager.LoadOptions{
 		Architecture: getArchitecture(data, *r.providerData),
 		Filter:       filter,

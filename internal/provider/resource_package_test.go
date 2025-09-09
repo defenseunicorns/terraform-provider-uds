@@ -202,9 +202,9 @@ type MockPackageComponentFilter struct {
 	packageComponentFilter udsPackager.PackageComponentFilter
 }
 
-func (m *MockPackageComponentFilter) ForRemove() filters.ComponentFilterStrategy {
-	m.Called()
-	return m.getPackageComponentFilter().ForRemove()
+func (m *MockPackageComponentFilter) ForRemove(optionalComponents []string) filters.ComponentFilterStrategy {
+	m.Called(optionalComponents)
+	return m.getPackageComponentFilter().ForRemove(optionalComponents)
 }
 
 func (m *MockPackageComponentFilter) ForDeploy(optionalComponents []string) filters.ComponentFilterStrategy {
