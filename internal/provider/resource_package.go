@@ -24,12 +24,12 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
+	udsCluster "github.com/defenseunicorns/terraform-provider-uds/internal/cluster"
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
-	zarfCluster "github.com/zarf-dev/zarf/src/pkg/cluster"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	zarfFilters "github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
@@ -63,6 +63,7 @@ func NewPackageResource(providerData *customProviderData, packager udsPackager.P
 type PackageResource struct {
 	providerData  *customProviderData
 	packager      udsPackager.Packager
+	cluster       udsCluster.Cluster
 	packageFilter udsPackager.PackageComponentFilter
 }
 
@@ -366,6 +367,10 @@ func (r *PackageResource) Configure(_ context.Context, req resource.ConfigureReq
 	if r.packager == nil {
 		r.packager = udsPackager.NewPackager()
 	}
+
+	if r.cluster == nil {
+		r.cluster = udsCluster.NewCluster()
+	}
 }
 
 // Create creates the resource and sets the initial Terraform state.
@@ -411,7 +416,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	c, err := zarfCluster.NewWithWait(timeoutCtx)
+	c, err := r.cluster.NewWithWait(timeoutCtx)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Could not connect to cluster",
@@ -570,7 +575,7 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 
 		timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
-		zarfCluster, err := zarfCluster.NewWithWait(timeoutCtx)
+		zarfCluster, err := r.cluster.NewWithWait(timeoutCtx)
 		if err != nil {
 			resp.Diagnostics.AddError(
 				"Error loading Zarf cluster",
@@ -657,7 +662,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	c, err := zarfCluster.NewWithWait(timeoutCtx)
+	c, err := r.cluster.NewWithWait(timeoutCtx)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Could not connect to cluster",
