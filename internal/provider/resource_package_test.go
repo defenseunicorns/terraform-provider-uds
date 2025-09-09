@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
+	zarfCluster "github.com/zarf-dev/zarf/src/pkg/cluster"
 	"github.com/zarf-dev/zarf/src/pkg/packager"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
@@ -188,6 +189,11 @@ func (m *MockPackager) Remove(ctx context.Context, pkg v1alpha1.ZarfPackage, opt
 func (m *MockPackager) LoadPackage(ctx context.Context, source string, opts packager.LoadOptions) (*layout.PackageLayout, error) {
 	args := m.Called(ctx, source, opts)
 	return args.Get(0).(*layout.PackageLayout), args.Error(1)
+}
+
+func (m *MockPackager) GetPackageFromSourceOrCluster(ctx context.Context, cluster *zarfCluster.Cluster, src string, namespaceOverride string, opts zarfPackager.LoadOptions) (_ v1alpha1.ZarfPackage, err error) {
+	args := m.Called(ctx, cluster, src, namespaceOverride, opts)
+	return args.Get(0).(v1alpha1.ZarfPackage), args.Error(1)
 }
 
 type MockPackageComponentFilter struct {

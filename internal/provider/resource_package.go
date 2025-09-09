@@ -584,7 +584,7 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 			return
 		}
 
-		pkg, err := zarfPackager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
+		pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
 		if err != nil {
 			resp.Diagnostics.AddError(
 				"Error loading package",
@@ -677,7 +677,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		Filter:       filter,
 		CachePath:    zarfConfig.ZarfDefaultCachePath,
 	}
-	pkg, err := zarfPackager.GetPackageFromSourceOrCluster(ctx, c, packageSource, "", loadOpts)
+	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, c, packageSource, "", loadOpts)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error loading package",
