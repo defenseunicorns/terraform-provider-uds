@@ -544,8 +544,9 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	}
 
 	// Remove identified components
+	namespaceOverride := plan.Namespace.ValueString()
 	if len(componentsToRemove) > 0 {
-		// create a filter so we only remove the specific component we identified as being missing from the curent plan
+		// create a filter so we only remove the specific component we identified as being missing from the current plan
 		filter := zarfFilters.Combine(
 			zarfFilters.ByLocalOS(runtime.GOOS),
 			zarfFilters.BySelectState(strings.Join(componentsToRemove, ",")),
@@ -557,11 +558,28 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 			Filter:       filter,
 			CachePath:    zarfConfig.ZarfDefaultCachePath,
 		}
+
 		packageSource, err := getPackageSource(plan, *r.providerData)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Error getting package source",
+				"Could not get package source: "+err.Error(),
+			)
+			return
+		}
+
 		timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
 		zarfCluster, err := zarfCluster.NewWithWait(timeoutCtx)
-		pkg, err := zarfPackager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, "", loadOpts)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Error loading Zarf cluster",
+				"Could not Zarf cluster: "+err.Error(),
+			)
+			return
+		}
+
+		pkg, err := zarfPackager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
 		if err != nil {
 			resp.Diagnostics.AddError(
 				"Error loading package",
@@ -572,9 +590,18 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 
 		// Remove the component from the cluster
 		deleteTimeout, err := time.ParseDuration(plan.Timeout.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Error parsing timeout duration",
+				"Could not parse timeout duration: "+err.Error(),
+			)
+			return
+
+		}
 		removeOpt := zarfPackager.RemoveOptions{
-			Cluster: zarfCluster,
-			Timeout: deleteTimeout,
+			Cluster:           zarfCluster,
+			Timeout:           deleteTimeout,
+			NamespaceOverride: namespaceOverride,
 		}
 		if err := r.packager.Remove(ctx, pkg, removeOpt); err != nil {
 			resp.Diagnostics.AddError(
@@ -583,14 +610,6 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 			)
 			return
 		}
-
-		// TODO: If we were unable to remove the component(s), should we stop the upgrade?
-		if resp.Diagnostics.HasError() {
-			return
-		}
-
-		// TODO: Should i be updating the state after this removal? What is the terraform approach here?
-		// If we don't update state and something were to go wrong with the 'upsert' function our state would not accuratly represent the cluster
 	}
 
 	var err error
