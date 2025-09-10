@@ -983,3 +983,116 @@ func TestComputePackageID(t *testing.T) {
 		})
 	}
 }
+func TestGetOptionalComponentsToRemove(t *testing.T) {
+	tests := []struct {
+		name               string
+		newPlan            PackageResourceModel
+		oldPlan            PackageResourceModel
+		expectedComponents []string
+	}{
+		{
+			name: "all the same components",
+			newPlan: NewPackageResourceModelFromTestData(
+				PackageModelTestData{},
+				[]ComponentModelTestData{
+					{Name: "component-1"},
+				},
+			),
+			oldPlan: NewPackageResourceModelFromTestData(
+				PackageModelTestData{},
+				[]ComponentModelTestData{
+					{Name: "component-1"},
+				},
+			),
+			expectedComponents: []string{},
+		},
+		{
+			name: "missing a component",
+			newPlan: NewPackageResourceModelFromTestData(
+				PackageModelTestData{},
+				[]ComponentModelTestData{
+					{Name: "component-1"},
+				},
+			),
+			oldPlan: NewPackageResourceModelFromTestData(
+				PackageModelTestData{},
+				[]ComponentModelTestData{
+					{Name: "component-1"},
+					{Name: "component-2"},
+				},
+			),
+			expectedComponents: []string{"component-2"},
+		},
+		{
+			name: "missing multiple components",
+			newPlan: NewPackageResourceModelFromTestData(
+				PackageModelTestData{},
+				[]ComponentModelTestData{
+					{Name: "component-1"},
+					{Name: "component-2"},
+				},
+			),
+			oldPlan: NewPackageResourceModelFromTestData(
+				PackageModelTestData{},
+				[]ComponentModelTestData{
+					{Name: "component-1"},
+					{Name: "component-2"},
+					{Name: "component-3"},
+					{Name: "component-4"},
+				},
+			),
+			expectedComponents: []string{"component-3", "component-4"},
+		},
+		{
+			name: "new components without any missing",
+			newPlan: NewPackageResourceModelFromTestData(
+				PackageModelTestData{},
+				[]ComponentModelTestData{
+					{Name: "component-1"},
+					{Name: "component-2"},
+					{Name: "component-3"},
+					{Name: "component-4"},
+				},
+			),
+			oldPlan: NewPackageResourceModelFromTestData(
+				PackageModelTestData{},
+				[]ComponentModelTestData{
+					{Name: "component-1"},
+					{Name: "component-2"},
+				},
+			),
+			expectedComponents: []string{},
+		},
+		{
+			name: "new components with others missing",
+			newPlan: NewPackageResourceModelFromTestData(
+				PackageModelTestData{},
+				[]ComponentModelTestData{
+					{Name: "component-1"},
+					{Name: "component-3"},
+					{Name: "component-4"},
+				},
+			),
+			oldPlan: NewPackageResourceModelFromTestData(
+				PackageModelTestData{},
+				[]ComponentModelTestData{
+					{Name: "component-1"},
+					{Name: "component-2"},
+				},
+			),
+			expectedComponents: []string{"component-2"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			componentsToRemove := getOptionalComponentsToRemove(tc.newPlan, tc.oldPlan)
+
+			assert.Equal(t, len(tc.expectedComponents), len(componentsToRemove))
+			for i := range componentsToRemove {
+				assert.Equal(t, tc.expectedComponents[i], componentsToRemove[i])
+			}
+		})
+	}
+}
+
