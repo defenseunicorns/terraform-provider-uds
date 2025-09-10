@@ -41,7 +41,7 @@ var (
 )
 
 // NewPackageResource creates a new instance of the package resource.
-func NewPackageResource(providerData *customProviderData, packager udsPackager.Packager, packageComponentFilter udsPackager.PackageComponentFilter) resource.Resource {
+func NewPackageResource(providerData *customProviderData, packager udsPackager.Packager, packageComponentFilter udsPackager.PackageComponentFilter, cluster udsCluster.Cluster) resource.Resource {
 	if providerData == nil {
 		providerData = &customProviderData{}
 	}
@@ -51,10 +51,14 @@ func NewPackageResource(providerData *customProviderData, packager udsPackager.P
 	if packageComponentFilter == nil {
 		packageComponentFilter = udsPackager.NewPackageComponentFilter()
 	}
+	if cluster == nil {
+		cluster = udsCluster.NewCluster()
+	}
 	return &PackageResource{
 		providerData:  providerData,
 		packager:      packager,
 		packageFilter: packageComponentFilter,
+		cluster:       cluster,
 	}
 }
 

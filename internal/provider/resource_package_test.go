@@ -172,6 +172,15 @@ func TestFlattenOverrides(t *testing.T) {
 	}
 }
 
+type MockCluster struct {
+	mock.Mock
+}
+
+func (m *MockCluster) NewWithWait(ctx context.Context) (*zarfCluster.Cluster, error) {
+	args := m.Called(ctx)
+	return args.Get(0).(*zarfCluster.Cluster), args.Error(1)
+}
+
 type MockPackager struct {
 	mock.Mock
 }
@@ -380,7 +389,7 @@ func TestPackageResource_Upsert_VariableModels(t *testing.T) {
 			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
 			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
-			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter).(*PackageResource)
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 			testModel := NewPackageResourceModelFromTestData(validPackageModelData, []ComponentModelTestData{})
 			testModel.Vars = tc.vars
 			testModel.SensitiveVars = tc.sensitiveVars
@@ -524,7 +533,7 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 				mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 			}
 
-			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter).(*PackageResource)
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 			testModel := NewPackageResourceModelFromTestData(tc.packageModelData, tc.componentModelData)
 			expectErrors := len(tc.expectedErrorContains) > 0
 
@@ -720,7 +729,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 				mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 			}
 
-			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter).(*PackageResource)
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 			testModel := NewPackageResourceModelFromTestData(packageModelData, []ComponentModelTestData{})
 			expectErrors := len(tc.expectedErrorContains) > 0
 
@@ -937,7 +946,7 @@ func TestPackageResource_Upsert_NamespaceOverride(t *testing.T) {
 			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
 			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
-			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter).(*PackageResource)
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 			testModel := NewPackageResourceModelFromTestData(validPackageModelData, []ComponentModelTestData{})
 			testModel.Namespace = types.StringValue(tc.namespace)
 
@@ -983,6 +992,7 @@ func TestComputePackageID(t *testing.T) {
 		})
 	}
 }
+
 func TestGetOptionalComponentsToRemove(t *testing.T) {
 	tests := []struct {
 		name               string
@@ -1096,3 +1106,100 @@ func TestGetOptionalComponentsToRemove(t *testing.T) {
 	}
 }
 
+func TestUpdate_RemoveComponents(t *testing.T) {
+	validPackageModelData := PackageModelTestData{
+		Name:         "test-package",
+		Source:       "oci://ghcr.io/defenseunicornstest/packages/test-package:v0.0.1",
+		Timeout:      "10m",
+		Architecture: runtime.GOARCH,
+	}
+
+	tests := []struct {
+		name               string
+		plan               PackageResourceModel
+		componentsToRemove []string
+		removeCalled       bool
+	}{
+		{
+			name:               "remove single component",
+			componentsToRemove: []string{"this-is-my-component"},
+			plan: NewPackageResourceModelFromTestData(
+				validPackageModelData,
+				[]ComponentModelTestData{},
+			),
+			removeCalled: true,
+		},
+		{
+			name:               "remove nothing",
+			componentsToRemove: []string{},
+			plan: NewPackageResourceModelFromTestData(
+				validPackageModelData,
+				[]ComponentModelTestData{},
+			),
+			removeCalled: false,
+		},
+		{
+			name:               "remove multiple components",
+			componentsToRemove: []string{"this-is-my-component", "this-is-also-a-component"},
+			plan: NewPackageResourceModelFromTestData(
+				validPackageModelData,
+				[]ComponentModelTestData{},
+			),
+			removeCalled: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+			mockPackageComponentFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
+
+			mockCluster := MockCluster{}
+			zarfCluster := zarfCluster.Cluster{}
+			mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster, nil)
+
+			mockPackager := &MockPackager{}
+			zarfPackage := v1alpha1.ZarfPackage{}
+			mockPackager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(zarfPackage, nil)
+			mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+			resp := resource.UpdateResponse{}
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, &mockCluster).(*PackageResource)
+
+			// This is the meat of the test!
+			packageResource.removeComponents(context.TODO(), tc.plan, tc.componentsToRemove, &resp)
+			assert.False(t, resp.Diagnostics.HasError(), resp.Diagnostics.Errors())
+
+			// Check that Deploy was called and the variables map was provided with the correct values
+			for _, call := range mockPackager.Calls {
+				if call.Method == "Deploy" {
+					deployOptions := call.Arguments[2].(zarfPackager.DeployOptions)
+					assert.NotNil(t, deployOptions.SetVariables)
+				}
+			}
+
+			if tc.removeCalled {
+				// Validate that a remove filter was created with the correct inputs
+				mockPackageComponentFilter.AssertExpectations(t)
+				for _, call := range mockPackageComponentFilter.Calls {
+					if call.Method == "ForRemove" {
+						forRemoveOptions := call.Arguments[0].([]string)
+						assert.Equal(t, len(tc.componentsToRemove), len(forRemoveOptions))
+						for i := range forRemoveOptions {
+							assert.Equal(t, tc.componentsToRemove[i], forRemoveOptions[i])
+						}
+					}
+				}
+
+				// Validate that the remove function was called
+				mockPackager.AssertExpectations(t)
+			} else {
+				// Verify that functions were not called if we did not expect them to be
+				mockPackageComponentFilter.AssertNotCalled(t, "ForRemove")
+				mockCluster.AssertNotCalled(t, "NewWithWait")
+				mockPackager.AssertNotCalled(t, "GetPackageFromSourceOrCluster")
+				mockPackager.AssertNotCalled(t, "Remove")
+			}
+		})
+	}
+}
