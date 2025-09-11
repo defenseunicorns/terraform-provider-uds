@@ -541,6 +541,11 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	// We are removing them after the 'update' because if a 'required' component is removed it removes the entire package
 	componentsToRemoveAfter := getMissingComponents(plan, oldPlan)
 
+	// Remove identified components
+	if len(componentsToRemoveAfter) > 0 {
+		r.removeComponents(ctx, plan, componentsToRemoveAfter, resp)
+	}
+
 	var err error
 	plan, err = r.upsert(ctx, plan)
 	if err != nil {
@@ -549,11 +554,6 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 			"Could not update package, unexpected error: "+err.Error(),
 		)
 		return
-	}
-
-	// Remove identified components
-	if len(componentsToRemoveAfter) > 0 {
-		r.removeComponents(ctx, plan, componentsToRemoveAfter, resp)
 	}
 
 	// Set state to fully populated data
