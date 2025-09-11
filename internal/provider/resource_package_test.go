@@ -1096,7 +1096,7 @@ func TestGetOptionalComponentsToRemove(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			componentsToRemove := getOptionalComponentsToRemove(tc.newPlan, tc.oldPlan)
+			componentsToRemove := getMissingComponents(tc.newPlan, tc.oldPlan)
 
 			assert.Equal(t, len(tc.expectedComponents), len(componentsToRemove))
 			for i := range componentsToRemove {

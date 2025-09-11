@@ -49,7 +49,7 @@ func (z *zarfPackager) GetPackageFromSourceOrCluster(ctx context.Context, cluste
 
 // PackageComponentFilter provides filtering strategies for Zarf package components.
 type PackageComponentFilter interface {
-	ForRemove(optionalComponentsp []string) filters.ComponentFilterStrategy
+	ForRemove(optionalComponents []string) filters.ComponentFilterStrategy
 	ForDeploy(optionalComponents []string) filters.ComponentFilterStrategy
 }
 

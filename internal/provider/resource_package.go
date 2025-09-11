@@ -535,12 +535,11 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	componentsToRemove := getOptionalComponentsToRemove(plan, oldPlan)
 
-	// Remove identified components
-	if len(componentsToRemove) > 0 {
-		r.removeComponents(ctx, plan, componentsToRemove, resp)
-	}
+	// Generate list of components to remove after the update is complete
+	// These components are components that were defined in the old plan but not present in the current plan
+	// We are removing them after the 'update' because if a 'required' component is removed it removes the entire package
+	componentsToRemoveAfter := getMissingComponents(plan, oldPlan)
 
 	var err error
 	plan, err = r.upsert(ctx, plan)
@@ -550,6 +549,11 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 			"Could not update package, unexpected error: "+err.Error(),
 		)
 		return
+	}
+
+	// Remove identified components
+	if len(componentsToRemoveAfter) > 0 {
+		r.removeComponents(ctx, plan, componentsToRemoveAfter, resp)
 	}
 
 	// Set state to fully populated data
@@ -672,9 +676,9 @@ func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[strin
 	return result
 }
 
-// getOptionalComponentsToRemove compares two Package plans and returns a list of components that was specified in the
+// getMissingComponents compares two Package plans and returns a list of components that was specified in the
 // 'oldPlan' but not specified in the newer plan.
-func getOptionalComponentsToRemove(plan PackageResourceModel, oldPlan PackageResourceModel) []string {
+func getMissingComponents(plan PackageResourceModel, oldPlan PackageResourceModel) []string {
 	var componentsToRemove []string
 
 	// Collect all component names in the new plan
@@ -698,26 +702,10 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	if len(componentsToRemove) == 0 {
 		return
 	}
+
 	namespaceOverride := plan.Namespace.ValueString()
 
-	filter := r.packageFilter.ForRemove(componentsToRemove)
-
-	// load the zarf package & cluster
-	loadOpts := zarfPackager.LoadOptions{
-		Architecture: getArchitecture(plan, *r.providerData),
-		Filter:       filter,
-		CachePath:    zarfConfig.ZarfDefaultCachePath,
-	}
-
-	packageSource, err := getPackageSource(plan, *r.providerData)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error getting package source",
-			"Could not get package source: "+err.Error(),
-		)
-		return
-	}
-
+	// get a reference to the k8s cluster
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	zarfCluster, err := r.cluster.NewWithWait(timeoutCtx)
@@ -729,6 +717,20 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 		return
 	}
 
+	// get a reference to the ZarfPackage
+	packageSource, err := getPackageSource(plan, *r.providerData)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error getting package source",
+			"Could not get package source: "+err.Error(),
+		)
+		return
+	}
+	loadOpts := zarfPackager.LoadOptions{
+		Architecture: getArchitecture(plan, *r.providerData),
+		Filter:       r.packageFilter.ForRemove(componentsToRemove),
+		CachePath:    zarfConfig.ZarfDefaultCachePath,
+	}
 	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -736,6 +738,38 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 			"Could not load package: "+err.Error(),
 		)
 		return
+	}
+
+	// Check if any of the components provided are 'required' and remove them from the list of components we are removing
+	// NOTE: Just because a component block is removed from the resource spec doesn't mean it wasn't deployed. Zarf components that are marked as 'required' should not be removed
+	foundRequired := false
+	newComponentsToRemove := []string{}
+	for _, componentName := range componentsToRemove {
+		zComponent, found := findPackageComponent(pkg.Components, componentName)
+		if found && zComponent.Required != nil && *zComponent.Required {
+			// we are trying to remove a required component, don't do that...
+			foundRequired = true
+			continue
+		}
+		newComponentsToRemove = append(newComponentsToRemove, componentName)
+	}
+
+	// Fetch a new zarfPackage from the cluster, with a new filter of components
+	if foundRequired {
+		loadOpts := zarfPackager.LoadOptions{
+			Architecture: getArchitecture(plan, *r.providerData),
+			Filter:       r.packageFilter.ForRemove(newComponentsToRemove),
+			CachePath:    zarfConfig.ZarfDefaultCachePath,
+		}
+
+		pkg, err = r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Error loading package",
+				"Could not load package: "+err.Error(),
+			)
+			return
+		}
 	}
 
 	// Remove the component from the cluster
