@@ -1,3 +1,7 @@
+// Copyright 2024 Defense Unicorns
+// SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+// Package cluster provides interfaces and implementations for Zarf cluster operations.
 package cluster
 
 import (
