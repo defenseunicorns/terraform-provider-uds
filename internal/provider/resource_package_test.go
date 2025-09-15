@@ -1001,7 +1001,7 @@ func TestGetOptionalComponentsToRemove(t *testing.T) {
 		expectedComponents []string
 	}{
 		{
-			name: "all the same components",
+			name: "identifical components returns empty list",
 			newPlan: NewPackageResourceModelFromTestData(
 				PackageModelTestData{},
 				[]ComponentModelTestData{
@@ -1017,7 +1017,7 @@ func TestGetOptionalComponentsToRemove(t *testing.T) {
 			expectedComponents: []string{},
 		},
 		{
-			name: "missing a component",
+			name: "single component removed from new plan returns removed components",
 			newPlan: NewPackageResourceModelFromTestData(
 				PackageModelTestData{},
 				[]ComponentModelTestData{
@@ -1034,7 +1034,7 @@ func TestGetOptionalComponentsToRemove(t *testing.T) {
 			expectedComponents: []string{"component-2"},
 		},
 		{
-			name: "missing multiple components",
+			name: "multiple components removed from new plan returns removed components",
 			newPlan: NewPackageResourceModelFromTestData(
 				PackageModelTestData{},
 				[]ComponentModelTestData{
@@ -1054,7 +1054,7 @@ func TestGetOptionalComponentsToRemove(t *testing.T) {
 			expectedComponents: []string{"component-3", "component-4"},
 		},
 		{
-			name: "new components without any missing",
+			name: "new plan with additional components without removing any returns an empty list",
 			newPlan: NewPackageResourceModelFromTestData(
 				PackageModelTestData{},
 				[]ComponentModelTestData{
@@ -1074,7 +1074,7 @@ func TestGetOptionalComponentsToRemove(t *testing.T) {
 			expectedComponents: []string{},
 		},
 		{
-			name: "new components with others missing",
+			name: "new plan with additional components and removed components returns only removed components",
 			newPlan: NewPackageResourceModelFromTestData(
 				PackageModelTestData{},
 				[]ComponentModelTestData{
@@ -1130,7 +1130,7 @@ func TestUpdate_RemoveComponents(t *testing.T) {
 			removeCalled: true,
 		},
 		{
-			name:               "remove nothing",
+			name:               "remove no components",
 			componentsToRemove: []string{},
 			plan: NewPackageResourceModelFromTestData(
 				validPackageModelData,
