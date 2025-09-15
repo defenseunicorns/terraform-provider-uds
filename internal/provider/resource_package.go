@@ -23,12 +23,12 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
+	udsCluster "github.com/defenseunicorns/terraform-provider-uds/internal/cluster"
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
-	zarfCluster "github.com/zarf-dev/zarf/src/pkg/cluster"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	zarfFilters "github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
@@ -41,7 +41,7 @@ var (
 )
 
 // NewPackageResource creates a new instance of the package resource.
-func NewPackageResource(providerData *customProviderData, packager udsPackager.Packager, packageComponentFilter udsPackager.PackageComponentFilter) resource.Resource {
+func NewPackageResource(providerData *customProviderData, packager udsPackager.Packager, packageComponentFilter udsPackager.PackageComponentFilter, cluster udsCluster.Cluster) resource.Resource {
 	if providerData == nil {
 		providerData = &customProviderData{}
 	}
@@ -51,10 +51,14 @@ func NewPackageResource(providerData *customProviderData, packager udsPackager.P
 	if packageComponentFilter == nil {
 		packageComponentFilter = udsPackager.NewPackageComponentFilter()
 	}
+	if cluster == nil {
+		cluster = udsCluster.NewCluster()
+	}
 	return &PackageResource{
 		providerData:  providerData,
 		packager:      packager,
 		packageFilter: packageComponentFilter,
+		cluster:       cluster,
 	}
 }
 
@@ -62,6 +66,7 @@ func NewPackageResource(providerData *customProviderData, packager udsPackager.P
 type PackageResource struct {
 	providerData  *customProviderData
 	packager      udsPackager.Packager
+	cluster       udsCluster.Cluster
 	packageFilter udsPackager.PackageComponentFilter
 }
 
@@ -365,6 +370,10 @@ func (r *PackageResource) Configure(_ context.Context, req resource.ConfigureReq
 	if r.packager == nil {
 		r.packager = udsPackager.NewPackager()
 	}
+
+	if r.cluster == nil {
+		r.cluster = udsCluster.NewCluster()
+	}
 }
 
 // Create creates the resource and sets the initial Terraform state.
@@ -410,7 +419,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	c, err := zarfCluster.NewWithWait(timeoutCtx)
+	c, err := r.cluster.NewWithWait(timeoutCtx)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Could not connect to cluster",
@@ -519,6 +528,24 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
+	// Check if there are any components in the already existing plan that need to be removed
+	var oldPlan PackageResourceModel
+	diags = req.State.Get(ctx, &oldPlan)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Generate list of components to remove after the update is complete
+	// These components are components that were defined in the old plan but not present in the current plan
+	// We are removing them after the 'update' because if a 'required' component is removed it removes the entire package
+	componentsToRemoveAfter := getMissingComponents(plan, oldPlan)
+
+	// Remove identified components
+	if len(componentsToRemoveAfter) > 0 {
+		r.removeComponents(ctx, plan, componentsToRemoveAfter, resp)
+	}
+
 	var err error
 	plan, err = r.upsert(ctx, plan)
 	if err != nil {
@@ -564,7 +591,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	c, err := zarfCluster.NewWithWait(timeoutCtx)
+	c, err := r.cluster.NewWithWait(timeoutCtx)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Could not connect to cluster",
@@ -573,13 +600,13 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 
-	filter := r.packageFilter.ForRemove()
+	filter := r.packageFilter.ForRemove([]string{})
 	loadOpts := zarfPackager.LoadOptions{
 		Architecture: getArchitecture(data, *r.providerData),
 		Filter:       filter,
 		CachePath:    zarfConfig.ZarfDefaultCachePath,
 	}
-	pkg, err := zarfPackager.GetPackageFromSourceOrCluster(ctx, c, packageSource, "", loadOpts)
+	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, c, packageSource, "", loadOpts)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error loading package",
@@ -647,6 +674,126 @@ func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[strin
 	}
 
 	return result
+}
+
+// getMissingComponents compares two Package plans and returns a list of components that was specified in the
+// 'oldPlan' but not specified in the newer plan.
+func getMissingComponents(plan PackageResourceModel, oldPlan PackageResourceModel) []string {
+	var componentsToRemove []string
+
+	// Collect all component names in the new plan
+	newPlanComponents := make(map[string]struct{}, len(plan.Component))
+	for _, component := range plan.Component {
+		newPlanComponents[component.Name.ValueString()] = struct{}{}
+	}
+
+	// Check which old components are missing in the new plan
+	for _, component := range oldPlan.Component {
+		name := component.Name.ValueString()
+		if _, found := newPlanComponents[name]; !found {
+			componentsToRemove = append(componentsToRemove, name)
+		}
+	}
+
+	return componentsToRemove
+}
+
+func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string, resp *resource.UpdateResponse) {
+	if len(componentsToRemove) == 0 {
+		return
+	}
+
+	namespaceOverride := plan.Namespace.ValueString()
+
+	// get a reference to the k8s cluster
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	zarfCluster, err := r.cluster.NewWithWait(timeoutCtx)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error loading Zarf cluster",
+			"Could not Zarf cluster: "+err.Error(),
+		)
+		return
+	}
+
+	// get a reference to the ZarfPackage
+	packageSource, err := getPackageSource(plan, *r.providerData)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error getting package source",
+			"Could not get package source: "+err.Error(),
+		)
+		return
+	}
+	loadOpts := zarfPackager.LoadOptions{
+		Architecture: getArchitecture(plan, *r.providerData),
+		Filter:       r.packageFilter.ForRemove(componentsToRemove),
+		CachePath:    zarfConfig.ZarfDefaultCachePath,
+	}
+	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error loading package",
+			"Could not load package: "+err.Error(),
+		)
+		return
+	}
+
+	// Check if any of the components provided are 'required' and remove them from the list of components we are removing
+	// NOTE: Just because a component block is removed from the resource spec doesn't mean it wasn't deployed. Zarf components that are marked as 'required' should not be removed
+	foundRequired := false
+	newComponentsToRemove := []string{}
+	for _, componentName := range componentsToRemove {
+		zComponent, found := findPackageComponent(pkg.Components, componentName)
+		if found && zComponent.Required != nil && *zComponent.Required {
+			// we are trying to remove a required component, don't do that...
+			foundRequired = true
+			continue
+		}
+		newComponentsToRemove = append(newComponentsToRemove, componentName)
+	}
+
+	// Fetch a new zarfPackage from the cluster, with a new filter of components
+	if foundRequired {
+		loadOpts := zarfPackager.LoadOptions{
+			Architecture: getArchitecture(plan, *r.providerData),
+			Filter:       r.packageFilter.ForRemove(newComponentsToRemove),
+			CachePath:    zarfConfig.ZarfDefaultCachePath,
+		}
+
+		pkg, err = r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Error loading package",
+				"Could not load package: "+err.Error(),
+			)
+			return
+		}
+	}
+
+	// Remove the component from the cluster
+	deleteTimeout, err := time.ParseDuration(plan.Timeout.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error parsing timeout duration",
+			"Could not parse timeout duration: "+err.Error(),
+		)
+		return
+
+	}
+	removeOpt := zarfPackager.RemoveOptions{
+		Cluster:           zarfCluster,
+		Timeout:           deleteTimeout,
+		NamespaceOverride: namespaceOverride,
+	}
+	if err := r.packager.Remove(ctx, pkg, removeOpt); err != nil {
+		resp.Diagnostics.AddError(
+			"Error removing components from package",
+			"Could not remove components from package: "+err.Error(),
+		)
+		return
+	}
 }
 
 // Inserts a nested value based on the dot-separated path

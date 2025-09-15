@@ -52,7 +52,7 @@ func (p *udsProvider) Configure(_ context.Context, _ provider.ConfigureRequest, 
 func (p *udsProvider) Resources(context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		// Pass the packager to NewPackageResource
-		func() resource.Resource { return NewPackageResource(nil, nil, nil) },
+		func() resource.Resource { return NewPackageResource(nil, nil, nil, nil) },
 		NewBundleMetadataResource,
 	}
 }
