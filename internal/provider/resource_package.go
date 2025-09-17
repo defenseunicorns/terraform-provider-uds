@@ -74,7 +74,6 @@ type PackageResource struct {
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
 	ID                      types.String `tfsdk:"id"`
-	Name                    types.String `tfsdk:"name"`
 	Source                  types.String `tfsdk:"source"`
 	Architecture            types.String `tfsdk:"architecture"`
 	Timeout                 types.String `tfsdk:"timeout"`
@@ -88,9 +87,10 @@ type PackageResourceModel struct {
 	SensitiveVars []VariableModel  `tfsdk:"sensitive_vars"`
 
 	// readonly metadata
-	Metadata types.Object `tfsdk:"metadata"`
+	Name     types.String `tfsdk:"name"`
 	Kind     types.String `tfsdk:"kind"` // Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
 	Version  types.String `tfsdk:"version"`
+	Metadata types.Object `tfsdk:"metadata"`
 }
 
 // ComponentModel represents a UDS package component configuration.
@@ -148,8 +148,8 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"name": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "The name of the Zarf Package",
+				Computed:            true,
+				MarkdownDescription: "Name of the UDS Package",
 			},
 			"source": schema.StringAttribute{
 				Required:            true,
@@ -463,6 +463,12 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
+	// Populate/set resource computed values from deployed package info so that they can be saved to state
+	data.ID = types.StringValue(computePackageID(deployedPackage.NamespaceOverride, deployedPackage.Name))
+	data.Name = types.StringValue(deployedPackage.Name)
+	data.Version = types.StringValue(deployedPackage.Data.Metadata.Version)
+	data.Kind = types.StringValue(string(deployedPackage.Data.Kind))
+
 	// populate the package metadata type.
 	// TODO(clint): this is ugly and I got it from https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/custom
 	// There are probably a few optimizations or cleanups to be done here.
@@ -487,8 +493,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 	data.Metadata = pkgMetadata
-	data.Version = types.StringValue(deployedPackage.Data.Metadata.Version)
-	data.ID = types.StringValue(computePackageID(deployedPackage.NamespaceOverride, deployedPackage.Name))
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -973,7 +978,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 
 	// Populate/set resource computed values so that they can be saved to state
 	plan.ID = types.StringValue(computePackageID(plan.Namespace.ValueString(), pkgLayout.Pkg.Metadata.Name))
-	plan.SkipSignatureValidation = types.BoolValue(skipSignatureValidation)
+	plan.Name = types.StringValue(pkgLayout.Pkg.Metadata.Name)
 	plan.Version = types.StringValue(pkgLayout.Pkg.Metadata.Version)
 	plan.Kind = types.StringValue(string(pkgLayout.Pkg.Kind))
 
