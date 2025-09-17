@@ -142,9 +142,6 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"id": schema.StringAttribute{
 				Description: "Identifier for the deployed UDS package.",
 				Computed:    true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
 			},
 			"name": schema.StringAttribute{
 				Description: "Name of the UDS Package.",
@@ -601,7 +598,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 
 	loadOpts := zarfPackager.LoadOptions{
-		Filter:                  r.packageFilter.ForRemove(),
+		Filter:                  r.packageFilter.ForRemove([]string{}),
 		Architecture:            getArchitecture(data, *r.providerData),
 		PublicKeyPath:           publicKeyPath,
 		SkipSignatureValidation: skipSignatureValidation,
