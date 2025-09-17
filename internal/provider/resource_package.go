@@ -153,9 +153,6 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"source": schema.StringAttribute{
 				Required:            true,
 				MarkdownDescription: "OCI distribution reference (including oci:// scheme) or local file path (absolute or relative) to the package",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
 				Validators: []validator.String{
 					udsValidator.PackageSourceValidator(),
 				},
