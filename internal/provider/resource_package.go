@@ -24,9 +24,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
 	udsCluster "github.com/defenseunicorns/terraform-provider-uds/internal/cluster"
+	utils "github.com/defenseunicorns/terraform-provider-uds/internal/fileutil"
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
-	"github.com/defenseunicorns/terraform-provider-uds/internal/utils"
 
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
