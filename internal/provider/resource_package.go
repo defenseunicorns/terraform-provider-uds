@@ -26,6 +26,7 @@ import (
 	udsCluster "github.com/defenseunicorns/terraform-provider-uds/internal/cluster"
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
+	"github.com/defenseunicorns/terraform-provider-uds/internal/utils"
 
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
@@ -77,7 +78,7 @@ type PackageResourceModel struct {
 	Source                  types.String `tfsdk:"source"`
 	Architecture            types.String `tfsdk:"architecture"`
 	Timeout                 types.String `tfsdk:"timeout"`
-	Key                     types.String `tfsdk:"key"`
+	PublicKey               types.String `tfsdk:"public_key"`
 	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
 	Namespace               types.String `tfsdk:"namespace"`
 
@@ -169,8 +170,8 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Computed:            true,
 				MarkdownDescription: "Version of the package that was deployed",
 			},
-			"key": schema.StringAttribute{
-				Description: "Path or URL to the public key for signed Zarf Packages.",
+			"public_key": schema.StringAttribute{
+				Description: "Public key for a signed UDS package.",
 				Optional:    true,
 			},
 			"skip_signature_validation": schema.BoolAttribute{
@@ -460,11 +461,11 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		// var components []string
 
 		// for _, component := range pkg.DeployedComponents {
-		// 	components = append(components, component.Name)
+		//      components = append(components, component.Name)
 		// }
 
 		// packageData = append(packageData, []string{
-		// 	pkg.Name, pkg.Data.Metadata.Version, fmt.Sprintf("%v", components),
+		//      pkg.Name, pkg.Data.Metadata.Version, fmt.Sprintf("%v", components),
 		// })
 		packageData[pkg.Name] = pkg
 	}
@@ -509,7 +510,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	}
 	data.Metadata = pkgMetadata
 	data.Version = types.StringValue(pkgUpdate.Data.Metadata.Version)
-
+	data.ID = types.StringValue(computePackageID(pkgUpdate.NamespaceOverride, pkgUpdate.Name))
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -597,11 +598,34 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 
-	filter := r.packageFilter.ForRemove([]string{})
+	skipSignatureValidation := data.SkipSignatureValidation.ValueBool()
+	publicKeyPath, err := getTempPublicKeyPath(data.PublicKey.ValueString(), skipSignatureValidation)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Public key path error",
+			"Could not get/create public key path: "+err.Error(),
+		)
+		return
+	}
+	defer func() {
+		if publicKeyPath != "" {
+			os.Remove(publicKeyPath)
+		}
+	}()
+
+	// TODO(erickson): Do we need configurable remote options?
+	remoteOpts := zarfPackager.RemoteOptions{
+		PlainHTTP:             zarfConfig.CommonOptions.PlainHTTP,
+		InsecureSkipTLSVerify: zarfConfig.CommonOptions.InsecureSkipTLSVerify,
+	}
+
 	loadOpts := zarfPackager.LoadOptions{
-		Architecture: getArchitecture(data, *r.providerData),
-		Filter:       filter,
-		CachePath:    zarfConfig.ZarfDefaultCachePath,
+		Filter:                  r.packageFilter.ForRemove(),
+		Architecture:            getArchitecture(data, *r.providerData),
+		PublicKeyPath:           publicKeyPath,
+		SkipSignatureValidation: skipSignatureValidation,
+		RemoteOptions:           remoteOpts,
+		CachePath:               zarfConfig.ZarfDefaultCachePath,
 	}
 	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, c, packageSource, "", loadOpts)
 	if err != nil {
@@ -613,8 +637,9 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 
 	removeOpt := zarfPackager.RemoveOptions{
-		Cluster: c,
-		Timeout: deleteTimeout,
+		NamespaceOverride: data.Namespace.ValueString(),
+		Cluster:           c,
+		Timeout:           deleteTimeout,
 	}
 	if err := r.packager.Remove(ctx, pkg, removeOpt); err != nil {
 		resp.Diagnostics.AddError(
@@ -861,6 +886,18 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, err
 	}
 
+	// generate a temporary public key file if needed
+	skipSignatureValidation := plan.SkipSignatureValidation.ValueBool()
+	publicKeyPath, err := getTempPublicKeyPath(plan.PublicKey.ValueString(), skipSignatureValidation)
+	if err != nil {
+		return plan, err
+	}
+	defer func() {
+		if publicKeyPath != "" {
+			os.Remove(publicKeyPath)
+		}
+	}()
+
 	valuesMap := flattenOverrides(plan.Overrides)
 	packageSource, err := getPackageSource(plan, *r.providerData)
 	if err != nil {
@@ -877,7 +914,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	loadOpt := zarfPackager.LoadOptions{
 		Filter:                  zarfFilters.Empty(),
 		Architecture:            getArchitecture(plan, *r.providerData),
-		PublicKeyPath:           plan.Key.ValueString(),
+		PublicKeyPath:           publicKeyPath,
 		SkipSignatureValidation: plan.SkipSignatureValidation.ValueBool(),
 		RemoteOptions:           remoteOpts,
 		CachePath:               zarfConfig.ZarfDefaultCachePath,
@@ -956,8 +993,9 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 	tflog.Debug(ctx, "ending deploy")
 
-	// Populate/set resource computed values
+	// Populate/set resource computed values so that they can be saved to state
 	plan.ID = types.StringValue(computePackageID(plan.Namespace.ValueString(), pkgLayout.Pkg.Metadata.Name))
+	plan.SkipSignatureValidation = types.BoolValue(skipSignatureValidation)
 	plan.Version = types.StringValue(pkgLayout.Pkg.Metadata.Version)
 	plan.Kind = types.StringValue(string(pkgLayout.Pkg.Kind))
 
@@ -1065,4 +1103,16 @@ func validateUniqueVarNames(model PackageResourceModel, resp *resource.ValidateC
 			fmt.Sprintf("The variable name %q is defined more than once across `vars` and `sensitive_vars`. Names must be unique.", name),
 		)
 	}
+}
+
+func getTempPublicKeyPath(publicKey string, skipSignatureValidation bool) (string, error) {
+	var err error
+	publicKeyPath := ""
+	if !skipSignatureValidation && publicKey != "" {
+		publicKeyPath, err = utils.CreateTempPublicKeyFile(publicKey)
+		if err != nil {
+			return "", err
+		}
+	}
+	return publicKeyPath, nil
 }
