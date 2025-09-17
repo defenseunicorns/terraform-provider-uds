@@ -16,9 +16,8 @@ resource "uds_bundle_metadata" "example_bundle" {
   architecture = "arm64"
 }
 
-  resource "uds_package" "init" {
-  name         = "init"
-  source       = "oci://ghcr.io/zarf-dev/packages/init:v0.60.0"
+resource "uds_package" "init" {
+  source       = "oci://ghcr.io/zarf-dev/packages/init:v0.61.0"
   architecture = uds_bundle_metadata.example_bundle.architecture
 
   # Install optional git-server
@@ -28,29 +27,41 @@ resource "uds_bundle_metadata" "example_bundle" {
 }
 
 resource "uds_package" "podinfo" {
-  name         = "podinfo"
   source       = "oci://ghcr.io/defenseunicorns/uds-cli/podinfo:0.0.2"
   architecture = uds_package.init.architecture
   depends_on   = [uds_package.init]
   vars = [
     {
-      name = "this_is_a_variable"
+      name  = "this_is_a_variable"
       value = "this is the value"
     },
     {
-      name = "this_is_another_variable"
+      name  = "this_is_another_variable"
       value = "this is another value"
     }
-  ] 
+  ]
   sensitive_vars = [
     {
-      name = "this_is_a_sensitive_variable"
+      name  = "this_is_a_sensitive_variable"
       value = "this is the value"
     },
     {
-      name = "this_is_another_sensitive_variable"
+      name  = "this_is_another_sensitive_variable"
       value = "this is another value"
     }
-
   ]
+}
+
+resource "uds_package" "dos_games" {
+  source       = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
+  architecture = uds_package.init.architecture
+  namespace    = "demo"
+  depends_on   = [uds_package.init]
+
+  # Skip signature validation if public key is not available. Otherwise set to false (or remove this attribute) and provide public key.
+  skip_signature_validation = true
+
+  # public_key can be set explicitly to the key value, or use file function to reference local file:
+  #    curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub
+  #public_key                = file("dosgames.pub") 
 }
