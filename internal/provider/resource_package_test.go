@@ -233,36 +233,108 @@ type MockLoadPackageResult struct {
 	Error  error
 }
 
-type PackageModelTestData struct {
-	Name         string
-	Source       string
-	Architecture string
-	Timeout      string
-}
+type PackageResourceModelDataOption func(*PackageResourceModel)
 
-type ComponentModelTestData struct {
-	Name string
-	// TODO(erickson): Add chart overides in future
-}
-
-func NewPackageResourceModelFromTestData(packageModelData PackageModelTestData, componentModelData []ComponentModelTestData) PackageResourceModel {
-	return PackageResourceModel{
-		Name:         types.StringValue(packageModelData.Name),
-		Source:       types.StringValue(packageModelData.Source),
-		Architecture: types.StringValue(packageModelData.Architecture),
-		Timeout:      types.StringValue(packageModelData.Timeout),
-		Component:    NewComponentModelsFromTestData(componentModelData),
+func WithSource(source string) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.Source = types.StringValue(source)
 	}
 }
 
-func NewComponentModelsFromTestData(componentModelData []ComponentModelTestData) []ComponentModel {
-	componentModels := make([]ComponentModel, 0, len(componentModelData))
-	for _, data := range componentModelData {
-		componentModels = append(componentModels, ComponentModel{
-			Name: types.StringValue(data.Name),
-		})
+func WithArchitecture(arch string) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.Architecture = types.StringValue(arch)
+	}
+}
+
+func WithPublicKey(publicKey string) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.PublicKey = types.StringValue(publicKey)
+	}
+}
+
+func WithSkipSignatureValidation(skip bool) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.SkipSignatureValidation = types.BoolValue(skip)
+	}
+}
+
+func WithTimeout(timeout string) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.Timeout = types.StringValue(timeout)
+	}
+}
+
+func WithNamespace(namespace string) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.Namespace = types.StringValue(namespace)
+	}
+}
+
+func WithComponents(components []ComponentModel) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.Component = components
+	}
+}
+
+func WithOverrides(overrides []OverrideModel) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.Overrides = overrides
+	}
+}
+
+func WithVars(vars []VariableModel) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.Vars = vars
+	}
+}
+
+func WithSensitiveVars(sensitiveVars []VariableModel) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.SensitiveVars = sensitiveVars
+	}
+}
+
+// NewTestPackageResourceModel creates a PackageResourceModel with default values and applies data options
+func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) PackageResourceModel {
+	model := PackageResourceModel{
+		Source:                  types.StringValue("oci://ghcr.io/defenseunicorns/packages/test:latest"),
+		Architecture:            types.StringValue(runtime.GOARCH),
+		PublicKey:               types.StringValue(""),
+		SkipSignatureValidation: types.BoolValue(false),
+		Timeout:                 types.StringValue("10m"),
+		Namespace:               types.StringValue(""),
+		Component:               []ComponentModel{},
+		Overrides:               []OverrideModel{},
+		Vars:                    []VariableModel{},
+		SensitiveVars:           []VariableModel{},
+	}
+
+	for _, option := range options {
+		option(&model)
+	}
+
+	return model
+}
+
+// NewComponentModelsFromNames creates ComponentModel slice from component names
+func NewComponentModelsFromNames(componentNames []string) []ComponentModel {
+	componentModels := make([]ComponentModel, len(componentNames))
+	for i, componentName := range componentNames {
+		componentModels[i] = ComponentModel{
+			Name: types.StringValue(componentName),
+		}
 	}
 	return componentModels
+}
+
+func newEmptyLoadPackageResult() MockLoadPackageResult {
+	return MockLoadPackageResult{
+		Layout: &layout.PackageLayout{
+			Pkg: v1alpha1.ZarfPackage{},
+		},
+		Error: nil,
+	}
 }
 
 // Helper function to create fresh MockLoadPackageResult for each test
@@ -314,13 +386,6 @@ func newValidLoadPackageResult() MockLoadPackageResult {
 }
 
 func TestPackageResource_Upsert_VariableModels(t *testing.T) {
-	validPackageModelData := PackageModelTestData{
-		Name:         "test-package",
-		Source:       "oci://ghcr.io/defenseunicornstest/packages/test-package:v0.0.1",
-		Timeout:      "10m",
-		Architecture: runtime.GOARCH,
-	}
-
 	packageLayout := layout.PackageLayout{
 		Pkg: v1alpha1.ZarfPackage{
 			Metadata: v1alpha1.ZarfMetadata{
@@ -390,9 +455,10 @@ func TestPackageResource_Upsert_VariableModels(t *testing.T) {
 			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
-			testModel := NewPackageResourceModelFromTestData(validPackageModelData, []ComponentModelTestData{})
-			testModel.Vars = tc.vars
-			testModel.SensitiveVars = tc.sensitiveVars
+			testModel := NewTestPackageResourceModel(
+				WithVars(tc.vars),
+				WithSensitiveVars(tc.sensitiveVars),
+			)
 
 			_, err := packageResource.upsert(context.Background(), testModel)
 			assert.NoError(t, err)
@@ -412,18 +478,9 @@ func TestPackageResource_Upsert_VariableModels(t *testing.T) {
 }
 
 func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
-
-	validPackageModelData := PackageModelTestData{
-		Name:         "test-package",
-		Source:       "oci://ghcr.io/defenseunicornstest/packages/test-package",
-		Architecture: runtime.GOARCH,
-		Timeout:      "10m",
-	}
-
 	tests := []struct {
 		name                                      string
-		packageModelData                          PackageModelTestData
-		componentModelData                        []ComponentModelTestData
+		componentNames                            []string
 		zarfPackagerLoadPackageResult             MockLoadPackageResult
 		expectedCallToDeploy                      bool
 		expectedOptionalComponentsForDeployFilter []string
@@ -431,23 +488,17 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 	}{
 		{
 			name:                          "package without components deploys required components only",
-			packageModelData:              validPackageModelData,
-			componentModelData:            []ComponentModelTestData{},
+			componentNames:                []string{},
 			zarfPackagerLoadPackageResult: newValidLoadPackageResult(),
 			expectedCallToDeploy:          true,
 			expectedOptionalComponentsForDeployFilter: []string{},
 			expectedErrorContains:                     []string{},
 		},
 		{
-			name:             "package with only required components deploys required components only",
-			packageModelData: validPackageModelData,
-			componentModelData: []ComponentModelTestData{
-				{
-					Name: "test-required-component-0",
-				},
-				{
-					Name: "test-required-component-1",
-				},
+			name: "package with only required components deploys required components only",
+			componentNames: []string{
+				"test-required-component-0",
+				"test-required-component-1",
 			},
 			zarfPackagerLoadPackageResult:             newValidLoadPackageResult(),
 			expectedCallToDeploy:                      true,
@@ -455,15 +506,23 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 			expectedErrorContains:                     []string{},
 		},
 		{
-			name:             "package with only optional components deploys each optional component",
-			packageModelData: validPackageModelData,
-			componentModelData: []ComponentModelTestData{
-				{
-					Name: "test-optional-default-component-0",
-				},
-				{
-					Name: "test-optional-non-default-component-0",
-				},
+			name: "package with only optional components deploys each optional component",
+			componentNames: []string{
+				"test-optional-default-component-0",
+				"test-optional-non-default-component-0",
+			},
+			zarfPackagerLoadPackageResult:             newValidLoadPackageResult(),
+			expectedCallToDeploy:                      true,
+			expectedOptionalComponentsForDeployFilter: []string{"test-optional-default-component-0", "test-optional-non-default-component-0"},
+			expectedErrorContains:                     []string{},
+		},
+		{
+			name: "package with required and optional components deploys each optional component",
+			componentNames: []string{
+				"test-required-component-0",
+				"test-required-component-1",
+				"test-optional-default-component-0",
+				"test-optional-non-default-component-0",
 			},
 			zarfPackagerLoadPackageResult: newValidLoadPackageResult(),
 			expectedCallToDeploy:          true,
@@ -474,40 +533,10 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 			expectedErrorContains: []string{},
 		},
 		{
-			name:             "package with required and optional components deploys each optional component",
-			packageModelData: validPackageModelData,
-			componentModelData: []ComponentModelTestData{
-				{
-					Name: "test-required-component-0",
-				},
-				{
-					Name: "test-required-component-1",
-				},
-				{
-					Name: "test-optional-default-component-0",
-				},
-				{
-					Name: "test-optional-non-default-component-0",
-				},
-			},
-			zarfPackagerLoadPackageResult: newValidLoadPackageResult(),
-			expectedCallToDeploy:          true,
-			expectedOptionalComponentsForDeployFilter: []string{
-				"test-optional-default-component-0",
-				"test-optional-non-default-component-0",
-			},
-			expectedErrorContains: []string{},
-		},
-		{
-			name:             "package with unknown components returns error for each unknown component",
-			packageModelData: validPackageModelData,
-			componentModelData: []ComponentModelTestData{
-				{
-					Name: "test-unknown-component-0",
-				},
-				{
-					Name: "test-unknown-component-1",
-				},
+			name: "package with unknown components returns error for each unknown component",
+			componentNames: []string{
+				"test-unknown-component-0",
+				"test-unknown-component-1",
 			},
 			zarfPackagerLoadPackageResult:             newValidLoadPackageResult(),
 			expectedCallToDeploy:                      false,
@@ -534,7 +563,10 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 			}
 
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
-			testModel := NewPackageResourceModelFromTestData(tc.packageModelData, tc.componentModelData)
+			componentModels := NewComponentModelsFromNames(tc.componentNames)
+			testModel := NewTestPackageResourceModel(
+				WithComponents(componentModels),
+			)
 			expectErrors := len(tc.expectedErrorContains) > 0
 
 			_, err := packageResource.upsert(context.Background(), testModel)
@@ -710,13 +742,6 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 				defer os.Remove(tc.source)
 			}
 
-			packageModelData := PackageModelTestData{
-				Name:         "test-package",
-				Source:       tc.source,
-				Architecture: runtime.GOARCH,
-				Timeout:      "10m",
-			}
-
 			if tc.expectedCallToLoadPackage {
 				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
 					newValidLoadPackageResult().Layout,
@@ -730,7 +755,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			}
 
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
-			testModel := NewPackageResourceModelFromTestData(packageModelData, []ComponentModelTestData{})
+			testModel := NewTestPackageResourceModel(WithSource(tc.source))
 			expectErrors := len(tc.expectedErrorContains) > 0
 
 			_, err := packageResource.upsert(context.Background(), testModel)
@@ -894,13 +919,6 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 }
 
 func TestPackageResource_Upsert_NamespaceOverride(t *testing.T) {
-	validPackageModelData := PackageModelTestData{
-		Name:         "test-package",
-		Source:       "oci://ghcr.io/defenseunicornstest/packages/test-package:v0.0.1",
-		Timeout:      "10m",
-		Architecture: runtime.GOARCH,
-	}
-
 	packageLayout := layout.PackageLayout{
 		Pkg: v1alpha1.ZarfPackage{
 			Metadata: v1alpha1.ZarfMetadata{
@@ -947,8 +965,7 @@ func TestPackageResource_Upsert_NamespaceOverride(t *testing.T) {
 			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
-			testModel := NewPackageResourceModelFromTestData(validPackageModelData, []ComponentModelTestData{})
-			testModel.Namespace = types.StringValue(tc.namespace)
+			testModel := NewTestPackageResourceModel(WithNamespace(tc.namespace))
 
 			_, err := packageResource.upsert(context.Background(), testModel)
 			assert.NoError(t, err)
@@ -995,108 +1012,85 @@ func TestComputePackageID(t *testing.T) {
 
 func TestGetOptionalComponentsToRemove(t *testing.T) {
 	tests := []struct {
-		name               string
-		newPlan            PackageResourceModel
-		oldPlan            PackageResourceModel
-		expectedComponents []string
+		name                  string
+		newPlanComponentNames []string
+		oldPlanComponentNames []string
+		expectedComponents    []string
 	}{
 		{
 			name: "identifical components returns empty list",
-			newPlan: NewPackageResourceModelFromTestData(
-				PackageModelTestData{},
-				[]ComponentModelTestData{
-					{Name: "component-1"},
-				},
-			),
-			oldPlan: NewPackageResourceModelFromTestData(
-				PackageModelTestData{},
-				[]ComponentModelTestData{
-					{Name: "component-1"},
-				},
-			),
+			newPlanComponentNames: []string{
+				"component-1",
+			},
+			oldPlanComponentNames: []string{
+				"component-1",
+			},
 			expectedComponents: []string{},
 		},
 		{
 			name: "single component removed from new plan returns removed components",
-			newPlan: NewPackageResourceModelFromTestData(
-				PackageModelTestData{},
-				[]ComponentModelTestData{
-					{Name: "component-1"},
-				},
-			),
-			oldPlan: NewPackageResourceModelFromTestData(
-				PackageModelTestData{},
-				[]ComponentModelTestData{
-					{Name: "component-1"},
-					{Name: "component-2"},
-				},
-			),
+			newPlanComponentNames: []string{
+				"component-1",
+			},
+			oldPlanComponentNames: []string{
+				"component-1",
+				"component-2",
+			},
 			expectedComponents: []string{"component-2"},
 		},
 		{
 			name: "multiple components removed from new plan returns removed components",
-			newPlan: NewPackageResourceModelFromTestData(
-				PackageModelTestData{},
-				[]ComponentModelTestData{
-					{Name: "component-1"},
-					{Name: "component-2"},
-				},
-			),
-			oldPlan: NewPackageResourceModelFromTestData(
-				PackageModelTestData{},
-				[]ComponentModelTestData{
-					{Name: "component-1"},
-					{Name: "component-2"},
-					{Name: "component-3"},
-					{Name: "component-4"},
-				},
-			),
+			newPlanComponentNames: []string{
+				"component-1",
+				"component-2",
+			},
+			oldPlanComponentNames: []string{
+				"component-1",
+				"component-2",
+				"component-3",
+				"component-4",
+			},
 			expectedComponents: []string{"component-3", "component-4"},
 		},
 		{
 			name: "new plan with additional components without removing any returns an empty list",
-			newPlan: NewPackageResourceModelFromTestData(
-				PackageModelTestData{},
-				[]ComponentModelTestData{
-					{Name: "component-1"},
-					{Name: "component-2"},
-					{Name: "component-3"},
-					{Name: "component-4"},
-				},
-			),
-			oldPlan: NewPackageResourceModelFromTestData(
-				PackageModelTestData{},
-				[]ComponentModelTestData{
-					{Name: "component-1"},
-					{Name: "component-2"},
-				},
-			),
+			newPlanComponentNames: []string{
+				"component-1",
+				"component-2",
+				"component-3",
+				"component-4",
+			},
+			oldPlanComponentNames: []string{
+				"component-1",
+				"component-2",
+			},
 			expectedComponents: []string{},
 		},
 		{
 			name: "new plan with additional components and removed components returns only removed components",
-			newPlan: NewPackageResourceModelFromTestData(
-				PackageModelTestData{},
-				[]ComponentModelTestData{
-					{Name: "component-1"},
-					{Name: "component-3"},
-					{Name: "component-4"},
-				},
-			),
-			oldPlan: NewPackageResourceModelFromTestData(
-				PackageModelTestData{},
-				[]ComponentModelTestData{
-					{Name: "component-1"},
-					{Name: "component-2"},
-				},
-			),
+			newPlanComponentNames: []string{
+				"component-1",
+				"component-3",
+				"component-4",
+			},
+			oldPlanComponentNames: []string{
+				"component-1",
+				"component-2",
+			},
 			expectedComponents: []string{"component-2"},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			componentsToRemove := getMissingComponents(tc.newPlan, tc.oldPlan)
+			newPlan := NewTestPackageResourceModel(
+				WithComponents(NewComponentModelsFromNames(tc.newPlanComponentNames)),
+			)
+			oldPlan := NewTestPackageResourceModel(
+				WithComponents(NewComponentModelsFromNames(tc.oldPlanComponentNames)),
+			)
+
+			componentsToRemove := getMissingComponents(newPlan, oldPlan)
 
 			assert.Equal(t, len(tc.expectedComponents), len(componentsToRemove))
 			for i := range componentsToRemove {
@@ -1107,45 +1101,25 @@ func TestGetOptionalComponentsToRemove(t *testing.T) {
 }
 
 func TestUpdate_RemoveComponents(t *testing.T) {
-	validPackageModelData := PackageModelTestData{
-		Name:         "test-package",
-		Source:       "oci://ghcr.io/defenseunicornstest/packages/test-package:v0.0.1",
-		Timeout:      "10m",
-		Architecture: runtime.GOARCH,
-	}
-
 	tests := []struct {
 		name               string
-		plan               PackageResourceModel
 		componentsToRemove []string
 		removeCalled       bool
 	}{
 		{
 			name:               "remove single component",
 			componentsToRemove: []string{"this-is-my-component"},
-			plan: NewPackageResourceModelFromTestData(
-				validPackageModelData,
-				[]ComponentModelTestData{},
-			),
-			removeCalled: true,
+			removeCalled:       true,
 		},
 		{
 			name:               "remove no components",
 			componentsToRemove: []string{},
-			plan: NewPackageResourceModelFromTestData(
-				validPackageModelData,
-				[]ComponentModelTestData{},
-			),
-			removeCalled: false,
+			removeCalled:       false,
 		},
 		{
 			name:               "remove multiple components",
 			componentsToRemove: []string{"this-is-my-component", "this-is-also-a-component"},
-			plan: NewPackageResourceModelFromTestData(
-				validPackageModelData,
-				[]ComponentModelTestData{},
-			),
-			removeCalled: true,
+			removeCalled:       true,
 		},
 	}
 
@@ -1167,7 +1141,10 @@ func TestUpdate_RemoveComponents(t *testing.T) {
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, &mockCluster).(*PackageResource)
 
 			// This is the meat of the test!
-			packageResource.removeComponents(context.TODO(), tc.plan, tc.componentsToRemove, &resp)
+			plan := NewTestPackageResourceModel()
+			packageResource.removeComponents(context.TODO(), plan, tc.componentsToRemove, &resp)
+
+			// Assertions
 			assert.False(t, resp.Diagnostics.HasError(), resp.Diagnostics.Errors())
 
 			// Check that Deploy was called and the variables map was provided with the correct values
