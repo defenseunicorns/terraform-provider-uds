@@ -24,7 +24,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
 	udsCluster "github.com/defenseunicorns/terraform-provider-uds/internal/cluster"
-	utils "github.com/defenseunicorns/terraform-provider-uds/internal/fileutil"
+	"github.com/defenseunicorns/terraform-provider-uds/internal/fileutil"
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 
@@ -1096,7 +1096,7 @@ func getTempPublicKeyPath(publicKey string, skipSignatureValidation bool) (strin
 	var err error
 	publicKeyPath := ""
 	if !skipSignatureValidation && publicKey != "" {
-		publicKeyPath, err = utils.CreateTempPublicKeyFile(publicKey)
+		publicKeyPath, err = fileutil.CreateTempPublicKeyFile(publicKey)
 		if err != nil {
 			return "", err
 		}
