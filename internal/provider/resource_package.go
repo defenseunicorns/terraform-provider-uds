@@ -88,7 +88,7 @@ type PackageResourceModel struct {
 
 	// readonly metadata
 	Name     types.String `tfsdk:"name"`
-	Kind     types.String `tfsdk:"kind"` // Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
+	Kind     types.String `tfsdk:"kind"` // Kind reflects the type of UDS package; either ZarfInit or ZarfPackage
 	Version  types.String `tfsdk:"version"`
 	Metadata types.Object `tfsdk:"metadata"`
 }
@@ -99,7 +99,7 @@ type ComponentModel struct {
 	// TODO(erickson): Move chart overrides into component model
 }
 
-// VariableModel represents a Zarf Variable name and value pairing.
+// VariableModel represents a name/value pair for setting UDS package variables
 type VariableModel struct {
 	Name  types.String `tfsdk:"name"`
 	Value types.String `tfsdk:"value"`
@@ -136,91 +136,89 @@ func (r *PackageResource) Metadata(_ context.Context, req resource.MetadataReque
 // Schema defines the schema for the resource.
 func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		// This description is used by the documentation generator and the language server.
-		MarkdownDescription: "UDS Package resource",
+		Description: "Deploys a UDS Package.",
 
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Computed:            true,
-				MarkdownDescription: "Example identifier",
+				Description: "Identifier for the deployed UDS package.",
+				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"name": schema.StringAttribute{
-				Computed:            true,
-				MarkdownDescription: "Name of the UDS Package",
+				Description: "Name of the UDS Package.",
+				Computed:    true,
 			},
 			"source": schema.StringAttribute{
-				Required:            true,
 				MarkdownDescription: "OCI distribution reference (including oci:// scheme) or local file path (absolute or relative) to the package",
+				Required:            true,
 				Validators: []validator.String{
 					udsValidator.PackageSourceValidator(),
 				},
 			},
 			"architecture": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "Architecture of the Zarf package",
+				Description: "System architecture of the target cluster.",
+				Required:    true,
 				// TODO(erickson): Add validator for architecture values?
 				//Validators: []validator.String{
 				//	stringvalidator.OneOf("amd64", "arm64"),
 				//},
 			},
 			"version": schema.StringAttribute{
-				Computed:            true,
-				MarkdownDescription: "Version of the package that was deployed",
+				Description: "Version of the deployed UDS package.",
+				Computed:    true,
 			},
 			"public_key": schema.StringAttribute{
 				Description: "Public key for a signed UDS package.",
 				Optional:    true,
 			},
 			"skip_signature_validation": schema.BoolAttribute{
-				Description: "Skip validating the signature of a signed Zarf package.",
+				Description: "Skip validating the signature of a signed UDS package.",
 				Computed:    true,
 				Optional:    true,
 				Default:     booldefault.StaticBool(false),
 			},
 			"timeout": schema.StringAttribute{
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString("30m"),
-				MarkdownDescription: "Timeout for the deploy operation",
+				Description: "Timeout for the deploy operation.",
+				Optional:    true,
+				Computed:    true,
+				Default:     stringdefault.StaticString("30m"),
 				// TODO(erickson): Add duration validator
 			},
 			"kind": schema.StringAttribute{
-				Computed: true,
-				// Optional:            true,
-				MarkdownDescription: "Kind of Zarf package; ZarfInitConfig or ZarfPackageConfig",
+				Description: "Kind of UDS package; ZarfInitConfig or ZarfPackageConfig.",
+				Computed:    true,
 			},
 			"metadata": &schema.SingleNestedAttribute{
 				Computed:    true,
-				Description: "Metadata retrieved from the zarf.yaml in the package",
+				Description: "Metadata retrieved from the UDS package (zarf.yaml).",
 				Attributes: map[string]schema.Attribute{
 					"name": &schema.StringAttribute{
 						Computed:    true,
-						Description: "Name of the zarf package. Used to identify the installed package",
+						Description: "Name of the UDS package. Used to identify the deployed UDS package.",
 					},
 					"description": &schema.StringAttribute{
 						Computed:    true,
-						Description: "Description of the zarf package, from the zarf.yaml file",
+						Description: "Description of the UDS package, from the zarf.yaml file.",
 					},
 					"version": &schema.StringAttribute{
 						Computed:    true,
-						Description: "Version of the zarf package, from the zarf.yaml file",
+						Description: "Version of the UDS package, from the zarf.yaml file.",
 					},
 				},
 			},
 			"vars": schema.ListNestedAttribute{
-				Description: "List of Zarf variables for the package.",
+				Description: "UDS package variables to set.",
 				Optional:    true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
-							Description: "Name of the Zarf Variable being set.",
+							Description: "Name of the variable to set.",
 							Required:    true,
 						},
 						"value": schema.StringAttribute{
-							Description: "Value for the Zarf Variable.",
+							Description: "Value for the variable to set.",
 							Required:    true,
 						},
 					},
@@ -233,16 +231,16 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"sensitive_vars": schema.ListNestedAttribute{
-				Description: "Sensitive Zarf Varlues",
+				Description: "Sensitive UDS package variables to set.",
 				Optional:    true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
-							Description: "Name of the Zarf Variable being set.",
+							Description: "Name of the variable to set.",
 							Required:    true,
 						},
 						"value": schema.StringAttribute{
-							Description: "Value for the Zarf Variable.",
+							Description: "Value for the variable to set.",
 							Required:    true,
 							Sensitive:   true,
 						},
@@ -318,13 +316,13 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"namespace": schema.StringAttribute{
-				Optional:            true,
-				MarkdownDescription: "[Alpha] Namespace used to override the default for package deployment.",
+				Description: "[Alpha] Namespace in which to deploy the UDS package.",
+				Optional:    true,
 			},
 		},
 		Blocks: map[string]schema.Block{
 			"component": schema.ListNestedBlock{
-				MarkdownDescription: "Component configuration to include/exclude in the package deployment",
+				Description: "Component configuration to include/exclude in the UDS package deployment",
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
