@@ -453,30 +453,8 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	// Populate a matrix of all the deployed packages
-	// TODO(clint): use this information to update our local state with the
-	// metadata from the package we're managing
-	packageData := make(map[string]zarfState.DeployedPackage)
-	for _, pkg := range deployedZarfPackages {
-		// var components []string
-
-		// for _, component := range pkg.DeployedComponents {
-		//      components = append(components, component.Name)
-		// }
-
-		// packageData = append(packageData, []string{
-		//      pkg.Name, pkg.Data.Metadata.Version, fmt.Sprintf("%v", components),
-		// })
-		packageData[pkg.Name] = pkg
-	}
-
-	// TODO(clint): verify the package name is in this list. Right now the
-	// results here are things like "init" instead of the name we supplied, so
-	// we need to either dig into the package and find the metadata name, or
-	// find another way to identify and ask Zarf/Kubernetes to give us the
-	// package name.
-	pkgUpdate, ok := packageData[strings.Trim(data.Metadata.Attributes()["name"].String(), "\"")]
-	if !ok {
+	deployedPackage, found := findDeployedPackage(deployedZarfPackages, data.Name.ValueString(), data.Namespace.ValueString())
+	if !found {
 		resp.Diagnostics.AddWarning(
 			"Package not found",
 			"Could not find package in deployed packages; removing resource",
@@ -496,9 +474,9 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		"version":     types.StringType,
 	}
 	elements := map[string]attr.Value{
-		"name":        types.StringValue(pkgUpdate.Name),
-		"description": types.StringValue(pkgUpdate.Data.Metadata.Description),
-		"version":     types.StringValue(pkgUpdate.Data.Metadata.Version),
+		"name":        types.StringValue(deployedPackage.Name),
+		"description": types.StringValue(deployedPackage.Data.Metadata.Description),
+		"version":     types.StringValue(deployedPackage.Data.Metadata.Version),
 	}
 	pkgMetadata, diags := types.ObjectValue(elementTypes, elements)
 	if diags.HasError() {
@@ -509,8 +487,8 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 	data.Metadata = pkgMetadata
-	data.Version = types.StringValue(pkgUpdate.Data.Metadata.Version)
-	data.ID = types.StringValue(computePackageID(pkgUpdate.NamespaceOverride, pkgUpdate.Name))
+	data.Version = types.StringValue(deployedPackage.Data.Metadata.Version)
+	data.ID = types.StringValue(computePackageID(deployedPackage.NamespaceOverride, deployedPackage.Name))
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -1057,6 +1035,15 @@ func findPackageComponent(components []v1alpha1.ZarfComponent, name string) (v1a
 		}
 	}
 	return v1alpha1.ZarfComponent{}, false // Not found
+}
+
+func findDeployedPackage(deployedPackages []zarfState.DeployedPackage, name string, namespaceOverride string) (zarfState.DeployedPackage, bool) {
+	for _, p := range deployedPackages {
+		if p.Name == name && p.NamespaceOverride == namespaceOverride {
+			return p, true
+		}
+	}
+	return zarfState.DeployedPackage{}, false // Not found
 }
 
 func computePackageID(namespace string, pkgName string) string {
