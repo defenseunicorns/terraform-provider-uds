@@ -90,17 +90,20 @@ func TestCreateTempPublicKeyFile_FilePermissions(t *testing.T) {
 
 func TestCreateTempPublicKeyFile_UniqueFiles(t *testing.T) {
 	publicKey := "test-public-key"
-	var filePaths []string
+	count := 3
+	filePaths := make([]string, count)
 	defer func() {
 		for _, path := range filePaths {
-			os.Remove(path)
+			if path != "" {
+				os.Remove(path)
+			}
 		}
 	}()
 
-	for i := range 3 {
+	for i := range count {
 		filePath, err := CreateTempPublicKeyFile(publicKey)
 		assert.Nil(t, err, "CreateTempPublicKeyFile() failed iteration %d: %v", i, err)
-		filePaths = append(filePaths, filePath)
+		filePaths[i] = filePath
 	}
 
 	// Verify all paths are unique
