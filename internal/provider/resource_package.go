@@ -755,7 +755,7 @@ func (r *PackageResource) getDeployedPackages(ctx context.Context) ([]zarfState.
 
 	// TODO: (clint) sometimes we deploy successfully but this returns empty,
 	// retry might be appropriate or there may be a better way to detect this
-	numRetries := 2
+	numRetries := getDeployedPackagesRetries
 	retrySleepDuration := time.Second * 2
 	var deployedZarfPackages []zarfState.DeployedPackage
 	for range numRetries {
