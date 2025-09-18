@@ -25,7 +25,7 @@ Deploys a UDS Package.
 - `component` (Block List) Component configuration to include/exclude in the UDS package deployment (see [below for nested schema](#nestedblock--component))
 - `namespace` (String) [Alpha] Namespace in which to deploy the UDS package.
 - `overrides` (Attributes List) List of overrides for Helm charts. (see [below for nested schema](#nestedatt--overrides))
-- `public_key` (String) Public key for a signed UDS package.
+- `public_key` (String) Raw public key value to validate against a signed UDS package.
 - `sensitive_vars` (Attributes List) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))
 - `skip_signature_validation` (Boolean) Skip validating the signature of a signed UDS package.
 - `timeout` (String) Timeout for the deploy operation.

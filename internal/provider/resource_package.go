@@ -167,7 +167,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Computed:    true,
 			},
 			"public_key": schema.StringAttribute{
-				Description: "Public key for a signed UDS package.",
+				Description: "Raw public key value to validate against a signed UDS package.",
 				Optional:    true,
 			},
 			"skip_signature_validation": schema.BoolAttribute{
