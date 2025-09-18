@@ -408,87 +408,6 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 }
 
-func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
-
-	// Get the package name from the source package metadata
-	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
-	if err != nil {
-		return plan, err
-	}
-	defer func() {
-		err = errors.Join(err, pkgLayout.Cleanup())
-	}()
-
-	packageName := pkgLayout.Pkg.Metadata.Name
-
-	// Ensure a package with the same name and namespace is not already deployed
-	clusterTimeoutCtx, cancel := withClusterTimeout(ctx)
-	defer cancel()
-
-	deployedPackages, err := r.getDeployedPackages(clusterTimeoutCtx)
-	if err != nil {
-		return plan, err
-	}
-	if _, exists := findDeployedPackage(deployedPackages, packageName, plan.Namespace.ValueString()); exists {
-		return plan, fmt.Errorf("package with namespace '%s' and name '%s' already exists", plan.Namespace.ValueString(), packageName)
-	}
-
-	return r.upsert(ctx, plan)
-}
-
-// TODO(erickson): Remove response paramater and return an error after refactoring removeComponents to do the same
-func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel, resp *resource.UpdateResponse) (PackageResourceModel, error) {
-	// TODO(erickson): Need to revisit this logic. If deploy errors, can we recover?
-	// Generate list of components to remove after the update is complete
-	// These components are components that were defined in the old plan but not present in the current plan
-	// We are removing them after the 'update' because if a 'required' component is removed it removes the entire package
-	componentsToRemove := getMissingComponents(plan, oldPlan)
-	if len(componentsToRemove) > 0 {
-		r.removeComponents(ctx, plan, componentsToRemove, resp)
-	}
-
-	return r.upsert(ctx, plan)
-}
-
-func (r *PackageResource) getRemoteOptions() zarfPackager.RemoteOptions {
-	// TODO(erickson): configure remote options from provider config
-	return zarfPackager.RemoteOptions{
-		PlainHTTP:             zarfConfig.CommonOptions.PlainHTTP,
-		InsecureSkipTLSVerify: zarfConfig.CommonOptions.InsecureSkipTLSVerify,
-	}
-}
-
-func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
-	packageSource, err := getPackageSource(model, *r.providerData)
-	if err != nil {
-		return nil, err
-	}
-
-	// generate a temporary public key file if needed
-	skipSignatureValidation := model.SkipSignatureValidation.ValueBool()
-	publicKeyPath, err := getTempPublicKeyPath(model.PublicKey.ValueString(), skipSignatureValidation)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if publicKeyPath != "" {
-			os.Remove(publicKeyPath)
-		}
-	}()
-
-	// TODO(erickson): add support for Shasum, CachePath, OCIConcurrency?
-	loadOpt := zarfPackager.LoadOptions{
-		Filter:                  zarfFilters.Empty(),
-		Architecture:            getArchitecture(model, *r.providerData),
-		PublicKeyPath:           publicKeyPath,
-		SkipSignatureValidation: skipSignatureValidation,
-		RemoteOptions:           r.getRemoteOptions(),
-		CachePath:               zarfConfig.ZarfDefaultCachePath,
-	}
-
-	return r.packager.LoadPackage(ctx, packageSource, loadOpt)
-}
-
 func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var data PackageResourceModel
 
@@ -691,65 +610,43 @@ func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportSt
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
-func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[string]any {
-	result := make(map[string]map[string]map[string]any)
-
-	for _, override := range overrides {
-		component := override.ComponentName.ValueString()
-		chart := override.ChartName.ValueString()
-
-		// Initialize nested maps if they don't exist
-		if _, exists := result[component]; !exists {
-			result[component] = make(map[string]map[string]any)
-		}
-		if _, exists := result[component][chart]; !exists {
-			result[component][chart] = make(map[string]any)
-		}
-
-		chartMap := result[component][chart]
-
-		// Flatten Values
-		for _, v := range override.Values {
-			chartMap[v.Path.ValueString()] = v.Value.ValueString()
-		}
-
-		// Flatten Variables into Nested Maps
-		for _, variable := range override.Variables {
-			defaultValue := variable.Default.ValueString()
-			path := variable.Path.ValueString()
-
-			if defaultValue != "" {
-				insertNestedValue(chartMap, path, defaultValue)
-			} else {
-				// Handle deletion if the default value is empty
-				deleteNestedValue(chartMap, path)
-			}
-		}
+func (r *PackageResource) getRemoteOptions() zarfPackager.RemoteOptions {
+	// TODO(erickson): configure remote options from provider config
+	return zarfPackager.RemoteOptions{
+		PlainHTTP:             zarfConfig.CommonOptions.PlainHTTP,
+		InsecureSkipTLSVerify: zarfConfig.CommonOptions.InsecureSkipTLSVerify,
 	}
-
-	return result
 }
 
-// getMissingComponents compares two Package plans and returns a list of components that was specified in the
-// 'oldPlan' but not specified in the newer plan.
-func getMissingComponents(plan PackageResourceModel, oldPlan PackageResourceModel) []string {
-	var componentsToRemove []string
-
-	// Collect all component names in the new plan
-	newPlanComponents := make(map[string]struct{}, len(plan.Component))
-	for _, component := range plan.Component {
-		newPlanComponents[component.Name.ValueString()] = struct{}{}
+func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
+	packageSource, err := getPackageSource(model, *r.providerData)
+	if err != nil {
+		return nil, err
 	}
 
-	// Check which old components are missing in the new plan
-	for _, component := range oldPlan.Component {
-		name := component.Name.ValueString()
-		if _, found := newPlanComponents[name]; !found {
-			componentsToRemove = append(componentsToRemove, name)
+	// generate a temporary public key file if needed
+	skipSignatureValidation := model.SkipSignatureValidation.ValueBool()
+	publicKeyPath, err := getTempPublicKeyPath(model.PublicKey.ValueString(), skipSignatureValidation)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if publicKeyPath != "" {
+			os.Remove(publicKeyPath)
 		}
+	}()
+
+	// TODO(erickson): add support for Shasum, CachePath, OCIConcurrency?
+	loadOpt := zarfPackager.LoadOptions{
+		Filter:                  zarfFilters.Empty(),
+		Architecture:            getArchitecture(model, *r.providerData),
+		PublicKeyPath:           publicKeyPath,
+		SkipSignatureValidation: skipSignatureValidation,
+		RemoteOptions:           r.getRemoteOptions(),
+		CachePath:               zarfConfig.ZarfDefaultCachePath,
 	}
 
-	return componentsToRemove
+	return r.packager.LoadPackage(ctx, packageSource, loadOpt)
 }
 
 func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string, resp *resource.UpdateResponse) {
@@ -875,65 +772,46 @@ func (r *PackageResource) getDeployedPackages(ctx context.Context) ([]zarfState.
 	return deployedZarfPackages, nil
 }
 
-// withClusterTimeout returns a context with a timeout
-func withClusterTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, clusterTimeoutMinutes*time.Minute)
+func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
+
+	// Get the package name from the source package metadata
+	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
+	if err != nil {
+		return plan, err
+	}
+	defer func() {
+		err = errors.Join(err, pkgLayout.Cleanup())
+	}()
+
+	packageName := pkgLayout.Pkg.Metadata.Name
+
+	// Ensure a package with the same name and namespace is not already deployed
+	clusterTimeoutCtx, cancel := withClusterTimeout(ctx)
+	defer cancel()
+
+	deployedPackages, err := r.getDeployedPackages(clusterTimeoutCtx)
+	if err != nil {
+		return plan, err
+	}
+	if _, exists := findDeployedPackage(deployedPackages, packageName, plan.Namespace.ValueString()); exists {
+		return plan, fmt.Errorf("package with namespace '%s' and name '%s' already exists", plan.Namespace.ValueString(), packageName)
+	}
+
+	return r.upsert(ctx, plan)
 }
 
-// Inserts a nested value based on the dot-separated path
-func insertNestedValue(root map[string]any, path, value string) {
-	parts := strings.Split(path, ".")
-	current := root
-
-	for i, part := range parts {
-		if i == len(parts)-1 {
-			current[part] = value
-			return
-		}
-
-		// Create intermediate maps if they don't exist
-		if next, exists := current[part]; exists {
-			// Ensure type safety
-			if nestedMap, ok := next.(map[string]any); ok {
-				current = nestedMap
-			} else {
-				// Overwrite if the existing value is not a map
-				newMap := make(map[string]any)
-				current[part] = newMap
-				current = newMap
-			}
-		} else {
-			// Initialize a new map if it doesn't exist
-			newMap := make(map[string]any)
-			current[part] = newMap
-			current = newMap
-		}
+// TODO(erickson): Remove response paramater and return an error after refactoring removeComponents to do the same
+func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel, resp *resource.UpdateResponse) (PackageResourceModel, error) {
+	// TODO(erickson): Need to revisit this logic. If deploy errors, can we recover?
+	// Generate list of components to remove after the update is complete
+	// These components are components that were defined in the old plan but not present in the current plan
+	// We are removing them after the 'update' because if a 'required' component is removed it removes the entire package
+	componentsToRemove := getMissingComponents(plan, oldPlan)
+	if len(componentsToRemove) > 0 {
+		r.removeComponents(ctx, plan, componentsToRemove, resp)
 	}
-}
 
-// Deletes a nested value based on the dot-separated path
-func deleteNestedValue(root map[string]any, path string) {
-	parts := strings.Split(path, ".")
-	current := root
-
-	for i, part := range parts {
-		if i == len(parts)-1 {
-			delete(current, part)
-			return
-		}
-
-		next, exists := current[part]
-		if !exists {
-			return // Path doesn't exist, nothing to delete
-		}
-
-		// Ensure type safety
-		nestedMap, ok := next.(map[string]any)
-		if !ok {
-			return // Invalid structure, cannot proceed
-		}
-		current = nestedMap
-	}
+	return r.upsert(ctx, plan)
 }
 
 func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
@@ -998,6 +876,128 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	plan.Metadata = pkgMetaData
 
 	return plan, err
+}
+
+func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[string]any {
+	result := make(map[string]map[string]map[string]any)
+
+	for _, override := range overrides {
+		component := override.ComponentName.ValueString()
+		chart := override.ChartName.ValueString()
+
+		// Initialize nested maps if they don't exist
+		if _, exists := result[component]; !exists {
+			result[component] = make(map[string]map[string]any)
+		}
+		if _, exists := result[component][chart]; !exists {
+			result[component][chart] = make(map[string]any)
+		}
+
+		chartMap := result[component][chart]
+
+		// Flatten Values
+		for _, v := range override.Values {
+			chartMap[v.Path.ValueString()] = v.Value.ValueString()
+		}
+
+		// Flatten Variables into Nested Maps
+		for _, variable := range override.Variables {
+			defaultValue := variable.Default.ValueString()
+			path := variable.Path.ValueString()
+
+			if defaultValue != "" {
+				insertNestedValue(chartMap, path, defaultValue)
+			} else {
+				// Handle deletion if the default value is empty
+				deleteNestedValue(chartMap, path)
+			}
+		}
+	}
+
+	return result
+}
+
+// getMissingComponents compares two Package plans and returns a list of components that was specified in the
+// 'oldPlan' but not specified in the newer plan.
+func getMissingComponents(plan PackageResourceModel, oldPlan PackageResourceModel) []string {
+	var componentsToRemove []string
+
+	// Collect all component names in the new plan
+	newPlanComponents := make(map[string]struct{}, len(plan.Component))
+	for _, component := range plan.Component {
+		newPlanComponents[component.Name.ValueString()] = struct{}{}
+	}
+
+	// Check which old components are missing in the new plan
+	for _, component := range oldPlan.Component {
+		name := component.Name.ValueString()
+		if _, found := newPlanComponents[name]; !found {
+			componentsToRemove = append(componentsToRemove, name)
+		}
+	}
+
+	return componentsToRemove
+}
+
+// withClusterTimeout returns a context with a timeout
+func withClusterTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, clusterTimeoutMinutes*time.Minute)
+}
+
+// Inserts a nested value based on the dot-separated path
+func insertNestedValue(root map[string]any, path, value string) {
+	parts := strings.Split(path, ".")
+	current := root
+
+	for i, part := range parts {
+		if i == len(parts)-1 {
+			current[part] = value
+			return
+		}
+
+		// Create intermediate maps if they don't exist
+		if next, exists := current[part]; exists {
+			// Ensure type safety
+			if nestedMap, ok := next.(map[string]any); ok {
+				current = nestedMap
+			} else {
+				// Overwrite if the existing value is not a map
+				newMap := make(map[string]any)
+				current[part] = newMap
+				current = newMap
+			}
+		} else {
+			// Initialize a new map if it doesn't exist
+			newMap := make(map[string]any)
+			current[part] = newMap
+			current = newMap
+		}
+	}
+}
+
+// Deletes a nested value based on the dot-separated path
+func deleteNestedValue(root map[string]any, path string) {
+	parts := strings.Split(path, ".")
+	current := root
+
+	for i, part := range parts {
+		if i == len(parts)-1 {
+			delete(current, part)
+			return
+		}
+
+		next, exists := current[part]
+		if !exists {
+			return // Path doesn't exist, nothing to delete
+		}
+
+		// Ensure type safety
+		nestedMap, ok := next.(map[string]any)
+		if !ok {
+			return // Invalid structure, cannot proceed
+		}
+		current = nestedMap
+	}
 }
 
 func getArchitecture(pkg PackageResourceModel, providerData customProviderData) string {
