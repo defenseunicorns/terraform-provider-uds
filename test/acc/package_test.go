@@ -40,7 +40,6 @@ resource "uds_bundle_metadata" "example_bundle" {
 }
 
 resource "uds_package" "init" {
-  name         = "init"
   source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
   architecture = uds_bundle_metadata.example_bundle.architecture
 }
@@ -65,7 +64,6 @@ func TestInitPackage(t *testing.T) {
 
 var testAccInitPackageResourceConfig = fmt.Sprintf(`
 resource "uds_package" "init" {
-  name         = "init"
   source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
   architecture = "%s"
 }

@@ -3,12 +3,12 @@
 page_title: "uds_package Resource - uds"
 subcategory: ""
 description: |-
-  UDS Package resource
+  Deploys a UDS Package.
 ---
 
 # uds_package (Resource)
 
-UDS Package resource
+Deploys a UDS Package.
 
 
 
@@ -17,24 +17,27 @@ UDS Package resource
 
 ### Required
 
-- `architecture` (String) Architecture of the Zarf package
-- `name` (String) The name of the Zarf Package
-- `ref` (String) Red of the package that was deployed
+- `architecture` (String) System architecture of the target cluster.
+- `source` (String) OCI distribution reference (including oci:// scheme) or local file path (absolute or relative) to the UDS package.
 
 ### Optional
 
-- `component` (Block List) Component configuration to include/exclude in the package deployment (see [below for nested schema](#nestedblock--component))
-- `key` (String) Path to the public key for signed Zarf Packages
+- `component` (Block List) Component configuration to include/exclude in the UDS package deployment (see [below for nested schema](#nestedblock--component))
+- `namespace` (String) [Alpha] Namespace in which to deploy the UDS package.
 - `overrides` (Attributes List) List of overrides for Helm charts. (see [below for nested schema](#nestedatt--overrides))
-- `path` (String) Path to tar file of the package
-- `repository` (String) url to the repository of the package
-- `timeout` (String) Timeout for the deploy operation
+- `public_key` (String) Raw public key value to validate against a signed UDS package.
+- `sensitive_vars` (Attributes List) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))
+- `skip_signature_validation` (Boolean) Skip validating the signature of a signed UDS package.
+- `timeout` (String) Timeout for the deploy operation.
+- `vars` (Attributes List) UDS package variables to set. (see [below for nested schema](#nestedatt--vars))
 
 ### Read-Only
 
-- `id` (String) Example identifier
-- `kind` (String) Kind of Zarf package; ZarfInitConfig or ZarfPackageConfig
-- `metadata` (Attributes) Metadata retrieved from the zarf.yaml in the package (see [below for nested schema](#nestedatt--metadata))
+- `id` (String) Identifier for the deployed UDS package.
+- `kind` (String) Kind of UDS package; ZarfInitConfig or ZarfPackageConfig.
+- `metadata` (Attributes) Metadata retrieved from the UDS package (zarf.yaml). (see [below for nested schema](#nestedatt--metadata))
+- `name` (String) Name of the UDS Package.
+- `version` (String) Version of the deployed UDS package.
 
 <a id="nestedblock--component"></a>
 ### Nested Schema for `component`
@@ -82,11 +85,29 @@ Optional:
 
 
 
+<a id="nestedatt--sensitive_vars"></a>
+### Nested Schema for `sensitive_vars`
+
+Required:
+
+- `name` (String) Name of the variable to set.
+- `value` (String, Sensitive) Value for the variable to set.
+
+
+<a id="nestedatt--vars"></a>
+### Nested Schema for `vars`
+
+Required:
+
+- `name` (String) Name of the variable to set.
+- `value` (String) Value for the variable to set.
+
+
 <a id="nestedatt--metadata"></a>
 ### Nested Schema for `metadata`
 
 Read-Only:
 
-- `description` (String) Description of the zarf package, from the zarf.yaml file
-- `name` (String) Name of the zarf package. Used to identify the installed package
-- `version` (String) Version of the zarf package, from the zarf.yaml file
+- `description` (String) Description of the UDS package, from the zarf.yaml file.
+- `name` (String) Name of the UDS package. Used to identify the deployed UDS package.
+- `version` (String) Version of the UDS package, from the zarf.yaml file.

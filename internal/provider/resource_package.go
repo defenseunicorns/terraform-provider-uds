@@ -16,14 +16,13 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
 	udsCluster "github.com/defenseunicorns/terraform-provider-uds/internal/cluster"
+	"github.com/defenseunicorns/terraform-provider-uds/internal/fileutil"
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 
@@ -73,11 +72,10 @@ type PackageResource struct {
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
 	ID                      types.String `tfsdk:"id"`
-	Name                    types.String `tfsdk:"name"`
 	Source                  types.String `tfsdk:"source"`
 	Architecture            types.String `tfsdk:"architecture"`
 	Timeout                 types.String `tfsdk:"timeout"`
-	Key                     types.String `tfsdk:"key"`
+	PublicKey               types.String `tfsdk:"public_key"`
 	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
 	Namespace               types.String `tfsdk:"namespace"`
 
@@ -87,9 +85,10 @@ type PackageResourceModel struct {
 	SensitiveVars []VariableModel  `tfsdk:"sensitive_vars"`
 
 	// readonly metadata
-	Metadata types.Object `tfsdk:"metadata"`
-	Kind     types.String `tfsdk:"kind"` // Kind reflects the type of Zarf package; either ZarfInit or ZarfPackage
+	Name     types.String `tfsdk:"name"`
+	Kind     types.String `tfsdk:"kind"` // Kind reflects the type of UDS package; either ZarfInit or ZarfPackage
 	Version  types.String `tfsdk:"version"`
+	Metadata types.Object `tfsdk:"metadata"`
 }
 
 // ComponentModel represents a UDS package component configuration.
@@ -98,7 +97,7 @@ type ComponentModel struct {
 	// TODO(erickson): Move chart overrides into component model
 }
 
-// VariableModel represents a Zarf Variable name and value pairing.
+// VariableModel represents a name/value pair for setting UDS package variables
 type VariableModel struct {
 	Name  types.String `tfsdk:"name"`
 	Value types.String `tfsdk:"value"`
@@ -135,91 +134,86 @@ func (r *PackageResource) Metadata(_ context.Context, req resource.MetadataReque
 // Schema defines the schema for the resource.
 func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		// This description is used by the documentation generator and the language server.
-		MarkdownDescription: "UDS Package resource",
+		Description: "Deploys a UDS Package.",
 
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Computed:            true,
-				MarkdownDescription: "Example identifier",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
+				Description: "Identifier for the deployed UDS package.",
+				Computed:    true,
 			},
 			"name": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "The name of the Zarf Package",
+				Description: "Name of the UDS Package.",
+				Computed:    true,
 			},
 			"source": schema.StringAttribute{
-				Required:            true,
 				MarkdownDescription: "OCI distribution reference (including oci:// scheme) or local file path (absolute or relative) to the package",
+				Required:            true,
 				Validators: []validator.String{
 					udsValidator.PackageSourceValidator(),
 				},
 			},
 			"architecture": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "Architecture of the Zarf package",
+				Description: "System architecture of the target cluster.",
+				Required:    true,
 				// TODO(erickson): Add validator for architecture values?
 				//Validators: []validator.String{
 				//	stringvalidator.OneOf("amd64", "arm64"),
 				//},
 			},
 			"version": schema.StringAttribute{
-				Computed:            true,
-				MarkdownDescription: "Version of the package that was deployed",
+				Description: "Version of the deployed UDS package.",
+				Computed:    true,
 			},
-			"key": schema.StringAttribute{
-				Description: "Path or URL to the public key for signed Zarf Packages.",
+			"public_key": schema.StringAttribute{
+				Description: "Raw public key value to validate against a signed UDS package.",
 				Optional:    true,
 			},
 			"skip_signature_validation": schema.BoolAttribute{
-				Description: "Skip validating the signature of a signed Zarf package.",
+				Description: "Skip validating the signature of a signed UDS package.",
 				Computed:    true,
 				Optional:    true,
 				Default:     booldefault.StaticBool(false),
 			},
 			"timeout": schema.StringAttribute{
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString("30m"),
-				MarkdownDescription: "Timeout for the deploy operation",
+				Description: "Timeout for the deploy operation.",
+				Optional:    true,
+				Computed:    true,
+				Default:     stringdefault.StaticString("30m"),
 				// TODO(erickson): Add duration validator
 			},
 			"kind": schema.StringAttribute{
-				Computed: true,
-				// Optional:            true,
-				MarkdownDescription: "Kind of Zarf package; ZarfInitConfig or ZarfPackageConfig",
+				Description: "Kind of UDS package; ZarfInitConfig or ZarfPackageConfig.",
+				Computed:    true,
 			},
 			"metadata": &schema.SingleNestedAttribute{
 				Computed:    true,
-				Description: "Metadata retrieved from the zarf.yaml in the package",
+				Description: "Metadata retrieved from the UDS package (zarf.yaml).",
 				Attributes: map[string]schema.Attribute{
 					"name": &schema.StringAttribute{
 						Computed:    true,
-						Description: "Name of the zarf package. Used to identify the installed package",
+						Description: "Name of the UDS package. Used to identify the deployed UDS package.",
 					},
 					"description": &schema.StringAttribute{
 						Computed:    true,
-						Description: "Description of the zarf package, from the zarf.yaml file",
+						Description: "Description of the UDS package, from the zarf.yaml file.",
 					},
 					"version": &schema.StringAttribute{
 						Computed:    true,
-						Description: "Version of the zarf package, from the zarf.yaml file",
+						Description: "Version of the UDS package, from the zarf.yaml file.",
 					},
 				},
 			},
 			"vars": schema.ListNestedAttribute{
-				Description: "List of Zarf variables for the package.",
+				Description: "UDS package variables to set.",
 				Optional:    true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
-							Description: "Name of the Zarf Variable being set.",
+							Description: "Name of the variable to set.",
 							Required:    true,
 						},
 						"value": schema.StringAttribute{
-							Description: "Value for the Zarf Variable.",
+							Description: "Value for the variable to set.",
 							Required:    true,
 						},
 					},
@@ -232,16 +226,16 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"sensitive_vars": schema.ListNestedAttribute{
-				Description: "Sensitive Zarf Varlues",
+				Description: "Sensitive UDS package variables to set.",
 				Optional:    true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
-							Description: "Name of the Zarf Variable being set.",
+							Description: "Name of the variable to set.",
 							Required:    true,
 						},
 						"value": schema.StringAttribute{
-							Description: "Value for the Zarf Variable.",
+							Description: "Value for the variable to set.",
 							Required:    true,
 							Sensitive:   true,
 						},
@@ -317,13 +311,13 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"namespace": schema.StringAttribute{
-				Optional:            true,
-				MarkdownDescription: "[Alpha] Namespace used to override the default for package deployment.",
+				Description: "[Alpha] Namespace in which to deploy the UDS package.",
+				Optional:    true,
 			},
 		},
 		Blocks: map[string]schema.Block{
 			"component": schema.ListNestedBlock{
-				MarkdownDescription: "Component configuration to include/exclude in the package deployment",
+				Description: "Component configuration to include/exclude in the UDS package deployment",
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
@@ -452,30 +446,8 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	// Populate a matrix of all the deployed packages
-	// TODO(clint): use this information to update our local state with the
-	// metadata from the package we're managing
-	packageData := make(map[string]zarfState.DeployedPackage)
-	for _, pkg := range deployedZarfPackages {
-		// var components []string
-
-		// for _, component := range pkg.DeployedComponents {
-		// 	components = append(components, component.Name)
-		// }
-
-		// packageData = append(packageData, []string{
-		// 	pkg.Name, pkg.Data.Metadata.Version, fmt.Sprintf("%v", components),
-		// })
-		packageData[pkg.Name] = pkg
-	}
-
-	// TODO(clint): verify the package name is in this list. Right now the
-	// results here are things like "init" instead of the name we supplied, so
-	// we need to either dig into the package and find the metadata name, or
-	// find another way to identify and ask Zarf/Kubernetes to give us the
-	// package name.
-	pkgUpdate, ok := packageData[strings.Trim(data.Metadata.Attributes()["name"].String(), "\"")]
-	if !ok {
+	deployedPackage, found := findDeployedPackage(deployedZarfPackages, data.Name.ValueString(), data.Namespace.ValueString())
+	if !found {
 		resp.Diagnostics.AddWarning(
 			"Package not found",
 			"Could not find package in deployed packages; removing resource",
@@ -483,6 +455,12 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		resp.State.RemoveResource(ctx)
 		return
 	}
+
+	// Populate/set resource computed values from deployed package info so that they can be saved to state
+	data.ID = types.StringValue(computePackageID(deployedPackage.NamespaceOverride, deployedPackage.Name))
+	data.Name = types.StringValue(deployedPackage.Name)
+	data.Version = types.StringValue(deployedPackage.Data.Metadata.Version)
+	data.Kind = types.StringValue(string(deployedPackage.Data.Kind))
 
 	// populate the package metadata type.
 	// TODO(clint): this is ugly and I got it from https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/custom
@@ -495,9 +473,9 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		"version":     types.StringType,
 	}
 	elements := map[string]attr.Value{
-		"name":        types.StringValue(pkgUpdate.Name),
-		"description": types.StringValue(pkgUpdate.Data.Metadata.Description),
-		"version":     types.StringValue(pkgUpdate.Data.Metadata.Version),
+		"name":        types.StringValue(deployedPackage.Name),
+		"description": types.StringValue(deployedPackage.Data.Metadata.Description),
+		"version":     types.StringValue(deployedPackage.Data.Metadata.Version),
 	}
 	pkgMetadata, diags := types.ObjectValue(elementTypes, elements)
 	if diags.HasError() {
@@ -508,7 +486,6 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 	data.Metadata = pkgMetadata
-	data.Version = types.StringValue(pkgUpdate.Data.Metadata.Version)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -597,11 +574,34 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 
-	filter := r.packageFilter.ForRemove([]string{})
+	skipSignatureValidation := data.SkipSignatureValidation.ValueBool()
+	publicKeyPath, err := getTempPublicKeyPath(data.PublicKey.ValueString(), skipSignatureValidation)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Public key path error",
+			"Could not get/create public key path: "+err.Error(),
+		)
+		return
+	}
+	defer func() {
+		if publicKeyPath != "" {
+			os.Remove(publicKeyPath)
+		}
+	}()
+
+	// TODO(erickson): Do we need configurable remote options?
+	remoteOpts := zarfPackager.RemoteOptions{
+		PlainHTTP:             zarfConfig.CommonOptions.PlainHTTP,
+		InsecureSkipTLSVerify: zarfConfig.CommonOptions.InsecureSkipTLSVerify,
+	}
+
 	loadOpts := zarfPackager.LoadOptions{
-		Architecture: getArchitecture(data, *r.providerData),
-		Filter:       filter,
-		CachePath:    zarfConfig.ZarfDefaultCachePath,
+		Filter:                  r.packageFilter.ForRemove([]string{}),
+		Architecture:            getArchitecture(data, *r.providerData),
+		PublicKeyPath:           publicKeyPath,
+		SkipSignatureValidation: skipSignatureValidation,
+		RemoteOptions:           remoteOpts,
+		CachePath:               zarfConfig.ZarfDefaultCachePath,
 	}
 	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, c, packageSource, "", loadOpts)
 	if err != nil {
@@ -613,8 +613,9 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 
 	removeOpt := zarfPackager.RemoveOptions{
-		Cluster: c,
-		Timeout: deleteTimeout,
+		NamespaceOverride: data.Namespace.ValueString(),
+		Cluster:           c,
+		Timeout:           deleteTimeout,
 	}
 	if err := r.packager.Remove(ctx, pkg, removeOpt); err != nil {
 		resp.Diagnostics.AddError(
@@ -861,6 +862,18 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, err
 	}
 
+	// generate a temporary public key file if needed
+	skipSignatureValidation := plan.SkipSignatureValidation.ValueBool()
+	publicKeyPath, err := getTempPublicKeyPath(plan.PublicKey.ValueString(), skipSignatureValidation)
+	if err != nil {
+		return plan, err
+	}
+	defer func() {
+		if publicKeyPath != "" {
+			os.Remove(publicKeyPath)
+		}
+	}()
+
 	valuesMap := flattenOverrides(plan.Overrides)
 	packageSource, err := getPackageSource(plan, *r.providerData)
 	if err != nil {
@@ -877,7 +890,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	loadOpt := zarfPackager.LoadOptions{
 		Filter:                  zarfFilters.Empty(),
 		Architecture:            getArchitecture(plan, *r.providerData),
-		PublicKeyPath:           plan.Key.ValueString(),
+		PublicKeyPath:           publicKeyPath,
 		SkipSignatureValidation: plan.SkipSignatureValidation.ValueBool(),
 		RemoteOptions:           remoteOpts,
 		CachePath:               zarfConfig.ZarfDefaultCachePath,
@@ -956,8 +969,9 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 	tflog.Debug(ctx, "ending deploy")
 
-	// Populate/set resource computed values
+	// Populate/set resource computed values so that they can be saved to state
 	plan.ID = types.StringValue(computePackageID(plan.Namespace.ValueString(), pkgLayout.Pkg.Metadata.Name))
+	plan.Name = types.StringValue(pkgLayout.Pkg.Metadata.Name)
 	plan.Version = types.StringValue(pkgLayout.Pkg.Metadata.Version)
 	plan.Kind = types.StringValue(string(pkgLayout.Pkg.Kind))
 
@@ -1021,6 +1035,15 @@ func findPackageComponent(components []v1alpha1.ZarfComponent, name string) (v1a
 	return v1alpha1.ZarfComponent{}, false // Not found
 }
 
+func findDeployedPackage(deployedPackages []zarfState.DeployedPackage, name string, namespaceOverride string) (zarfState.DeployedPackage, bool) {
+	for _, p := range deployedPackages {
+		if p.Name == name && p.NamespaceOverride == namespaceOverride {
+			return p, true
+		}
+	}
+	return zarfState.DeployedPackage{}, false // Not found
+}
+
 func computePackageID(namespace string, pkgName string) string {
 	if namespace == "" {
 		return pkgName
@@ -1065,4 +1088,16 @@ func validateUniqueVarNames(model PackageResourceModel, resp *resource.ValidateC
 			fmt.Sprintf("The variable name %q is defined more than once across `vars` and `sensitive_vars`. Names must be unique.", name),
 		)
 	}
+}
+
+func getTempPublicKeyPath(publicKey string, skipSignatureValidation bool) (string, error) {
+	var err error
+	publicKeyPath := ""
+	if !skipSignatureValidation && publicKey != "" {
+		publicKeyPath, err = fileutil.CreateTempPublicKeyFile(publicKey)
+		if err != nil {
+			return "", err
+		}
+	}
+	return publicKeyPath, nil
 }
