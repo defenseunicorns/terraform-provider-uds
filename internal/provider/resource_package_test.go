@@ -328,12 +328,12 @@ func NewComponentModelsFromNames(componentNames []string) []ComponentModel {
 	return componentModels
 }
 
-func newEmptyLoadPackageResult() MockLoadPackageResult {
+func newErrorLoadPackageResult(err error) MockLoadPackageResult {
 	return MockLoadPackageResult{
 		Layout: &layout.PackageLayout{
 			Pkg: v1alpha1.ZarfPackage{},
 		},
-		Error: nil,
+		Error: err,
 	}
 }
 
@@ -481,16 +481,14 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 	tests := []struct {
 		name                                      string
 		componentNames                            []string
-		zarfPackagerLoadPackageResult             MockLoadPackageResult
 		expectedCallToDeploy                      bool
 		expectedOptionalComponentsForDeployFilter []string
 		expectedErrorContains                     []string
 	}{
 		{
-			name:                          "package without components deploys required components only",
-			componentNames:                []string{},
-			zarfPackagerLoadPackageResult: newValidLoadPackageResult(),
-			expectedCallToDeploy:          true,
+			name:                 "package without components deploys required components only",
+			componentNames:       []string{},
+			expectedCallToDeploy: true,
 			expectedOptionalComponentsForDeployFilter: []string{},
 			expectedErrorContains:                     []string{},
 		},
@@ -500,7 +498,6 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 				"test-required-component-0",
 				"test-required-component-1",
 			},
-			zarfPackagerLoadPackageResult:             newValidLoadPackageResult(),
 			expectedCallToDeploy:                      true,
 			expectedOptionalComponentsForDeployFilter: []string{},
 			expectedErrorContains:                     []string{},
@@ -511,7 +508,6 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 				"test-optional-default-component-0",
 				"test-optional-non-default-component-0",
 			},
-			zarfPackagerLoadPackageResult:             newValidLoadPackageResult(),
 			expectedCallToDeploy:                      true,
 			expectedOptionalComponentsForDeployFilter: []string{"test-optional-default-component-0", "test-optional-non-default-component-0"},
 			expectedErrorContains:                     []string{},
@@ -524,8 +520,7 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 				"test-optional-default-component-0",
 				"test-optional-non-default-component-0",
 			},
-			zarfPackagerLoadPackageResult: newValidLoadPackageResult(),
-			expectedCallToDeploy:          true,
+			expectedCallToDeploy: true,
 			expectedOptionalComponentsForDeployFilter: []string{
 				"test-optional-default-component-0",
 				"test-optional-non-default-component-0",
@@ -538,7 +533,6 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 				"test-unknown-component-0",
 				"test-unknown-component-1",
 			},
-			zarfPackagerLoadPackageResult:             newValidLoadPackageResult(),
 			expectedCallToDeploy:                      false,
 			expectedOptionalComponentsForDeployFilter: []string{},
 			expectedErrorContains: []string{
@@ -553,9 +547,10 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 			mockPackager := &MockPackager{}
 			mockPackageComponentFilter := &MockPackageComponentFilter{}
 
+			validLoadPackageResult := newValidLoadPackageResult()
 			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
-				tc.zarfPackagerLoadPackageResult.Layout,
-				tc.zarfPackagerLoadPackageResult.Error,
+				validLoadPackageResult.Layout,
+				validLoadPackageResult.Error,
 			)
 			if tc.expectedCallToDeploy {
 				mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
@@ -977,6 +972,129 @@ func TestPackageResource_Upsert_NamespaceOverride(t *testing.T) {
 					deployOptions := call.Arguments[2].(zarfPackager.DeployOptions)
 					assert.Equal(t, deployOptions.NamespaceOverride, tc.expectedNamespaceOverride)
 				}
+			}
+		})
+	}
+}
+
+// Unit tests for upsert method public key and skip signature validation
+func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T) {
+	tests := []struct {
+		name                                         string
+		publicKey                                    string
+		skipSignatureValidation                      bool
+		zarfPackagerLoadPackageError                 error
+		expectedLoadPackageWithPublicKeyPathProvided bool
+		expectedCallToDeploy                         bool
+	}{
+		{
+			name:                         "public key not provided with signature validation enabled for unsigned package loads package without public key file",
+			publicKey:                    "",
+			skipSignatureValidation:      false,
+			zarfPackagerLoadPackageError: nil,
+			expectedLoadPackageWithPublicKeyPathProvided: false,
+			expectedCallToDeploy:                         true,
+		},
+		{
+			name:                         "public key not provided with signature validation disabled for unsigned package loads package without public key file",
+			publicKey:                    "",
+			skipSignatureValidation:      true,
+			zarfPackagerLoadPackageError: nil,
+			expectedLoadPackageWithPublicKeyPathProvided: false,
+			expectedCallToDeploy:                         true,
+		},
+		{
+			name:                         "public key provided with signature validation enabled for signed package loads package with public key file",
+			publicKey:                    "test-public-key",
+			skipSignatureValidation:      false,
+			zarfPackagerLoadPackageError: nil,
+			expectedLoadPackageWithPublicKeyPathProvided: true,
+			expectedCallToDeploy:                         true,
+		},
+		{
+			name:                         "package key provided with signature validation disabled for signed package loads package without public key file",
+			publicKey:                    "test-public-key",
+			skipSignatureValidation:      true,
+			zarfPackagerLoadPackageError: nil,
+			expectedLoadPackageWithPublicKeyPathProvided: false,
+			expectedCallToDeploy:                         true,
+		},
+		{
+			name:                         "signed package load error when public key path not provided and signature validation enabled returns error without deploying",
+			publicKey:                    "",
+			skipSignatureValidation:      false,
+			zarfPackagerLoadPackageError: fmt.Errorf("package is signed but no key was provided"),
+			expectedLoadPackageWithPublicKeyPathProvided: false,
+			expectedCallToDeploy:                         false,
+		},
+		{
+			name:                         "unsigned package load error when public key path provided and signature validation enabled returns error without deploying",
+			publicKey:                    "test-public-key",
+			skipSignatureValidation:      false,
+			zarfPackagerLoadPackageError: fmt.Errorf("a key was provided but the package is not signed"),
+			expectedLoadPackageWithPublicKeyPathProvided: true,
+			expectedCallToDeploy:                         false,
+		},
+		{
+			name:                         "signed package load when public key path provided and signature validation enabled with mismatched or malformed key returns error without deploying",
+			publicKey:                    "mismatched-or-malformed-public-key",
+			skipSignatureValidation:      false,
+			zarfPackagerLoadPackageError: fmt.Errorf("any error regarding mistmatched or malfored key"),
+			expectedLoadPackageWithPublicKeyPathProvided: true,
+			expectedCallToDeploy:                         false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+			if tc.zarfPackagerLoadPackageError == nil {
+				validLoadPackageResult := newValidLoadPackageResult()
+				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+					validLoadPackageResult.Layout,
+					validLoadPackageResult.Error,
+				)
+				mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+				mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+			} else {
+				errorLoadPackageResult := newErrorLoadPackageResult(tc.zarfPackagerLoadPackageError)
+				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+					errorLoadPackageResult.Layout,
+					errorLoadPackageResult.Error,
+				)
+			}
+
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+			testModel := NewTestPackageResourceModel(
+				WithPublicKey(tc.publicKey),
+				WithSkipSignatureValidation(tc.skipSignatureValidation),
+			)
+			_, err := packageResource.upsert(context.Background(), testModel)
+
+			mockPackageComponentFilter.AssertExpectations(t)
+			if tc.zarfPackagerLoadPackageError != nil {
+				assert.NotNil(t, err)
+				assert.Equal(t, tc.zarfPackagerLoadPackageError, err)
+			}
+
+			loadOptionsArgFound := false
+			var loadOptions zarfPackager.LoadOptions
+			for _, call := range mockPackager.Calls {
+				if call.Method == "LoadPackage" {
+					loadOptions = call.Arguments[2].(zarfPackager.LoadOptions)
+					loadOptionsArgFound = true
+					break
+				}
+			}
+			assert.True(t, loadOptionsArgFound, "Could not find LoadOptions argument in LoadPackage call")
+			publicKeyPathProvided := loadOptions.PublicKeyPath != ""
+			if tc.expectedLoadPackageWithPublicKeyPathProvided {
+				assert.True(t, publicKeyPathProvided,
+					"Expected public key path to be provided but it was not. LoadOptions.PublicKeyPath: %s", loadOptions.PublicKeyPath)
+			} else {
+				assert.False(t, publicKeyPathProvided,
+					"Expected public key path to not be provided but it was. LoadOptions.PublicKeyPath: %s", loadOptions.PublicKeyPath)
 			}
 		})
 	}
