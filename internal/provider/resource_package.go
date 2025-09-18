@@ -41,6 +41,11 @@ var (
 	_ resource.ResourceWithImportState = &PackageResource{}
 )
 
+const (
+	clusterTimeoutMinutes      = 5
+	getDeployedPackagesRetries = 2
+)
+
 // NewPackageResource creates a new instance of the package resource.
 func NewPackageResource(providerData *customProviderData, packager udsPackager.Packager, packageComponentFilter udsPackager.PackageComponentFilter, cluster udsCluster.Cluster) resource.Resource {
 	if providerData == nil {
@@ -407,55 +412,29 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	timeoutCtx, cancel := withClusterTimeout(ctx)
 	defer cancel()
 
-	c, err := r.cluster.NewWithWait(timeoutCtx)
+	deployedPackages, err := r.getDeployedPackages(timeoutCtx)
 	if err != nil {
 		resp.Diagnostics.AddError(
-			"Could not connect to cluster",
-			"Error connecting to cluster:"+err.Error(),
+			"Error getting deployed packages",
+			"Failed to get deployed packages:"+err.Error(),
 		)
-		resp.State.RemoveResource(ctx)
 		return
 	}
 
-	deployedZarfPackages, err := c.GetDeployedZarfPackages(timeoutCtx)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Deployed packages could not be retrieved",
-			"Error getting deployed packages:"+err.Error(),
-		)
-		resp.State.RemoveResource(ctx)
-		return
-	}
-
-	// TODO: (clint) sometimes we deploy successfully but this returns empty,
-	// retry might be appropriate or there may be a better way to detect this
-	if len(deployedZarfPackages) == 0 {
-		// try again before actually removing the resource
-		time.Sleep(time.Second * 2)
-		deployedZarfPackages, err = c.GetDeployedZarfPackages(timeoutCtx)
-		if err != nil || len(deployedZarfPackages) == 0 {
-			resp.Diagnostics.AddWarning(
-				"No Packages found",
-				"Could not find any packages deployed; removing resource",
-			)
-			resp.State.RemoveResource(ctx)
-		}
-		return
-	}
-
-	deployedPackage, found := findDeployedPackage(deployedZarfPackages, data.Name.ValueString(), data.Namespace.ValueString())
+	packageName := data.Name.ValueString()
+	packageNamespace := data.Namespace.ValueString()
+	deployedPackage, found := findDeployedPackage(deployedPackages, packageName, packageNamespace)
 	if !found {
 		resp.Diagnostics.AddWarning(
-			"Package not found",
-			"Could not find package in deployed packages; removing resource",
+			"Deployed package not found",
+			"Could not find deployed package with namespace "+packageNamespace+" and name "+packageName+" - removing resource",
 		)
 		resp.State.RemoveResource(ctx)
 		return
@@ -797,6 +776,36 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 		)
 		return
 	}
+}
+
+func (r *PackageResource) getDeployedPackages(ctx context.Context) ([]zarfState.DeployedPackage, error) {
+	c, err := r.cluster.NewWithWait(ctx)
+	if err != nil {
+		return []zarfState.DeployedPackage{}, fmt.Errorf("error connecting to cluster: %w", err)
+	}
+
+	// TODO: (clint) sometimes we deploy successfully but this returns empty,
+	// retry might be appropriate or there may be a better way to detect this
+	numRetries := 2
+	retrySleepDuration := time.Second * 2
+	var deployedZarfPackages []zarfState.DeployedPackage
+	for range numRetries {
+		deployedZarfPackages, err = c.GetDeployedZarfPackages(ctx)
+		if err != nil {
+			return []zarfState.DeployedPackage{}, err
+		}
+		if len(deployedZarfPackages) > 0 {
+			break
+		}
+		time.Sleep(retrySleepDuration)
+	}
+
+	return deployedZarfPackages, nil
+}
+
+// withClusterTimeout returns a context with a timeout
+func withClusterTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, clusterTimeoutMinutes*time.Minute)
 }
 
 // Inserts a nested value based on the dot-separated path
