@@ -791,9 +791,8 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 
 	deployedPackages, err := r.getDeployedPackages(clusterTimeoutCtx)
 	if err != nil {
-		return plan, err
-	}
-	if _, exists := findDeployedPackage(deployedPackages, packageName, plan.Namespace.ValueString()); exists {
+		// Ignore error and continue. TODO(erickson): Log warning message? Need to test this more thoroughly
+	} else if _, exists := findDeployedPackage(deployedPackages, packageName, plan.Namespace.ValueString()); exists {
 		return plan, fmt.Errorf("package with namespace '%s' and name '%s' already exists", plan.Namespace.ValueString(), packageName)
 	}
 
