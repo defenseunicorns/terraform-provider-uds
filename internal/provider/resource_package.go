@@ -790,6 +790,7 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	defer cancel()
 
 	deployedPackages, err := r.getDeployedPackages(clusterTimeoutCtx)
+	//revive:disable-next-line:empty-block
 	if err != nil {
 		// Ignore error and continue. TODO(erickson): Log warning message? Need to test this more thoroughly
 	} else if _, exists := findDeployedPackage(deployedPackages, packageName, plan.Namespace.ValueString()); exists {
