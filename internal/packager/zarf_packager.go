@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
+	zConfig "github.com/zarf-dev/zarf/src/config"
 	"github.com/zarf-dev/zarf/src/pkg/cluster"
 	zPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
@@ -24,27 +25,45 @@ type Packager interface {
 	GetPackageFromSourceOrCluster(ctx context.Context, cluster *cluster.Cluster, src string, namespaceOverride string, opts zPackager.LoadOptions) (_ v1alpha1.ZarfPackage, err error)
 }
 
-type zarfPackager struct{}
+type zarfPackager struct {
+	zarfConfigured bool
+}
 
 // NewPackager creates a new instance of the Packager interface.
 func NewPackager() Packager {
 	return &zarfPackager{}
 }
 
-func (z *zarfPackager) Deploy(ctx context.Context, pkgLayout *layout.PackageLayout, opts zPackager.DeployOptions) (zPackager.DeployResult, error) {
+func (p *zarfPackager) Deploy(ctx context.Context, pkgLayout *layout.PackageLayout, opts zPackager.DeployOptions) (zPackager.DeployResult, error) {
+	p.ensureZarfConfigured()
 	return zPackager.Deploy(ctx, pkgLayout, opts)
 }
 
-func (z *zarfPackager) Remove(ctx context.Context, pkg v1alpha1.ZarfPackage, opts zPackager.RemoveOptions) error {
+func (p *zarfPackager) Remove(ctx context.Context, pkg v1alpha1.ZarfPackage, opts zPackager.RemoveOptions) error {
+	p.ensureZarfConfigured()
 	return zPackager.Remove(ctx, pkg, opts)
 }
 
-func (z *zarfPackager) LoadPackage(ctx context.Context, source string, opts zPackager.LoadOptions) (_ *layout.PackageLayout, err error) {
+func (p *zarfPackager) LoadPackage(ctx context.Context, source string, opts zPackager.LoadOptions) (_ *layout.PackageLayout, err error) {
+	p.ensureZarfConfigured()
 	return zPackager.LoadPackage(ctx, source, opts)
 }
 
-func (z *zarfPackager) GetPackageFromSourceOrCluster(ctx context.Context, cluster *cluster.Cluster, src string, namespaceOverride string, opts zPackager.LoadOptions) (_ v1alpha1.ZarfPackage, err error) {
+func (p *zarfPackager) GetPackageFromSourceOrCluster(ctx context.Context, cluster *cluster.Cluster, src string, namespaceOverride string, opts zPackager.LoadOptions) (_ v1alpha1.ZarfPackage, err error) {
+	p.ensureZarfConfigured()
 	return zPackager.GetPackageFromSourceOrCluster(ctx, cluster, src, namespaceOverride, opts)
+}
+
+func (p *zarfPackager) ensureZarfConfigured() {
+	if p.zarfConfigured {
+		return
+	}
+
+	// Set the prefix for `./zarf` actions since we have to vendor zarf. This only needs to be done once per instance.
+	zConfig.ActionsCommandZarfPrefix = "zarf"
+	zConfig.CommonOptions.Confirm = true
+
+	p.zarfConfigured = true
 }
 
 // PackageComponentFilter provides filtering strategies for Zarf package components.

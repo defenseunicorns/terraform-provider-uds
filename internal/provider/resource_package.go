@@ -16,7 +16,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
@@ -30,6 +32,7 @@ import (
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	zarfFilters "github.com/zarf-dev/zarf/src/pkg/packager/filters"
+	zarfLayout "github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
 )
 
@@ -37,6 +40,11 @@ import (
 var (
 	_ resource.Resource                = &PackageResource{}
 	_ resource.ResourceWithImportState = &PackageResource{}
+)
+
+const (
+	clusterTimeoutMinutes      = 5
+	getDeployedPackagesRetries = 2
 )
 
 // NewPackageResource creates a new instance of the package resource.
@@ -59,14 +67,6 @@ func NewPackageResource(providerData *customProviderData, packager udsPackager.P
 		packageFilter: packageComponentFilter,
 		cluster:       cluster,
 	}
-}
-
-// PackageResource defines the resource implementation.
-type PackageResource struct {
-	providerData  *customProviderData
-	packager      udsPackager.Packager
-	cluster       udsCluster.Cluster
-	packageFilter udsPackager.PackageComponentFilter
 }
 
 // PackageResourceModel describes the resource data model.
@@ -313,6 +313,9 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"namespace": schema.StringAttribute{
 				Description: "[Alpha] Namespace in which to deploy the UDS package.",
 				Optional:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -335,6 +338,14 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 		},
 	}
+}
+
+// PackageResource defines the resource implementation.
+type PackageResource struct {
+	providerData  *customProviderData
+	packager      udsPackager.Packager
+	cluster       udsCluster.Cluster
+	packageFilter udsPackager.PackageComponentFilter
 }
 
 // ValidateConfig ensures validation between interdependant fields within a PackageResourceModel.
@@ -380,7 +391,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 
 	var err error
-	plan, err = r.upsert(ctx, plan)
+	plan, err = r.deployAsNew(ctx, plan)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error creating package",
@@ -402,55 +413,29 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	timeoutCtx, cancel := withClusterTimeout(ctx)
 	defer cancel()
 
-	c, err := r.cluster.NewWithWait(timeoutCtx)
+	deployedPackages, err := r.getDeployedPackages(timeoutCtx)
 	if err != nil {
 		resp.Diagnostics.AddError(
-			"Could not connect to cluster",
-			"Error connecting to cluster:"+err.Error(),
+			"Error getting deployed packages",
+			"Failed to get deployed packages:"+err.Error(),
 		)
-		resp.State.RemoveResource(ctx)
 		return
 	}
 
-	deployedZarfPackages, err := c.GetDeployedZarfPackages(timeoutCtx)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Deployed packages could not be retrieved",
-			"Error getting deployed packages:"+err.Error(),
-		)
-		resp.State.RemoveResource(ctx)
-		return
-	}
-
-	// TODO: (clint) sometimes we deploy successfully but this returns empty,
-	// retry might be appropriate or there may be a better way to detect this
-	if len(deployedZarfPackages) == 0 {
-		// try again before actually removing the resource
-		time.Sleep(time.Second * 2)
-		deployedZarfPackages, err = c.GetDeployedZarfPackages(timeoutCtx)
-		if err != nil || len(deployedZarfPackages) == 0 {
-			resp.Diagnostics.AddWarning(
-				"No Packages found",
-				"Could not find any packages deployed; removing resource",
-			)
-			resp.State.RemoveResource(ctx)
-		}
-		return
-	}
-
-	deployedPackage, found := findDeployedPackage(deployedZarfPackages, data.Name.ValueString(), data.Namespace.ValueString())
+	packageName := data.Name.ValueString()
+	packageNamespace := data.Namespace.ValueString()
+	deployedPackage, found := findDeployedPackage(deployedPackages, packageName, packageNamespace)
 	if !found {
 		resp.Diagnostics.AddWarning(
-			"Package not found",
-			"Could not find package in deployed packages; removing resource",
+			"Deployed package not found",
+			"Could not find deployed package with namespace "+packageNamespace+" and name "+packageName+" - removing resource",
 		)
 		resp.State.RemoveResource(ctx)
 		return
@@ -510,18 +495,8 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	// Generate list of components to remove after the update is complete
-	// These components are components that were defined in the old plan but not present in the current plan
-	// We are removing them after the 'update' because if a 'required' component is removed it removes the entire package
-	componentsToRemoveAfter := getMissingComponents(plan, oldPlan)
-
-	// Remove identified components
-	if len(componentsToRemoveAfter) > 0 {
-		r.removeComponents(ctx, plan, componentsToRemoveAfter, resp)
-	}
-
 	var err error
-	plan, err = r.upsert(ctx, plan)
+	plan, err = r.deployAsNewOrUpdate(ctx, plan, oldPlan, resp)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error updating package",
@@ -635,65 +610,43 @@ func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportSt
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
-func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[string]any {
-	result := make(map[string]map[string]map[string]any)
-
-	for _, override := range overrides {
-		component := override.ComponentName.ValueString()
-		chart := override.ChartName.ValueString()
-
-		// Initialize nested maps if they don't exist
-		if _, exists := result[component]; !exists {
-			result[component] = make(map[string]map[string]any)
-		}
-		if _, exists := result[component][chart]; !exists {
-			result[component][chart] = make(map[string]any)
-		}
-
-		chartMap := result[component][chart]
-
-		// Flatten Values
-		for _, v := range override.Values {
-			chartMap[v.Path.ValueString()] = v.Value.ValueString()
-		}
-
-		// Flatten Variables into Nested Maps
-		for _, variable := range override.Variables {
-			defaultValue := variable.Default.ValueString()
-			path := variable.Path.ValueString()
-
-			if defaultValue != "" {
-				insertNestedValue(chartMap, path, defaultValue)
-			} else {
-				// Handle deletion if the default value is empty
-				deleteNestedValue(chartMap, path)
-			}
-		}
+func (r *PackageResource) getRemoteOptions() zarfPackager.RemoteOptions {
+	// TODO(erickson): configure remote options from provider config
+	return zarfPackager.RemoteOptions{
+		PlainHTTP:             zarfConfig.CommonOptions.PlainHTTP,
+		InsecureSkipTLSVerify: zarfConfig.CommonOptions.InsecureSkipTLSVerify,
 	}
-
-	return result
 }
 
-// getMissingComponents compares two Package plans and returns a list of components that was specified in the
-// 'oldPlan' but not specified in the newer plan.
-func getMissingComponents(plan PackageResourceModel, oldPlan PackageResourceModel) []string {
-	var componentsToRemove []string
-
-	// Collect all component names in the new plan
-	newPlanComponents := make(map[string]struct{}, len(plan.Component))
-	for _, component := range plan.Component {
-		newPlanComponents[component.Name.ValueString()] = struct{}{}
+func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
+	packageSource, err := getPackageSource(model, *r.providerData)
+	if err != nil {
+		return nil, err
 	}
 
-	// Check which old components are missing in the new plan
-	for _, component := range oldPlan.Component {
-		name := component.Name.ValueString()
-		if _, found := newPlanComponents[name]; !found {
-			componentsToRemove = append(componentsToRemove, name)
+	// generate a temporary public key file if needed
+	skipSignatureValidation := model.SkipSignatureValidation.ValueBool()
+	publicKeyPath, err := getTempPublicKeyPath(model.PublicKey.ValueString(), skipSignatureValidation)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if publicKeyPath != "" {
+			os.Remove(publicKeyPath)
 		}
+	}()
+
+	// TODO(erickson): add support for Shasum, CachePath, OCIConcurrency?
+	loadOpt := zarfPackager.LoadOptions{
+		Filter:                  zarfFilters.Empty(),
+		Architecture:            getArchitecture(model, *r.providerData),
+		PublicKeyPath:           publicKeyPath,
+		SkipSignatureValidation: skipSignatureValidation,
+		RemoteOptions:           r.getRemoteOptions(),
+		CachePath:               zarfConfig.ZarfDefaultCachePath,
 	}
 
-	return componentsToRemove
+	return r.packager.LoadPackage(ctx, packageSource, loadOpt)
 }
 
 func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string, resp *resource.UpdateResponse) {
@@ -794,6 +747,203 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	}
 }
 
+func (r *PackageResource) getDeployedPackages(ctx context.Context) ([]zarfState.DeployedPackage, error) {
+	c, err := r.cluster.NewWithWait(ctx)
+	if err != nil {
+		return []zarfState.DeployedPackage{}, fmt.Errorf("error connecting to cluster: %w", err)
+	}
+
+	// TODO: (clint) sometimes we deploy successfully but this returns empty,
+	// retry might be appropriate or there may be a better way to detect this
+	numRetries := getDeployedPackagesRetries
+	retrySleepDuration := time.Second * 2
+	var deployedZarfPackages []zarfState.DeployedPackage
+	for range numRetries {
+		deployedZarfPackages, err = c.GetDeployedZarfPackages(ctx)
+		if err != nil {
+			return []zarfState.DeployedPackage{}, err
+		}
+		if len(deployedZarfPackages) > 0 {
+			break
+		}
+		time.Sleep(retrySleepDuration)
+	}
+
+	return deployedZarfPackages, nil
+}
+
+func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
+
+	// Get the package name from the source package metadata
+	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
+	if err != nil {
+		return plan, err
+	}
+	defer func() {
+		err = errors.Join(err, pkgLayout.Cleanup())
+	}()
+
+	packageName := pkgLayout.Pkg.Metadata.Name
+
+	// Ensure a package with the same name and namespace is not already deployed
+	clusterTimeoutCtx, cancel := withClusterTimeout(ctx)
+	defer cancel()
+
+	deployedPackages, err := r.getDeployedPackages(clusterTimeoutCtx)
+	//revive:disable-next-line:empty-block
+	if err != nil {
+		// Ignore error and continue. TODO(erickson): Log warning message? Need to test this more thoroughly
+	} else if _, exists := findDeployedPackage(deployedPackages, packageName, plan.Namespace.ValueString()); exists {
+		return plan, fmt.Errorf("package with namespace '%s' and name '%s' already exists", plan.Namespace.ValueString(), packageName)
+	}
+
+	return r.upsert(ctx, plan)
+}
+
+// TODO(erickson): Remove response paramater and return an error after refactoring removeComponents to do the same
+func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel, resp *resource.UpdateResponse) (PackageResourceModel, error) {
+	// TODO(erickson): Need to revisit this logic. If deploy errors, can we recover?
+	// Generate list of components to remove after the update is complete
+	// These components are components that were defined in the old plan but not present in the current plan
+	// We are removing them after the 'update' because if a 'required' component is removed it removes the entire package
+	componentsToRemove := getMissingComponents(plan, oldPlan)
+	if len(componentsToRemove) > 0 {
+		r.removeComponents(ctx, plan, componentsToRemove, resp)
+	}
+
+	return r.upsert(ctx, plan)
+}
+
+func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
+	// convert the terraform timeout to a time.Duration
+	timeout, err := time.ParseDuration(plan.Timeout.ValueString())
+	if err != nil {
+		return plan, err
+	}
+
+	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
+	if err != nil {
+		return plan, err
+	}
+	defer func() {
+		err = errors.Join(err, pkgLayout.Cleanup())
+	}()
+
+	_, optionalComponents, err := getRequiredAndOptionalPackageComponentsNames(plan, pkgLayout)
+	if err != nil {
+		return plan, err
+	}
+
+	// TODO(erickson): Add support for Retries, OCIConcurrency?
+	deployOpts := zarfPackager.DeployOptions{
+		AdoptExistingResources: false,
+		SetVariables:           buildSetVariableMap(plan),
+		ValuesOverridesMap:     flattenOverrides(plan.Overrides),
+		RemoteOptions:          r.getRemoteOptions(),
+		NamespaceOverride:      plan.Namespace.ValueString(),
+		Timeout:                timeout,
+		GitServer: zarfState.GitServerInfo{
+			PushUsername: zarfState.ZarfGitPushUser,
+		},
+		RegistryInfo: zarfState.RegistryInfo{
+			PushUsername: zarfState.ZarfRegistryPushUser,
+		},
+	}
+
+	filter := r.packageFilter.ForDeploy(optionalComponents)
+	pkgLayout.Pkg.Components, err = filter.Apply(pkgLayout.Pkg)
+	if err != nil {
+		return plan, err
+	}
+
+	tflog.Debug(ctx, "starting deploy")
+	_, err = r.packager.Deploy(ctx, pkgLayout, deployOpts)
+	if err != nil {
+		return plan, err
+	}
+	tflog.Debug(ctx, "ending deploy")
+
+	// Populate/set resource computed values so that they can be saved to state
+	plan.ID = types.StringValue(computePackageID(plan.Namespace.ValueString(), pkgLayout.Pkg.Metadata.Name))
+	plan.Name = types.StringValue(pkgLayout.Pkg.Metadata.Name)
+	plan.Version = types.StringValue(pkgLayout.Pkg.Metadata.Version)
+	plan.Kind = types.StringValue(string(pkgLayout.Pkg.Kind))
+
+	pkgMetaData, err := newPackageMetadata(pkgLayout)
+	if err != nil {
+		return plan, err
+	}
+	plan.Metadata = pkgMetaData
+
+	return plan, err
+}
+
+func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[string]any {
+	result := make(map[string]map[string]map[string]any)
+
+	for _, override := range overrides {
+		component := override.ComponentName.ValueString()
+		chart := override.ChartName.ValueString()
+
+		// Initialize nested maps if they don't exist
+		if _, exists := result[component]; !exists {
+			result[component] = make(map[string]map[string]any)
+		}
+		if _, exists := result[component][chart]; !exists {
+			result[component][chart] = make(map[string]any)
+		}
+
+		chartMap := result[component][chart]
+
+		// Flatten Values
+		for _, v := range override.Values {
+			chartMap[v.Path.ValueString()] = v.Value.ValueString()
+		}
+
+		// Flatten Variables into Nested Maps
+		for _, variable := range override.Variables {
+			defaultValue := variable.Default.ValueString()
+			path := variable.Path.ValueString()
+
+			if defaultValue != "" {
+				insertNestedValue(chartMap, path, defaultValue)
+			} else {
+				// Handle deletion if the default value is empty
+				deleteNestedValue(chartMap, path)
+			}
+		}
+	}
+
+	return result
+}
+
+// getMissingComponents compares two Package plans and returns a list of components that was specified in the
+// 'oldPlan' but not specified in the newer plan.
+func getMissingComponents(plan PackageResourceModel, oldPlan PackageResourceModel) []string {
+	var componentsToRemove []string
+
+	// Collect all component names in the new plan
+	newPlanComponents := make(map[string]struct{}, len(plan.Component))
+	for _, component := range plan.Component {
+		newPlanComponents[component.Name.ValueString()] = struct{}{}
+	}
+
+	// Check which old components are missing in the new plan
+	for _, component := range oldPlan.Component {
+		name := component.Name.ValueString()
+		if _, found := newPlanComponents[name]; !found {
+			componentsToRemove = append(componentsToRemove, name)
+		}
+	}
+
+	return componentsToRemove
+}
+
+// withClusterTimeout returns a context with a timeout
+func withClusterTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, clusterTimeoutMinutes*time.Minute)
+}
+
 // Inserts a nested value based on the dot-separated path
 func insertNestedValue(root map[string]any, path, value string) {
 	parts := strings.Split(path, ".")
@@ -848,154 +998,6 @@ func deleteNestedValue(root map[string]any, path string) {
 		}
 		current = nestedMap
 	}
-}
-
-func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
-	// Set the prefix for `./zarf` actions since we have to vendor zarf, otherwise Zarf actions will not run.
-	// Confirm `zarf package deploy` since we're running in automation
-	zarfConfig.ActionsCommandZarfPrefix = "zarf"
-	zarfConfig.CommonOptions.Confirm = true
-
-	// convert the terraform timeout to a time.Duration
-	timeout, err := time.ParseDuration(plan.Timeout.ValueString())
-	if err != nil {
-		return plan, err
-	}
-
-	// generate a temporary public key file if needed
-	skipSignatureValidation := plan.SkipSignatureValidation.ValueBool()
-	publicKeyPath, err := getTempPublicKeyPath(plan.PublicKey.ValueString(), skipSignatureValidation)
-	if err != nil {
-		return plan, err
-	}
-	defer func() {
-		if publicKeyPath != "" {
-			os.Remove(publicKeyPath)
-		}
-	}()
-
-	valuesMap := flattenOverrides(plan.Overrides)
-	packageSource, err := getPackageSource(plan, *r.providerData)
-	if err != nil {
-		return plan, err
-	}
-
-	// TODO(erickson): Do we need configurable remote options?
-	remoteOpts := zarfPackager.RemoteOptions{
-		PlainHTTP:             zarfConfig.CommonOptions.PlainHTTP,
-		InsecureSkipTLSVerify: zarfConfig.CommonOptions.InsecureSkipTLSVerify,
-	}
-
-	// TODO(erickson): Add support for Shasum, CachePath, OCIConcurrency?
-	loadOpt := zarfPackager.LoadOptions{
-		Filter:                  zarfFilters.Empty(),
-		Architecture:            getArchitecture(plan, *r.providerData),
-		PublicKeyPath:           publicKeyPath,
-		SkipSignatureValidation: plan.SkipSignatureValidation.ValueBool(),
-		RemoteOptions:           remoteOpts,
-		CachePath:               zarfConfig.ZarfDefaultCachePath,
-	}
-
-	pkgLayout, err := r.packager.LoadPackage(ctx, packageSource, loadOpt)
-	if err != nil {
-		return plan, err
-	}
-	defer func() {
-		err = errors.Join(err, pkgLayout.Cleanup())
-	}()
-
-	var componentErrors []error
-	optionalComponents := []string{}
-	for _, component := range plan.Component {
-		pkgComponent, found := findPackageComponent(pkgLayout.Pkg.Components, component.Name.ValueString())
-		if !found {
-			componentErrors = append(componentErrors, fmt.Errorf("component %s not found in package", component.Name.ValueString()))
-			continue
-		}
-		if len(componentErrors) == 0 && pkgComponent.Required == nil || !*pkgComponent.Required {
-			optionalComponents = append(optionalComponents, component.Name.ValueString())
-		}
-	}
-
-	if len(componentErrors) > 0 {
-		return plan, errors.Join(componentErrors...)
-	}
-
-	setVariables := make(map[string]string)
-	for _, zarfVar := range plan.Vars {
-		setVariables[zarfVar.Name.ValueString()] = zarfVar.Value.ValueString()
-	}
-	for _, sensitiveVar := range plan.SensitiveVars {
-		setVariables[sensitiveVar.Name.ValueString()] = sensitiveVar.Value.ValueString()
-	}
-
-	// TODO(erickson): Add support for Retries, OCIConcurrency?
-	deployOpts := zarfPackager.DeployOptions{
-		SetVariables:           setVariables,
-		AdoptExistingResources: false,
-		Timeout:                timeout,
-		RemoteOptions:          remoteOpts,
-		NamespaceOverride:      plan.Namespace.ValueString(),
-		GitServer: zarfState.GitServerInfo{
-			PushUsername: zarfState.ZarfGitPushUser,
-		},
-		RegistryInfo: zarfState.RegistryInfo{
-			PushUsername: zarfState.ZarfRegistryPushUser,
-		},
-		ValuesOverridesMap: valuesMap,
-	}
-
-	filter := r.packageFilter.ForDeploy(optionalComponents)
-	pkgLayout.Pkg.Components, err = filter.Apply(pkgLayout.Pkg)
-	if err != nil {
-		return plan, err
-	}
-
-	// Log components to enable for package deployment based on filter
-	tflog.Debug(ctx, fmt.Sprintf("%d components to include for package deployment:", len(pkgLayout.Pkg.Components)))
-	for _, component := range pkgLayout.Pkg.Components {
-		requiredStr := "nil"
-		if component.Required != nil {
-			requiredStr = fmt.Sprintf("%t", *component.Required)
-		}
-		tflog.Debug(ctx, fmt.Sprintf("include component: name=%s, required=%s, default=%t",
-			component.Name, requiredStr, component.Default))
-	}
-
-	tflog.Debug(ctx, "starting deploy")
-	_, err = r.packager.Deploy(ctx, pkgLayout, deployOpts)
-	if err != nil {
-		return plan, err
-	}
-	tflog.Debug(ctx, "ending deploy")
-
-	// Populate/set resource computed values so that they can be saved to state
-	plan.ID = types.StringValue(computePackageID(plan.Namespace.ValueString(), pkgLayout.Pkg.Metadata.Name))
-	plan.Name = types.StringValue(pkgLayout.Pkg.Metadata.Name)
-	plan.Version = types.StringValue(pkgLayout.Pkg.Metadata.Version)
-	plan.Kind = types.StringValue(string(pkgLayout.Pkg.Kind))
-
-	// populate the package metadata type.
-	// TODO(clint): this is ugly and I got it from https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/custom
-	// There are probably a few optimizations or cleanups to be done here.
-	elementTypes := map[string]attr.Type{
-		"name":        types.StringType,
-		"description": types.StringType,
-		"version":     types.StringType,
-	}
-	elements := map[string]attr.Value{
-		"name":        types.StringValue(pkgLayout.Pkg.Metadata.Name),
-		"description": types.StringValue(pkgLayout.Pkg.Metadata.Description),
-		"version":     types.StringValue(pkgLayout.Pkg.Metadata.Version),
-	}
-	pkgMetaData, diags := types.ObjectValue(elementTypes, elements)
-
-	if diags.HasError() {
-		return plan, err
-	}
-	plan.Metadata = pkgMetaData
-
-	return plan, err
 }
 
 func getArchitecture(pkg PackageResourceModel, providerData customProviderData) string {
@@ -1100,4 +1102,63 @@ func getTempPublicKeyPath(publicKey string, skipSignatureValidation bool) (strin
 		}
 	}
 	return publicKeyPath, nil
+}
+
+func buildSetVariableMap(model PackageResourceModel) map[string]string {
+	setVariables := make(map[string]string)
+	for _, v := range model.Vars {
+		setVariables[v.Name.ValueString()] = v.Value.ValueString()
+	}
+	for _, v := range model.SensitiveVars {
+		setVariables[v.Name.ValueString()] = v.Value.ValueString()
+	}
+	return setVariables
+}
+
+func getRequiredAndOptionalPackageComponentsNames(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) (required []string, optional []string, err error) {
+	var componentErrors []error
+	requiredComponents := []string{}
+	optionalComponents := []string{}
+	for _, component := range model.Component {
+		pkgComponent, found := findPackageComponent(pkgLayout.Pkg.Components, component.Name.ValueString())
+		if !found {
+			componentErrors = append(componentErrors, fmt.Errorf("unknown package component %s", component.Name.ValueString()))
+			continue
+		}
+		if pkgComponent.Required == nil || !*pkgComponent.Required {
+			optionalComponents = append(optionalComponents, component.Name.ValueString())
+		} else {
+			requiredComponents = append(requiredComponents, component.Name.ValueString())
+		}
+	}
+
+	if len(componentErrors) > 0 {
+		return []string{}, []string{}, errors.Join(componentErrors...)
+	}
+
+	return requiredComponents, optionalComponents, nil
+}
+
+func newPackageMetadata(pkgLayout *zarfLayout.PackageLayout) (types.Object, error) {
+	elementTypes := map[string]attr.Type{
+		"name":        types.StringType,
+		"description": types.StringType,
+		"version":     types.StringType,
+	}
+	elements := map[string]attr.Value{
+		"name":        types.StringValue(pkgLayout.Pkg.Metadata.Name),
+		"description": types.StringValue(pkgLayout.Pkg.Metadata.Description),
+		"version":     types.StringValue(pkgLayout.Pkg.Metadata.Version),
+	}
+	meta, diags := types.ObjectValue(elementTypes, elements)
+
+	if diags.HasError() {
+		var diagErrors []error
+		for _, diag := range diags.Errors() {
+			diagErrors = append(diagErrors, fmt.Errorf("%s: %s", diag.Summary(), diag.Detail()))
+		}
+		return meta, fmt.Errorf("failed to create package metadata: %w", errors.Join(diagErrors...))
+	}
+
+	return meta, nil
 }

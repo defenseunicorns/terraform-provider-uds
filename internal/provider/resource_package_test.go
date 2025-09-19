@@ -536,8 +536,8 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 			expectedCallToDeploy:                      false,
 			expectedOptionalComponentsForDeployFilter: []string{},
 			expectedErrorContains: []string{
-				"test-unknown-component-0 not found in package",
-				"test-unknown-component-1 not found in package",
+				"unknown package component test-unknown-component-0",
+				"unknown package component test-unknown-component-1",
 			},
 		},
 	}
