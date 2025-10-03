@@ -15,8 +15,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-
-	zarfConfig "github.com/zarf-dev/zarf/src/config"
 )
 
 type customProviderData struct {
@@ -92,10 +90,6 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 	if !config.InsecureSkipTLSVerify.IsNull() {
 		skipTLS = config.InsecureSkipTLSVerify.ValueBool()
 	}
-
-	zarfConfig.CommonOptions.Insecure = forceHTTP || skipTLS
-	zarfConfig.CommonOptions.PlainHTTP = forceHTTP
-	zarfConfig.CommonOptions.InsecureSkipTLSVerify = skipTLS
 
 	customData := customProviderData{
 		LocalPathOverride:           os.Getenv("UDS_LOCAL_PATH_OVERRIDE"),
