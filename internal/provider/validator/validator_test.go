@@ -103,6 +103,7 @@ func assertValidatorResponseDiagnosticsContainsErrorSummary(t *testing.T, diagno
 	assert.True(t, found, "Expected error with summary %q, but it was not found in diagnostics: %v", expectedErrorSummary, diagnostics)
 }
 
+//nolint:dupl // Test structure is similar to ValidateSet test, but tests List type specifically
 func TestBlockStringAttributeUniquenessValidator_ValidateList(t *testing.T) {
 	t.Parallel()
 

@@ -24,6 +24,20 @@ type BlockStringAttributeUniquenessValidator struct {
 	attributeName string
 }
 
+// NewBlockStringAttributeUniquenessValidator creates a new block string attribute uniqueness validator.
+func NewBlockStringAttributeUniquenessValidator(blockName string, attributeName string) (*BlockStringAttributeUniquenessValidator, error) {
+	if err := validateBlockName(blockName); err != nil {
+		return nil, err
+	}
+	if err := validateAttributeName(attributeName); err != nil {
+		return nil, err
+	}
+	return &BlockStringAttributeUniquenessValidator{
+		blockName:     blockName,
+		attributeName: attributeName,
+	}, nil
+}
+
 // Description returns a plain text description of the validator.
 func (v BlockStringAttributeUniquenessValidator) Description(_ context.Context) string {
 	return fmt.Sprintf("Ensures that all %q blocks have unique values for the %q attribute", v.blockName, v.attributeName)
@@ -103,20 +117,6 @@ func (v BlockStringAttributeUniquenessValidator) validateElements(rawElements []
 		}
 		seenValues[value] = struct{}{}
 	}
-}
-
-// NewBlockStringAttributeUniquenessValidator creates a new block string attribute uniqueness validator.
-func NewBlockStringAttributeUniquenessValidator(blockName string, attributeName string) (*BlockStringAttributeUniquenessValidator, error) {
-	if err := validateBlockName(blockName); err != nil {
-		return nil, err
-	}
-	if err := validateAttributeName(attributeName); err != nil {
-		return nil, err
-	}
-	return &BlockStringAttributeUniquenessValidator{
-		blockName:     blockName,
-		attributeName: attributeName,
-	}, nil
 }
 
 func validateBlockName(name string) error {
