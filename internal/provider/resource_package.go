@@ -566,8 +566,8 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	// TODO(erickson): Do we need configurable remote options?
 	remoteOpts := zarfPackager.RemoteOptions{
-		PlainHTTP:             zarfConfig.CommonOptions.PlainHTTP,
-		InsecureSkipTLSVerify: zarfConfig.CommonOptions.InsecureSkipTLSVerify,
+		PlainHTTP:             r.providerData.InsecureForceHTTP,
+		InsecureSkipTLSVerify: r.providerData.InsecureSkipTLSVerification,
 	}
 
 	loadOpts := zarfPackager.LoadOptions{
@@ -613,8 +613,8 @@ func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportSt
 func (r *PackageResource) getRemoteOptions() zarfPackager.RemoteOptions {
 	// TODO(erickson): configure remote options from provider config
 	return zarfPackager.RemoteOptions{
-		PlainHTTP:             zarfConfig.CommonOptions.PlainHTTP,
-		InsecureSkipTLSVerify: zarfConfig.CommonOptions.InsecureSkipTLSVerify,
+		PlainHTTP:             r.providerData.InsecureForceHTTP,
+		InsecureSkipTLSVerify: r.providerData.InsecureSkipTLSVerification,
 	}
 }
 
