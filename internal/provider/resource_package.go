@@ -22,6 +22,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"gopkg.in/yaml.v2"
 
 	udsCluster "github.com/defenseunicorns/terraform-provider-uds/internal/cluster"
 	"github.com/defenseunicorns/terraform-provider-uds/internal/fileutil"
@@ -64,8 +65,8 @@ func NewPackageResource(providerData *customProviderData, packager udsPackager.P
 	return &PackageResource{
 		providerData:  providerData,
 		packager:      packager,
-		packageFilter: packageComponentFilter,
 		cluster:       cluster,
+		packageFilter: packageComponentFilter,
 	}
 }
 
@@ -79,8 +80,7 @@ type PackageResourceModel struct {
 	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
 	Namespace               types.String `tfsdk:"namespace"`
 
-	Component     []ComponentModel `tfsdk:"component"`
-	Overrides     []OverrideModel  `tfsdk:"overrides"`
+	Components    []ComponentModel `tfsdk:"component"`
 	Vars          []VariableModel  `tfsdk:"vars"`
 	SensitiveVars []VariableModel  `tfsdk:"sensitive_vars"`
 
@@ -93,37 +93,27 @@ type PackageResourceModel struct {
 
 // ComponentModel represents a UDS package component configuration.
 type ComponentModel struct {
-	Name types.String `tfsdk:"name"`
-	// TODO(erickson): Move chart overrides into component model
+	Name      types.String `tfsdk:"name"`
+	Overrides types.Set    `tfsdk:"override"` // Set of ComponentChartValuesModel objects
+}
+
+// ComponentChartValuesModel represents a helm chart override values configuration for a package component.
+type ComponentChartValuesModel struct {
+	ChartName       types.String `tfsdk:"chart_name"`
+	Values          types.Set    `tfsdk:"values"`           // Set of HelmChartPathValueModel objects
+	SensitiveValues types.Set    `tfsdk:"sensitive_values"` // Set of HelmChartPathValueModel objects
+}
+
+// HelmChartPathValueModel represents a path/value pair for setting helm chart values
+type HelmChartPathValueModel struct {
+	Path  types.String `tfsdk:"path"`
+	Value types.String `tfsdk:"value"`
 }
 
 // VariableModel represents a name/value pair for setting UDS package variables
 type VariableModel struct {
 	Name  types.String `tfsdk:"name"`
 	Value types.String `tfsdk:"value"`
-}
-
-// OverrideModel represents configuration overrides for a component.
-type OverrideModel struct {
-	ComponentName types.String       `tfsdk:"component_name"`
-	ChartName     types.String       `tfsdk:"chart_name"`
-	ValuesFiles   []types.String     `tfsdk:"values_files"`
-	Values        []OverrideValue    `tfsdk:"values"`
-	Variables     []OverrideVariable `tfsdk:"variables"`
-}
-
-// OverrideValue represents a single value override with a path and value.
-type OverrideValue struct {
-	Path  types.String `tfsdk:"path"`
-	Value types.String `tfsdk:"value"`
-}
-
-// OverrideVariable represents a variable override with configuration options.
-type OverrideVariable struct {
-	Name        types.String `tfsdk:"name"`
-	Path        types.String `tfsdk:"path"`
-	Description types.String `tfsdk:"description"`
-	Default     types.String `tfsdk:"default"`
 }
 
 // Metadata sets the resource type name.
@@ -146,7 +136,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Computed:    true,
 			},
 			"source": schema.StringAttribute{
-				MarkdownDescription: "OCI distribution reference (including oci:// scheme) or local file path (absolute or relative) to the package",
+				MarkdownDescription: "OCI distribution reference (including oci:// scheme) or local file path (absolute or relative) to the package.",
 				Required:            true,
 				Validators: []validator.String{
 					udsValidator.PackageSourceValidator(),
@@ -203,6 +193,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					},
 				},
 			},
+			// TODO(erickson): Replace with SetNestedAttribute to allow for unordered
 			"vars": schema.ListNestedAttribute{
 				Description: "UDS package variables to set.",
 				Optional:    true,
@@ -248,68 +239,6 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					}(),
 				},
 			},
-			// overrides
-			"overrides": schema.ListNestedAttribute{
-				Description: "List of overrides for Helm charts.",
-				Optional:    true,
-				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"component_name": schema.StringAttribute{
-							Description: "Name of the component being overridden.",
-							Required:    true,
-						},
-						"chart_name": schema.StringAttribute{
-							Description: "Name of the Helm chart being overridden.",
-							Required:    true,
-						},
-						"values_files": schema.ListAttribute{
-							Description: "List of values files to include in the override.",
-							Optional:    true,
-							ElementType: types.StringType,
-						},
-						"values": schema.ListNestedAttribute{
-							Description: "List of values to override in the chart.",
-							Optional:    true,
-							NestedObject: schema.NestedAttributeObject{
-								Attributes: map[string]schema.Attribute{
-									"path": schema.StringAttribute{
-										Description: "Path of the value to override.",
-										Required:    true,
-									},
-									"value": schema.StringAttribute{
-										Description: "Value to set at the given path.",
-										Required:    true,
-									},
-								},
-							},
-						},
-						"variables": schema.ListNestedAttribute{
-							Description: "List of variables for the Helm chart.",
-							Optional:    true,
-							NestedObject: schema.NestedAttributeObject{
-								Attributes: map[string]schema.Attribute{
-									"name": schema.StringAttribute{
-										Description: "Name of the variable.",
-										Required:    true,
-									},
-									"path": schema.StringAttribute{
-										Description: "Path of the variable in the Helm chart.",
-										Required:    true,
-									},
-									"description": schema.StringAttribute{
-										Description: "Description of the variable.",
-										Optional:    true,
-									},
-									"default": schema.StringAttribute{
-										Description: "Default value for the variable.",
-										Optional:    true,
-									},
-								},
-							},
-						},
-					},
-				},
-			},
 			"namespace": schema.StringAttribute{
 				Description: "[Alpha] Namespace in which to deploy the UDS package.",
 				Optional:    true,
@@ -319,18 +248,82 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 		},
 		Blocks: map[string]schema.Block{
-			"component": schema.ListNestedBlock{
-				Description: "Component configuration to include/exclude in the UDS package deployment",
+			"component": schema.SetNestedBlock{
+				Description: "Component configuration to include/exclude in the UDS package deployment.",
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
 							Required:    true,
-							Description: "Name of the component",
+							Description: "Name of the component.",
+						},
+					},
+					Blocks: map[string]schema.Block{
+						"override": schema.SetNestedBlock{
+							Description: "Helm chart overrides for the component.",
+							NestedObject: schema.NestedBlockObject{
+								Attributes: map[string]schema.Attribute{
+									"chart_name": schema.StringAttribute{
+										Required:    true,
+										Description: "Name of the Helm chart to set values for.",
+									},
+									"values": schema.SetNestedAttribute{
+										Description: "Set of path values to set for the chart.",
+										Optional:    true,
+										NestedObject: schema.NestedAttributeObject{
+											Attributes: map[string]schema.Attribute{
+												"path": schema.StringAttribute{
+													Description: "The dot-notation path in the chart values to set.",
+													Required:    true,
+												},
+												"value": schema.StringAttribute{
+													Description: "The raw YAML value to set at the specified path.",
+													Required:    true,
+												},
+											},
+										},
+										Validators: []validator.Set{
+											func() validator.Set {
+												v, _ := udsValidator.NewBlockStringAttributeUniquenessValidator("values", "path")
+												return v
+											}(),
+										},
+									},
+									"sensitive_values": schema.SetNestedAttribute{
+										Description: "Set of sensitive key-value overrides for the chart.",
+										Optional:    true,
+										NestedObject: schema.NestedAttributeObject{
+											Attributes: map[string]schema.Attribute{
+												"path": schema.StringAttribute{
+													Description: "The dot-notation path in the chart values to set.",
+													Required:    true,
+												},
+												"value": schema.StringAttribute{
+													Description: "The raw YAML sensitive value to set at the specified path.",
+													Required:    true,
+													Sensitive:   true,
+												},
+											},
+										},
+										Validators: []validator.Set{
+											func() validator.Set {
+												v, _ := udsValidator.NewBlockStringAttributeUniquenessValidator("sensitive_values", "path")
+												return v
+											}(),
+										},
+									},
+								},
+							},
+							Validators: []validator.Set{
+								func() validator.Set {
+									v, _ := udsValidator.NewBlockStringAttributeUniquenessValidator("override", "chart_name")
+									return v
+								}(),
+							},
 						},
 					},
 				},
-				Validators: []validator.List{
-					func() validator.List {
+				Validators: []validator.Set{
+					func() validator.Set {
 						v, _ := udsValidator.NewBlockStringAttributeUniquenessValidator("component", "name")
 						return v
 					}(),
@@ -802,6 +795,7 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 
 // TODO(erickson): Remove response paramater and return an error after refactoring removeComponents to do the same
 func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel, resp *resource.UpdateResponse) (PackageResourceModel, error) {
+
 	// TODO(erickson): Need to revisit this logic. If deploy errors, can we recover?
 	// Generate list of components to remove after the update is complete
 	// These components are components that were defined in the old plan but not present in the current plan
@@ -834,11 +828,16 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, err
 	}
 
+	valuesOverridesMap, err := flattenComponentOverrides(ctx, plan.Components)
+	if err != nil {
+		return plan, err
+	}
+
 	// TODO(erickson): Add support for Retries, OCIConcurrency?
 	deployOpts := zarfPackager.DeployOptions{
 		AdoptExistingResources: false,
 		SetVariables:           buildSetVariableMap(plan),
-		ValuesOverridesMap:     flattenOverrides(plan.Overrides),
+		ValuesOverridesMap:     valuesOverridesMap,
 		RemoteOptions:          r.getRemoteOptions(),
 		NamespaceOverride:      plan.Namespace.ValueString(),
 		Timeout:                timeout,
@@ -878,43 +877,126 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	return plan, err
 }
 
-func flattenOverrides(overrides []OverrideModel) map[string]map[string]map[string]any {
+// convertYAMLToJSONCompatible converts YAML types (map[any]any) to JSON-compatible types (map[string]any)
+func convertYAMLToJSONCompatible(o any) any {
+	switch x := o.(type) {
+	case map[any]any:
+		m := map[string]any{}
+		for k, v := range x {
+			m[fmt.Sprint(k)] = convertYAMLToJSONCompatible(v)
+		}
+		return m
+	case []any:
+		for i, v := range x {
+			x[i] = convertYAMLToJSONCompatible(v)
+		}
+	}
+	return o
+}
+
+func flattenComponentOverrides(ctx context.Context, components []ComponentModel) (map[string]map[string]map[string]any, error) {
+	seen := make(map[string]map[string]map[string]bool)
 	result := make(map[string]map[string]map[string]any)
 
-	for _, override := range overrides {
-		component := override.ComponentName.ValueString()
-		chart := override.ChartName.ValueString()
+	for _, component := range components {
+		componentName := component.Name.ValueString()
 
-		// Initialize nested maps if they don't exist
-		if _, exists := result[component]; !exists {
-			result[component] = make(map[string]map[string]any)
+		if _, exists := seen[componentName]; exists {
+			return map[string]map[string]map[string]any{}, fmt.Errorf("component '%s' is defined multiple times", componentName)
 		}
-		if _, exists := result[component][chart]; !exists {
-			result[component][chart] = make(map[string]any)
-		}
+		seen[componentName] = make(map[string]map[string]bool)
 
-		chartMap := result[component][chart]
-
-		// Flatten Values
-		for _, v := range override.Values {
-			chartMap[v.Path.ValueString()] = v.Value.ValueString()
+		// Skip if overrides is null or unknown
+		if component.Overrides.IsNull() || component.Overrides.IsUnknown() {
+			continue
 		}
 
-		// Flatten Variables into Nested Maps
-		for _, variable := range override.Variables {
-			defaultValue := variable.Default.ValueString()
-			path := variable.Path.ValueString()
+		// Extract overrides from Set
+		var overrides []ComponentChartValuesModel
+		diags := component.Overrides.ElementsAs(ctx, &overrides, false)
+		if diags.HasError() {
+			return map[string]map[string]map[string]any{}, fmt.Errorf("failed to extract overrides for component '%s': %v", componentName, diags)
+		}
 
-			if defaultValue != "" {
-				insertNestedValue(chartMap, path, defaultValue)
-			} else {
-				// Handle deletion if the default value is empty
-				deleteNestedValue(chartMap, path)
+		// Process each chart values block within the overrides
+		for _, chart := range overrides {
+			chartName := chart.ChartName.ValueString()
+
+			if _, exists := seen[componentName][chartName]; exists {
+				return map[string]map[string]map[string]any{}, fmt.Errorf("chart '%s' is defined multiple times in component '%s'", chartName, componentName)
+			}
+			seen[componentName][chartName] = make(map[string]bool)
+
+			// Skip if both values and sensitive_values are null or unknown
+			if chart.Values.IsNull() && chart.SensitiveValues.IsNull() {
+				continue
+			}
+			if chart.Values.IsUnknown() && chart.SensitiveValues.IsUnknown() {
+				continue
+			}
+
+			// Initialize component and chart maps if they don't exist
+			if _, exists := result[componentName]; !exists {
+				result[componentName] = make(map[string]map[string]any)
+			}
+			if _, exists := result[componentName][chartName]; !exists {
+				result[componentName][chartName] = make(map[string]any)
+			}
+			chartMap := result[componentName][chartName]
+
+			// Process chart values (regular key-value pairs)
+			if !chart.Values.IsNull() && !chart.Values.IsUnknown() {
+				var values []HelmChartPathValueModel
+				diags := chart.Values.ElementsAs(ctx, &values, false)
+				if diags.HasError() {
+					return map[string]map[string]map[string]any{}, fmt.Errorf("failed to extract values: %v", diags)
+				}
+
+				for _, val := range values {
+					path := val.Path.ValueString()
+					if _, exists := seen[componentName][chartName][path]; exists {
+						return map[string]map[string]map[string]any{}, fmt.Errorf("path '%s' is defined multiple times in overrides for chart '%s' of component '%s'", path, chartName, componentName)
+					}
+					seen[componentName][chartName][path] = true
+
+					var yamlVal any
+					err := yaml.Unmarshal([]byte(val.Value.ValueString()), &yamlVal)
+					if err != nil {
+						return map[string]map[string]map[string]any{}, fmt.Errorf("failed to parse YAML value %s: %w", val.Value.ValueString(), err)
+					}
+
+					// Convert YAML types to JSON-compatible types
+					yamlVal = convertYAMLToJSONCompatible(yamlVal)
+
+					// Handle dot-separated keys by creating nested structure
+					insertNestedValue(chartMap, path, yamlVal)
+				}
+			}
+
+			// Process sensitive chart values (sensitive key-value pairs)
+			if !chart.SensitiveValues.IsNull() && !chart.SensitiveValues.IsUnknown() {
+				var sensitiveValues []HelmChartPathValueModel
+				diags := chart.SensitiveValues.ElementsAs(ctx, &sensitiveValues, false)
+				if diags.HasError() {
+					return map[string]map[string]map[string]any{}, fmt.Errorf("failed to extract sensitive values: %v", diags)
+				}
+
+				for _, sensitiveVar := range sensitiveValues {
+					path := sensitiveVar.Path.ValueString()
+					if _, exists := seen[componentName][chartName][path]; exists {
+						return map[string]map[string]map[string]any{}, fmt.Errorf("path '%s' is defined multiple times in overrides for chart '%s' of component '%s'", path, chartName, componentName)
+					}
+					seen[componentName][chartName][path] = true
+
+					value := sensitiveVar.Value.ValueString()
+					// Handle dot-separated keys by creating nested structure
+					insertNestedValue(chartMap, path, value)
+				}
 			}
 		}
 	}
 
-	return result
+	return result, nil
 }
 
 // getMissingComponents compares two Package plans and returns a list of components that was specified in the
@@ -923,13 +1005,13 @@ func getMissingComponents(plan PackageResourceModel, oldPlan PackageResourceMode
 	var componentsToRemove []string
 
 	// Collect all component names in the new plan
-	newPlanComponents := make(map[string]struct{}, len(plan.Component))
-	for _, component := range plan.Component {
+	newPlanComponents := make(map[string]struct{}, len(plan.Components))
+	for _, component := range plan.Components {
 		newPlanComponents[component.Name.ValueString()] = struct{}{}
 	}
 
 	// Check which old components are missing in the new plan
-	for _, component := range oldPlan.Component {
+	for _, component := range oldPlan.Components {
 		name := component.Name.ValueString()
 		if _, found := newPlanComponents[name]; !found {
 			componentsToRemove = append(componentsToRemove, name)
@@ -945,7 +1027,7 @@ func withClusterTimeout(ctx context.Context) (context.Context, context.CancelFun
 }
 
 // Inserts a nested value based on the dot-separated path
-func insertNestedValue(root map[string]any, path, value string) {
+func insertNestedValue(root map[string]any, path string, value any) {
 	parts := strings.Split(path, ".")
 	current := root
 
@@ -1119,7 +1201,7 @@ func getRequiredAndOptionalPackageComponentsNames(model PackageResourceModel, pk
 	var componentErrors []error
 	requiredComponents := []string{}
 	optionalComponents := []string{}
-	for _, component := range model.Component {
+	for _, component := range model.Components {
 		pkgComponent, found := findPackageComponent(pkgLayout.Pkg.Components, component.Name.ValueString())
 		if !found {
 			componentErrors = append(componentErrors, fmt.Errorf("unknown package component %s", component.Name.ValueString()))
