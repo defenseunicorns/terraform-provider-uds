@@ -129,19 +129,19 @@ func WithNamespace(namespace string) PackageResourceModelDataOption {
 
 func WithComponents(components []ComponentModel) PackageResourceModelDataOption {
 	return func(model *PackageResourceModel) {
-		model.Components = components
+		model.Components = componentSliceToSet(components)
 	}
 }
 
 func WithVars(vars []VariableModel) PackageResourceModelDataOption {
 	return func(model *PackageResourceModel) {
-		model.Vars = vars
+		model.Vars = variableSliceToSet(vars)
 	}
 }
 
 func WithSensitiveVars(sensitiveVars []VariableModel) PackageResourceModelDataOption {
 	return func(model *PackageResourceModel) {
-		model.SensitiveVars = sensitiveVars
+		model.SensitiveVars = variableSliceToSet(sensitiveVars)
 	}
 }
 
@@ -154,9 +154,9 @@ func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) Pack
 		SkipSignatureValidation: types.BoolValue(false),
 		Timeout:                 types.StringValue("10m"),
 		Namespace:               types.StringValue(""),
-		Components:              []ComponentModel{},
-		Vars:                    []VariableModel{},
-		SensitiveVars:           []VariableModel{},
+		Components:              componentSliceToSet([]ComponentModel{}),
+		Vars:                    variableSliceToSet([]VariableModel{}),
+		SensitiveVars:           variableSliceToSet([]VariableModel{}),
 	}
 
 	for _, option := range options {
@@ -528,7 +528,7 @@ func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
 			expectedValuesOverrides: map[string]map[string]map[string]any{
 				"test-required-component-0": {
 					"chart1": {
-						"replicaCount": "3",
+						"replicaCount": 3,
 						"ui": map[string]any{
 							"color": "blue",
 						},
@@ -559,7 +559,7 @@ func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
 			expectedValuesOverrides: map[string]map[string]map[string]any{
 				"test-optional-default-component-0": {
 					"chart1": {
-						"replicaCount": "3",
+						"replicaCount": 3,
 						"ui": map[string]any{
 							"color": "blue",
 						},
@@ -595,7 +595,7 @@ func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
 						),
 						NewTestComponentChartValuesModel("chart2",
 							WithComponentChartValues([]HelmChartPathValueModel{
-								{Path: types.StringValue("service.port"), Value: types.StringValue("8080")},
+								{Path: types.StringValue("service.port"), Value: types.StringValue("\"8080\"")},
 							}),
 						),
 					}),
@@ -611,9 +611,9 @@ func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
 				),
 			},
 			expectedValuesOverrides: map[string]map[string]map[string]any{
-				"test-required-default-component-0": {
+				"test-required-component-0": {
 					"chart1": {
-						"replicaCount": "3",
+						"replicaCount": 3,
 						"ui": map[string]any{
 							"color": "blue",
 						},
@@ -622,7 +622,7 @@ func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
 				},
 				"test-optional-default-component-0": {
 					"chart1": {
-						"replicaCount": "2",
+						"replicaCount": 2,
 					},
 					"chart2": {
 						"service": map[string]any{
@@ -884,28 +884,28 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 			name:               "no vars at all",
 			expectedErrorCount: 0,
 			model: PackageResourceModel{
-				Vars:          []VariableModel{},
-				SensitiveVars: []VariableModel{},
+				Vars:          variableSliceToSet([]VariableModel{}),
+				SensitiveVars: variableSliceToSet([]VariableModel{}),
 			},
 		},
 		{
 			name:               "only regular vars, no duplicates",
 			expectedErrorCount: 0,
 			model: PackageResourceModel{
-				Vars: []VariableModel{
+				Vars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("variable_1"),
 						Value: types.StringValue("value 1"),
 					},
-				},
-				SensitiveVars: []VariableModel{},
+				}),
+				SensitiveVars: variableSliceToSet([]VariableModel{}),
 			},
 		},
 		{
 			name:               "only regular vars, with duplicates",
 			expectedErrorCount: 1,
 			model: PackageResourceModel{
-				Vars: []VariableModel{
+				Vars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("variable_1"),
 						Value: types.StringValue("value 1"),
@@ -914,16 +914,16 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 						Name:  types.StringValue("variable_1"),
 						Value: types.StringValue("duplicate value"),
 					},
-				},
-				SensitiveVars: []VariableModel{},
+				}),
+				SensitiveVars: variableSliceToSet([]VariableModel{}),
 			},
 		},
 		{
 			name:               "only sensitive vars, no duplicates",
 			expectedErrorCount: 0,
 			model: PackageResourceModel{
-				Vars: []VariableModel{},
-				SensitiveVars: []VariableModel{
+				Vars: variableSliceToSet([]VariableModel{}),
+				SensitiveVars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("sensitive variable_1"),
 						Value: types.StringValue("sensitive value"),
@@ -932,15 +932,15 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 						Name:  types.StringValue("sensitive variable_2"),
 						Value: types.StringValue("sensitive value"),
 					},
-				},
+				}),
 			},
 		},
 		{
 			name:               "only sensitive vars, with duplicates",
 			expectedErrorCount: 1,
 			model: PackageResourceModel{
-				Vars: []VariableModel{},
-				SensitiveVars: []VariableModel{
+				Vars: variableSliceToSet([]VariableModel{}),
+				SensitiveVars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("sensitive variable_1"),
 						Value: types.StringValue("sensitive value"),
@@ -949,14 +949,14 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 						Name:  types.StringValue("sensitive variable_1"),
 						Value: types.StringValue("sensitive value"),
 					},
-				},
+				}),
 			},
 		},
 		{
 			name:               "both var types, no duplicates",
 			expectedErrorCount: 0,
 			model: PackageResourceModel{
-				Vars: []VariableModel{
+				Vars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("variable_1"),
 						Value: types.StringValue("value 1"),
@@ -965,8 +965,8 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 						Name:  types.StringValue("variable_2"),
 						Value: types.StringValue("duplicate value"),
 					},
-				},
-				SensitiveVars: []VariableModel{
+				}),
+				SensitiveVars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("sensitive variable_1"),
 						Value: types.StringValue("sensitive value"),
@@ -975,14 +975,14 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 						Name:  types.StringValue("sensitive varjable_2"),
 						Value: types.StringValue("sensitive value"),
 					},
-				},
+				}),
 			},
 		},
 		{
 			name:               "both var types, with duplicates",
 			expectedErrorCount: 2,
 			model: PackageResourceModel{
-				Vars: []VariableModel{
+				Vars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("variable_1"),
 						Value: types.StringValue("value 1"),
@@ -991,8 +991,8 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 						Name:  types.StringValue("variable_2"),
 						Value: types.StringValue("duplicate value"),
 					},
-				},
-				SensitiveVars: []VariableModel{
+				}),
+				SensitiveVars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("variable_1"),
 						Value: types.StringValue("sensitive value"),
@@ -1001,7 +1001,7 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 						Name:  types.StringValue("variable_2"),
 						Value: types.StringValue("sensitive value"),
 					},
-				},
+				}),
 			},
 		},
 	}
@@ -1484,6 +1484,95 @@ func componentChartValuesSliceToSet(overrides []ComponentChartValuesModel) types
 				"chart_name":       types.StringType,
 				"values":           types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{"path": types.StringType, "value": types.StringType}}},
 				"sensitive_values": types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{"path": types.StringType, "value": types.StringType}}},
+			},
+		},
+		elements,
+	)
+	return setValue
+}
+
+// Helper function to convert a slice of ComponentModel to types.Set
+func componentSliceToSet(components []ComponentModel) types.Set {
+	if len(components) == 0 {
+		return types.SetNull(types.ObjectType{
+			AttrTypes: map[string]attr.Type{
+				"name": types.StringType,
+				"override": types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{
+					"chart_name":       types.StringType,
+					"values":           types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{"path": types.StringType, "value": types.StringType}}},
+					"sensitive_values": types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{"path": types.StringType, "value": types.StringType}}},
+				}}},
+			},
+		})
+	}
+
+	overrideSetType := types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{
+		"chart_name":       types.StringType,
+		"values":           types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{"path": types.StringType, "value": types.StringType}}},
+		"sensitive_values": types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{"path": types.StringType, "value": types.StringType}}},
+	}}}
+
+	elements := make([]attr.Value, len(components))
+	for i, component := range components {
+		overrides := component.Overrides
+		if overrides.IsNull() || overrides.IsUnknown() {
+			overrides = types.SetNull(overrideSetType.ElemType.(types.ObjectType))
+		}
+
+		elements[i] = types.ObjectValueMust(
+			map[string]attr.Type{
+				"name":     types.StringType,
+				"override": overrideSetType,
+			},
+			map[string]attr.Value{
+				"name":     component.Name,
+				"override": overrides,
+			},
+		)
+	}
+
+	setValue, _ := types.SetValue(
+		types.ObjectType{
+			AttrTypes: map[string]attr.Type{
+				"name":     types.StringType,
+				"override": overrideSetType,
+			},
+		},
+		elements,
+	)
+	return setValue
+}
+
+// Helper function to convert a slice of VariableModel to types.Set
+func variableSliceToSet(vars []VariableModel) types.Set {
+	if len(vars) == 0 {
+		return types.SetNull(types.ObjectType{
+			AttrTypes: map[string]attr.Type{
+				"name":  types.StringType,
+				"value": types.StringType,
+			},
+		})
+	}
+
+	elements := make([]attr.Value, len(vars))
+	for i, v := range vars {
+		elements[i] = types.ObjectValueMust(
+			map[string]attr.Type{
+				"name":  types.StringType,
+				"value": types.StringType,
+			},
+			map[string]attr.Value{
+				"name":  v.Name,
+				"value": v.Value,
+			},
+		)
+	}
+
+	setValue, _ := types.SetValue(
+		types.ObjectType{
+			AttrTypes: map[string]attr.Type{
+				"name":  types.StringType,
+				"value": types.StringType,
 			},
 		},
 		elements,
@@ -2550,8 +2639,252 @@ func TestFlattenComponentOverrides(t *testing.T) {
 				},
 			},
 		},
-
-		// ERROR CASES
+		{
+			name: "unescaped integer value is converted to int type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("replicaCount"), Value: types.StringValue("3")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"replicaCount": 3,
+					},
+				},
+			},
+		},
+		{
+			name: "unescaped float value is converted to float type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("cpuLimit"), Value: types.StringValue("1.5")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"cpuLimit": 1.5,
+					},
+				},
+			},
+		},
+		{
+			name: "unescaped boolean true value is converted to bool type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("enabled"), Value: types.StringValue("true")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"enabled": true,
+					},
+				},
+			},
+		},
+		{
+			name: "unescaped boolean false value is converted to bool type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("debug"), Value: types.StringValue("false")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"debug": false,
+					},
+				},
+			},
+		},
+		{
+			name: "quoted string value remains as string type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("port"), Value: types.StringValue("\"8080\"")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"port": "8080",
+					},
+				},
+			},
+		},
+		{
+			name: "mixed types with nested paths are properly converted",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("config.replicas"), Value: types.StringValue("5")},
+								{Path: types.StringValue("config.enabled"), Value: types.StringValue("true")},
+								{Path: types.StringValue("config.name"), Value: types.StringValue("\"my-app\"")},
+								{Path: types.StringValue("config.timeout"), Value: types.StringValue("30.5")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"config": map[string]any{
+							"replicas": 5,
+							"enabled":  true,
+							"name":     "my-app",
+							"timeout":  30.5,
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "sensitive values with unescaped integer are converted to int type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("secretPort"), Value: types.StringValue("9000")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"secretPort": 9000,
+					},
+				},
+			},
+		},
+		{
+			name: "sensitive values with unescaped boolean are converted to bool type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("tlsEnabled"), Value: types.StringValue("true")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"tlsEnabled": true,
+					},
+				},
+			},
+		},
+		{
+			name: "sensitive values with quoted strings remain as string type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("apiKey"), Value: types.StringValue("\"secret123\"")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"apiKey": "secret123",
+					},
+				},
+			},
+		},
+		{
+			name: "mixed regular and sensitive values both get type conversion",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("replicas"), Value: types.StringValue("3")},
+								{Path: types.StringValue("enabled"), Value: types.StringValue("true")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("adminPort"), Value: types.StringValue("8443")},
+								{Path: types.StringValue("debugMode"), Value: types.StringValue("false")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"replicas":  3,
+						"enabled":   true,
+						"adminPort": 8443,
+						"debugMode": false,
+					},
+				},
+			},
+		},
 		{
 			name: "error when component has overrides with duplicate chart names",
 			input: []ComponentModel{

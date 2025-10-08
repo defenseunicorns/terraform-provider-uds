@@ -80,9 +80,9 @@ type PackageResourceModel struct {
 	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
 	Namespace               types.String `tfsdk:"namespace"`
 
-	Components    []ComponentModel `tfsdk:"component"`
-	Vars          []VariableModel  `tfsdk:"vars"`
-	SensitiveVars []VariableModel  `tfsdk:"sensitive_vars"`
+	Components    types.Set `tfsdk:"component"`      // Set of ComponentModel objects
+	Vars          types.Set `tfsdk:"vars"`           // Set of VariableModel objects
+	SensitiveVars types.Set `tfsdk:"sensitive_vars"` // Set of VariableModel objects
 
 	// readonly metadata
 	Name     types.String `tfsdk:"name"`
@@ -193,8 +193,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					},
 				},
 			},
-			// TODO(erickson): Replace with SetNestedAttribute to allow for unordered
-			"vars": schema.ListNestedAttribute{
+			"vars": schema.SetNestedAttribute{
 				Description: "UDS package variables to set.",
 				Optional:    true,
 				NestedObject: schema.NestedAttributeObject{
@@ -209,14 +208,14 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						},
 					},
 				},
-				Validators: []validator.List{
-					func() validator.List {
+				Validators: []validator.Set{
+					func() validator.Set {
 						v, _ := udsValidator.NewBlockStringAttributeUniquenessValidator("var", "name")
 						return v
 					}(),
 				},
 			},
-			"sensitive_vars": schema.ListNestedAttribute{
+			"sensitive_vars": schema.SetNestedAttribute{
 				Description: "Sensitive UDS package variables to set.",
 				Optional:    true,
 				NestedObject: schema.NestedAttributeObject{
@@ -232,8 +231,8 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						},
 					},
 				},
-				Validators: []validator.List{
-					func() validator.List {
+				Validators: []validator.Set{
+					func() validator.Set {
 						v, _ := udsValidator.NewBlockStringAttributeUniquenessValidator("sensitive_var", "name")
 						return v
 					}(),
@@ -828,7 +827,12 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, err
 	}
 
-	valuesOverridesMap, err := flattenComponentOverrides(ctx, plan.Components)
+	var components []ComponentModel
+	if !plan.Components.IsNull() && !plan.Components.IsUnknown() {
+		plan.Components.ElementsAs(ctx, &components, false)
+	}
+
+	valuesOverridesMap, err := flattenComponentOverrides(ctx, components)
 	if err != nil {
 		return plan, err
 	}
@@ -988,9 +992,17 @@ func flattenComponentOverrides(ctx context.Context, components []ComponentModel)
 					}
 					seen[componentName][chartName][path] = true
 
-					value := sensitiveVar.Value.ValueString()
+					var yamlVal any
+					err := yaml.Unmarshal([]byte(sensitiveVar.Value.ValueString()), &yamlVal)
+					if err != nil {
+						return map[string]map[string]map[string]any{}, fmt.Errorf("failed to parse YAML value %s: %w", sensitiveVar.Value.ValueString(), err)
+					}
+
+					// Convert YAML types to JSON-compatible types
+					yamlVal = convertYAMLToJSONCompatible(yamlVal)
+
 					// Handle dot-separated keys by creating nested structure
-					insertNestedValue(chartMap, path, value)
+					insertNestedValue(chartMap, path, yamlVal)
 				}
 			}
 		}
@@ -1004,14 +1016,25 @@ func flattenComponentOverrides(ctx context.Context, components []ComponentModel)
 func getMissingComponents(plan PackageResourceModel, oldPlan PackageResourceModel) []string {
 	var componentsToRemove []string
 
+	// Extract components from Sets
+	var newComponents []ComponentModel
+	if !plan.Components.IsNull() && !plan.Components.IsUnknown() {
+		plan.Components.ElementsAs(context.Background(), &newComponents, false)
+	}
+
+	var oldComponents []ComponentModel
+	if !oldPlan.Components.IsNull() && !oldPlan.Components.IsUnknown() {
+		oldPlan.Components.ElementsAs(context.Background(), &oldComponents, false)
+	}
+
 	// Collect all component names in the new plan
-	newPlanComponents := make(map[string]struct{}, len(plan.Components))
-	for _, component := range plan.Components {
+	newPlanComponents := make(map[string]struct{}, len(newComponents))
+	for _, component := range newComponents {
 		newPlanComponents[component.Name.ValueString()] = struct{}{}
 	}
 
 	// Check which old components are missing in the new plan
-	for _, component := range oldPlan.Components {
+	for _, component := range oldComponents {
 		name := component.Name.ValueString()
 		if _, found := newPlanComponents[name]; !found {
 			componentsToRemove = append(componentsToRemove, name)
@@ -1158,8 +1181,19 @@ func validateUniqueVarNames(model PackageResourceModel, resp *resource.ValidateC
 		}
 	}
 
-	add("vars", model.Vars)
-	add("sensitive_vars", model.SensitiveVars)
+	// Extract vars from Set
+	var vars []VariableModel
+	if !model.Vars.IsNull() && !model.Vars.IsUnknown() {
+		model.Vars.ElementsAs(context.Background(), &vars, false)
+	}
+	add("vars", vars)
+
+	// Extract sensitive_vars from Set
+	var sensitiveVars []VariableModel
+	if !model.SensitiveVars.IsNull() && !model.SensitiveVars.IsUnknown() {
+		model.SensitiveVars.ElementsAs(context.Background(), &sensitiveVars, false)
+	}
+	add("sensitive_vars", sensitiveVars)
 
 	// raise errors for any duplicates
 	for name, occurrences := range seen {
@@ -1188,12 +1222,25 @@ func getTempPublicKeyPath(publicKey string, skipSignatureValidation bool) (strin
 
 func buildSetVariableMap(model PackageResourceModel) map[string]string {
 	setVariables := make(map[string]string)
-	for _, v := range model.Vars {
-		setVariables[v.Name.ValueString()] = v.Value.ValueString()
+
+	// Extract vars from Set
+	var vars []VariableModel
+	if !model.Vars.IsNull() && !model.Vars.IsUnknown() {
+		model.Vars.ElementsAs(context.Background(), &vars, false)
+		for _, v := range vars {
+			setVariables[v.Name.ValueString()] = v.Value.ValueString()
+		}
 	}
-	for _, v := range model.SensitiveVars {
-		setVariables[v.Name.ValueString()] = v.Value.ValueString()
+
+	// Extract sensitive_vars from Set
+	var sensitiveVars []VariableModel
+	if !model.SensitiveVars.IsNull() && !model.SensitiveVars.IsUnknown() {
+		model.SensitiveVars.ElementsAs(context.Background(), &sensitiveVars, false)
+		for _, v := range sensitiveVars {
+			setVariables[v.Name.ValueString()] = v.Value.ValueString()
+		}
 	}
+
 	return setVariables
 }
 
@@ -1201,7 +1248,14 @@ func getRequiredAndOptionalPackageComponentsNames(model PackageResourceModel, pk
 	var componentErrors []error
 	requiredComponents := []string{}
 	optionalComponents := []string{}
-	for _, component := range model.Components {
+
+	// Extract components from Set
+	var components []ComponentModel
+	if !model.Components.IsNull() && !model.Components.IsUnknown() {
+		model.Components.ElementsAs(context.Background(), &components, false)
+	}
+
+	for _, component := range components {
 		pkgComponent, found := findPackageComponent(pkgLayout.Pkg.Components, component.Name.ValueString())
 		if !found {
 			componentErrors = append(componentErrors, fmt.Errorf("unknown package component %s", component.Name.ValueString()))
