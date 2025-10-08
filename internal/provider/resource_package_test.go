@@ -2114,6 +2114,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 				},
 			},
 		},
+		//nolint:dupl // Test structure is similar to other multi-component tests, but tests specific scenario
 		{
 			name: "multiple components with multiple chart overrides blocks each with single simple path value",
 			input: []ComponentModel{
@@ -2171,6 +2172,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 				},
 			},
 		},
+		//nolint:dupl // Test structure is similar to other multi-component tests, but tests nested paths
 		{
 			name: "multiple components with multiple chart overrides blocks each with single nested path value",
 			input: []ComponentModel{
@@ -2318,6 +2320,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 				},
 			},
 		},
+		//nolint:dupl // Similar structure to regular values test, but tests sensitive values specifically
 		{
 			name: "multiple components with multiple chart overrides blocks each with single simple path sensitive value",
 			input: []ComponentModel{
@@ -2550,6 +2553,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 				},
 			},
 		},
+		//nolint:dupl // Test structure is similar to other multi-component tests, but tests both values and sensitive values with nested paths
 		{
 			name: "multiple components with multiple chart overrides blocks with both single nested path value and single nested path sensitive value",
 			input: []ComponentModel{
