@@ -64,7 +64,7 @@ const (
 	httpsPackageReference = "https://defenseunicornstest.com/test-package"
 )
 
-func newObjectListWithAttributeValues(attributeName string, values []string) types.List {
+func newObjectValues(attributeName string, values []string) []attr.Value {
 	attrValues := make([]attr.Value, len(values))
 	for i, value := range values {
 		attrValues[i] = types.ObjectValueMust(
@@ -72,8 +72,20 @@ func newObjectListWithAttributeValues(attributeName string, values []string) typ
 			map[string]attr.Value{attributeName: types.StringValue(value)},
 		)
 	}
+	return attrValues
+}
 
+func newObjectListWithAttributeValues(attributeName string, values []string) types.List {
+	attrValues := newObjectValues(attributeName, values)
 	return types.ListValueMust(
+		types.ObjectType{AttrTypes: map[string]attr.Type{attributeName: types.StringType}},
+		attrValues,
+	)
+}
+
+func newObjectSetWithAttributeValues(attributeName string, values []string) types.Set {
+	attrValues := newObjectValues(attributeName, values)
+	return types.SetValueMust(
 		types.ObjectType{AttrTypes: map[string]attr.Type{attributeName: types.StringType}},
 		attrValues,
 	)
@@ -91,6 +103,7 @@ func assertValidatorResponseDiagnosticsContainsErrorSummary(t *testing.T, diagno
 	assert.True(t, found, "Expected error with summary %q, but it was not found in diagnostics: %v", expectedErrorSummary, diagnostics)
 }
 
+//nolint:dupl // Test structure is similar to ValidateSet test, but tests List type specifically
 func TestBlockStringAttributeUniquenessValidator_ValidateList(t *testing.T) {
 	t.Parallel()
 
@@ -182,6 +195,105 @@ func TestBlockStringAttributeUniquenessValidator_ValidateList(t *testing.T) {
 			}
 
 			validator.ValidateList(context.Background(), req, resp)
+			assert.Equal(t, tc.expectedErrorCount, len(resp.Diagnostics), "Expected %d errors, got %d. Diagnostics: %v", tc.expectedErrorCount, len(resp.Diagnostics), resp.Diagnostics)
+
+			if tc.expectedErrorSummary != "" && len(resp.Diagnostics) > 0 {
+				assertValidatorResponseDiagnosticsContainsErrorSummary(t, resp.Diagnostics, tc.expectedErrorSummary)
+			}
+		})
+	}
+}
+
+//nolint:dupl // Test structure is similar to ValidateList test, but tests Set type specifically
+func TestBlockStringAttributeUniquenessValidator_ValidateSet(t *testing.T) {
+	t.Parallel()
+
+	blockName := "test_block"
+	attributeName := "test_attr"
+	duplicateAttributeErrorSummary := "Duplicate block attribute."
+	incorrectAttributeTypeErrorSummary := "Incorrect block attribute type."
+	missingAttributeErrorSummary := "Missing block attribute."
+	tests := []struct {
+		name                 string
+		configValue          types.Set
+		expectedErrorCount   int
+		expectedErrorSummary string
+	}{
+		{
+			name:               "null list is valid",
+			configValue:        types.SetNull(types.ObjectType{AttrTypes: map[string]attr.Type{attributeName: types.StringType}}),
+			expectedErrorCount: 0,
+		},
+		{
+			name:               "unknown list is valid",
+			configValue:        types.SetUnknown(types.ObjectType{AttrTypes: map[string]attr.Type{attributeName: types.StringType}}),
+			expectedErrorCount: 0,
+		},
+		{
+			name:               "empty list is valid",
+			configValue:        types.SetValueMust(types.ObjectType{AttrTypes: map[string]attr.Type{attributeName: types.StringType}}, []attr.Value{}),
+			expectedErrorCount: 0,
+		},
+		{
+			name:               "single item is valid",
+			configValue:        newObjectSetWithAttributeValues(attributeName, []string{"value1"}),
+			expectedErrorCount: 0,
+		},
+		{
+			name:               "multiple unique items is valid",
+			configValue:        newObjectSetWithAttributeValues(attributeName, []string{"value1", "value2", "value3"}),
+			expectedErrorCount: 0,
+		},
+		{
+			name:                 "duplicate items is not valid",
+			configValue:          newObjectSetWithAttributeValues(attributeName, []string{"value1", "value2", "value1"}),
+			expectedErrorCount:   1,
+			expectedErrorSummary: duplicateAttributeErrorSummary,
+		},
+		{
+			name:                 "multiple duplicates is not valid with multiple errors",
+			configValue:          newObjectSetWithAttributeValues(attributeName, []string{"value1", "value1", "value2", "value2"}),
+			expectedErrorCount:   2,
+			expectedErrorSummary: duplicateAttributeErrorSummary,
+		},
+		{
+			name:                 "missing attribute is not valid",
+			configValue:          newObjectSetWithAttributeValues("other_attr", []string{"value1", "value2"}),
+			expectedErrorCount:   1,
+			expectedErrorSummary: missingAttributeErrorSummary,
+		},
+		{
+			name:               "unknown attribute value should be skipped",
+			configValue:        newObjectSetWithAttributeValues(attributeName, []string{"value1", " ", "value2"}),
+			expectedErrorCount: 0,
+		},
+		{
+			name: "wrong attribute type is not valid",
+			configValue: types.SetValueMust(
+				types.ObjectType{AttrTypes: map[string]attr.Type{attributeName: types.Int64Type}},
+				[]attr.Value{
+					types.ObjectValueMust(
+						map[string]attr.Type{attributeName: types.Int64Type},
+						map[string]attr.Value{attributeName: types.Int64Value(123)},
+					),
+				},
+			),
+			expectedErrorCount:   1,
+			expectedErrorSummary: incorrectAttributeTypeErrorSummary,
+		},
+	}
+
+	validator, _ := NewBlockStringAttributeUniquenessValidator(blockName, attributeName)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := tfvalidator.SetRequest{
+				ConfigValue: tc.configValue,
+			}
+			resp := &tfvalidator.SetResponse{
+				Diagnostics: diag.Diagnostics{},
+			}
+
+			validator.ValidateSet(context.Background(), req, resp)
 			assert.Equal(t, tc.expectedErrorCount, len(resp.Diagnostics), "Expected %d errors, got %d. Diagnostics: %v", tc.expectedErrorCount, len(resp.Diagnostics), resp.Diagnostics)
 
 			if tc.expectedErrorSummary != "" && len(resp.Diagnostics) > 0 {

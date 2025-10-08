@@ -36,24 +36,22 @@ resource "uds_package" "init" {
 
 # Requires podinfo UDS package locally in the current directory. Update the podinfo_version to match.
 resource "uds_package" "podinfo" {
-  source = "oci://ghcr.io/defenseunicorns/uds-cli/podinfo:0.0.2"
+  source = "oci://ghcr.io/defenseunicorns/uds-cli/podinfo:${local.podinfo_version}"
   # Optionally, pull/download the package locally and set source to the path to the pulled package tar file.
   #source       = "zarf-package-podinfo-dev-${local.architecture}-v${local.podinfo_version}.tar.zst"
   architecture = local.architecture
   depends_on   = [uds_package.init]
 
-  overrides = [
-    {
-      component_name = "podinfo"
-      chart_name     = "podinfo"
+  component {
+    name = "podinfo"
+
+    override {
+      chart_name = "podinfo"
       values = [
-        {
-          path  = "replicaCount"
-          value = "3"
-        }
+        { path = "replicaCount", value = "3" }
       ]
     }
-  ]
+  }
 }
 
 resource "uds_package" "demo_dos_games" {

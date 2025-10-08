@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"oras.land/oras-go/v2/registry"
@@ -21,6 +22,20 @@ var localPathRegex *regexp.Regexp = regexp.MustCompile(`^(?:[a-zA-Z]:)?\/?(?:[a-
 type BlockStringAttributeUniquenessValidator struct {
 	blockName     string
 	attributeName string
+}
+
+// NewBlockStringAttributeUniquenessValidator creates a new block string attribute uniqueness validator.
+func NewBlockStringAttributeUniquenessValidator(blockName string, attributeName string) (*BlockStringAttributeUniquenessValidator, error) {
+	if err := validateBlockName(blockName); err != nil {
+		return nil, err
+	}
+	if err := validateAttributeName(attributeName); err != nil {
+		return nil, err
+	}
+	return &BlockStringAttributeUniquenessValidator{
+		blockName:     blockName,
+		attributeName: attributeName,
+	}, nil
 }
 
 // Description returns a plain text description of the validator.
@@ -46,27 +61,47 @@ func (v BlockStringAttributeUniquenessValidator) ValidateList(ctx context.Contex
 		return
 	}
 
+	v.validateElements(rawElements, &resp.Diagnostics)
+}
+
+// ValidateSet validates that all blocks in the set have unique values for the specified attribute.
+func (v BlockStringAttributeUniquenessValidator) ValidateSet(ctx context.Context, req validator.SetRequest, resp *validator.SetResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	var rawElements []types.Object
+	diags := req.ConfigValue.ElementsAs(ctx, &rawElements, false)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	v.validateElements(rawElements, &resp.Diagnostics)
+}
+
+// validateElements contains the common validation logic for both List and Set validators
+func (v BlockStringAttributeUniquenessValidator) validateElements(rawElements []types.Object, diagnostics *diag.Diagnostics) {
 	seenValues := make(map[string]struct{})
 	for _, element := range rawElements {
 		elementMap := element.Attributes()
 		attrVal, exists := elementMap[v.attributeName]
 		if !exists {
-			resp.Diagnostics.AddError(
+			diagnostics.AddError(
 				"Missing block attribute.",
 				fmt.Sprintf("%s block does not have %q attribute.", v.blockName, v.attributeName),
 			)
 			continue
 		}
 
-		// The attribute check for IsUnknown is a safeguard in case the it is a computed value that Terraform/OpenTofu
-		// could be unknown if it is computed by Terraform and realized later.
+		// The attribute check for IsUnknown is a safeguard in case it is a computed value
 		if attrVal.IsUnknown() {
 			continue
 		}
 
 		attrString, ok := attrVal.(types.String)
 		if !ok {
-			resp.Diagnostics.AddError(
+			diagnostics.AddError(
 				"Incorrect block attribute type.",
 				fmt.Sprintf("Expected %s block %q attribute to be a string type, but got %T.", v.blockName, v.attributeName, attrVal),
 			)
@@ -75,27 +110,13 @@ func (v BlockStringAttributeUniquenessValidator) ValidateList(ctx context.Contex
 
 		value := attrString.ValueString()
 		if _, found := seenValues[value]; found {
-			resp.Diagnostics.AddError(
+			diagnostics.AddError(
 				"Duplicate block attribute.",
 				fmt.Sprintf("Multiple %s blocks found with %q set to value %q. %q attribute must be unique between %s blocks.", v.blockName, v.attributeName, value, v.attributeName, v.blockName),
 			)
 		}
 		seenValues[value] = struct{}{}
 	}
-}
-
-// NewBlockStringAttributeUniquenessValidator creates a new block string attribute uniqueness validator.
-func NewBlockStringAttributeUniquenessValidator(blockName string, attributeName string) (validator.List, error) {
-	if err := validateBlockName(blockName); err != nil {
-		return nil, err
-	}
-	if err := validateAttributeName(attributeName); err != nil {
-		return nil, err
-	}
-	return BlockStringAttributeUniquenessValidator{
-		blockName:     blockName,
-		attributeName: attributeName,
-	}, nil
 }
 
 func validateBlockName(name string) error {

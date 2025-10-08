@@ -50,6 +50,17 @@ resource "uds_package" "podinfo" {
       value = "this is another value"
     }
   ]
+
+  component {
+    name = "podinfo"
+
+    override {
+      chart_name = "podinfo"
+      values = [
+        { path = "replicaCount", value = "3" }
+      ]
+    }
+  }
 }
 
 resource "uds_package" "dos_games" {

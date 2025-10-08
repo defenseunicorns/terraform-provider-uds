@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/defenseunicorns/pkg/helpers/v2"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stretchr/testify/assert"
@@ -26,151 +27,6 @@ import (
 
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 )
-
-// Unit test for flattenOverrides function
-func TestFlattenOverrides(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    []OverrideModel
-		expected map[string]map[string]map[string]any
-	}{
-		{
-			name: "Single Override with Simple Value",
-			input: []OverrideModel{
-				{
-					ComponentName: types.StringValue("component1"),
-					ChartName:     types.StringValue("chart1"),
-					Values: []OverrideValue{
-						{Path: types.StringValue("replicaCount"), Value: types.StringValue("2")},
-					},
-				},
-			},
-			expected: map[string]map[string]map[string]any{
-				"component1": {
-					"chart1": {
-						"replicaCount": "2",
-					},
-				},
-			},
-		},
-		{
-			name: "Override with Nested Variables",
-			input: []OverrideModel{
-				{
-					ComponentName: types.StringValue("component1"),
-					ChartName:     types.StringValue("chart1"),
-					Variables: []OverrideVariable{
-						{
-							Path:    types.StringValue("ui.color"),
-							Default: types.StringValue("purple"),
-						},
-					},
-				},
-			},
-			expected: map[string]map[string]map[string]any{
-				"component1": {
-					"chart1": {
-						"ui": map[string]any{
-							"color": "purple",
-						},
-					},
-				},
-			},
-		},
-		{
-			name: "Multiple Overrides",
-			input: []OverrideModel{
-				{
-					ComponentName: types.StringValue("component1"),
-					ChartName:     types.StringValue("chart1"),
-					Values: []OverrideValue{
-						{Path: types.StringValue("replicaCount"), Value: types.StringValue("3")},
-					},
-				},
-				{
-					ComponentName: types.StringValue("component2"),
-					ChartName:     types.StringValue("chart2"),
-					Variables: []OverrideVariable{
-						{
-							Path:    types.StringValue("database.url"),
-							Default: types.StringValue("localhost"),
-						},
-					},
-				},
-			},
-			expected: map[string]map[string]map[string]any{
-				"component1": {
-					"chart1": {
-						"replicaCount": "3",
-					},
-				},
-				"component2": {
-					"chart2": {
-						"database": map[string]any{
-							"url": "localhost",
-						},
-					},
-				},
-			},
-		},
-		{
-			name: "Variable with Empty Default Value (Should Be Ignored)",
-			input: []OverrideModel{
-				{
-					ComponentName: types.StringValue("component1"),
-					ChartName:     types.StringValue("chart1"),
-					Variables: []OverrideVariable{
-						{
-							Path: types.StringValue("ui.theme"),
-							// Default: basetypes.StringValue{},
-						},
-					},
-				},
-			},
-			expected: map[string]map[string]map[string]any{
-				"component1": {
-					"chart1": {},
-				},
-			},
-		},
-		{
-			name: "Nested Variable Paths",
-			input: []OverrideModel{
-				{
-					ComponentName: types.StringValue("component1"),
-					ChartName:     types.StringValue("chart1"),
-					Variables: []OverrideVariable{
-						{
-							Path:    types.StringValue("app.settings.features.enable"),
-							Default: types.StringValue("true"),
-						},
-					},
-				},
-			},
-			expected: map[string]map[string]map[string]any{
-				"component1": {
-					"chart1": {
-						"app": map[string]any{
-							"settings": map[string]any{
-								"features": map[string]any{
-									"enable": "true",
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	// Run the test cases
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			actual := flattenOverrides(tc.input)
-			assert.Equal(t, tc.expected, actual)
-		})
-	}
-}
 
 type MockCluster struct {
 	mock.Mock
@@ -273,25 +129,19 @@ func WithNamespace(namespace string) PackageResourceModelDataOption {
 
 func WithComponents(components []ComponentModel) PackageResourceModelDataOption {
 	return func(model *PackageResourceModel) {
-		model.Component = components
-	}
-}
-
-func WithOverrides(overrides []OverrideModel) PackageResourceModelDataOption {
-	return func(model *PackageResourceModel) {
-		model.Overrides = overrides
+		model.Components = componentSliceToSet(components)
 	}
 }
 
 func WithVars(vars []VariableModel) PackageResourceModelDataOption {
 	return func(model *PackageResourceModel) {
-		model.Vars = vars
+		model.Vars = variableSliceToSet(vars)
 	}
 }
 
 func WithSensitiveVars(sensitiveVars []VariableModel) PackageResourceModelDataOption {
 	return func(model *PackageResourceModel) {
-		model.SensitiveVars = sensitiveVars
+		model.SensitiveVars = variableSliceToSet(sensitiveVars)
 	}
 }
 
@@ -304,10 +154,63 @@ func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) Pack
 		SkipSignatureValidation: types.BoolValue(false),
 		Timeout:                 types.StringValue("10m"),
 		Namespace:               types.StringValue(""),
-		Component:               []ComponentModel{},
-		Overrides:               []OverrideModel{},
-		Vars:                    []VariableModel{},
-		SensitiveVars:           []VariableModel{},
+		Components:              componentSliceToSet([]ComponentModel{}),
+		Vars:                    variableSliceToSet([]VariableModel{}),
+		SensitiveVars:           variableSliceToSet([]VariableModel{}),
+	}
+
+	for _, option := range options {
+		option(&model)
+	}
+
+	return model
+}
+
+type ComponentModelDataOption func(*ComponentModel)
+
+func WithComponentOverrides(overrides []ComponentChartValuesModel) ComponentModelDataOption {
+	return func(model *ComponentModel) {
+		model.Overrides = componentChartValuesSliceToSet(overrides)
+	}
+}
+
+type ComponentChartValuesModelDataOption func(*ComponentChartValuesModel)
+
+func WithComponentChartName(chartName string) ComponentChartValuesModelDataOption {
+	return func(model *ComponentChartValuesModel) {
+		model.ChartName = types.StringValue(chartName)
+	}
+}
+
+func WithComponentChartValues(values []HelmChartPathValueModel) ComponentChartValuesModelDataOption {
+	return func(model *ComponentChartValuesModel) {
+		model.Values = helmChartPathValueSliceToSet(values)
+	}
+}
+
+func WithComponentChartSensitiveValues(values []HelmChartPathValueModel) ComponentChartValuesModelDataOption {
+	return func(model *ComponentChartValuesModel) {
+		model.SensitiveValues = helmChartPathValueSliceToSet(values)
+	}
+}
+
+// NewTestComponentModel creates a ComponentModel with default values and applies data options
+func NewTestComponentModel(name string, options ...ComponentModelDataOption) ComponentModel {
+	model := ComponentModel{
+		Name: types.StringValue(name),
+	}
+
+	for _, option := range options {
+		option(&model)
+	}
+
+	return model
+}
+
+// NewTestComponentChartValuesModel creates a ComponentChartValuesModel with default values and applies data options
+func NewTestComponentChartValuesModel(chartName string, options ...ComponentChartValuesModelDataOption) ComponentChartValuesModel {
+	model := ComponentChartValuesModel{
+		ChartName: types.StringValue(chartName),
 	}
 
 	for _, option := range options {
@@ -590,6 +493,205 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 	}
 }
 
+func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
+	tests := []struct {
+		name                    string
+		components              []ComponentModel
+		expectedValuesOverrides map[string]map[string]map[string]any
+		expectedCallToDeploy    bool
+		expectedErrorContains   string
+	}{
+		{
+			name:                    "package without component overrides deploys with empty values overrides map",
+			components:              []ComponentModel{},
+			expectedValuesOverrides: map[string]map[string]map[string]any{},
+			expectedCallToDeploy:    true,
+			expectedErrorContains:   "",
+		},
+		{
+			name: "package with single required component overrides deploys with single component overrides map",
+			components: []ComponentModel{
+				NewTestComponentModel("test-required-component-0",
+					WithComponentOverrides([]ComponentChartValuesModel{
+						NewTestComponentChartValuesModel("chart1",
+							WithComponentChartValues([]HelmChartPathValueModel{
+								{Path: types.StringValue("replicaCount"), Value: types.StringValue("3")},
+								{Path: types.StringValue("ui.color"), Value: types.StringValue("blue")},
+							}),
+							WithComponentChartSensitiveValues([]HelmChartPathValueModel{
+								{Path: types.StringValue("apiKey"), Value: types.StringValue("secret123")},
+							}),
+						),
+					}),
+				),
+			},
+			expectedValuesOverrides: map[string]map[string]map[string]any{
+				"test-required-component-0": {
+					"chart1": {
+						"replicaCount": 3,
+						"ui": map[string]any{
+							"color": "blue",
+						},
+						"apiKey": "secret123",
+					},
+				},
+			},
+			expectedCallToDeploy:  true,
+			expectedErrorContains: "",
+		},
+		{
+			name: "package with single optional component overrides deploys with single component overrides map",
+			components: []ComponentModel{
+				NewTestComponentModel("test-optional-default-component-0",
+					WithComponentOverrides([]ComponentChartValuesModel{
+						NewTestComponentChartValuesModel("chart1",
+							WithComponentChartValues([]HelmChartPathValueModel{
+								{Path: types.StringValue("replicaCount"), Value: types.StringValue("3")},
+								{Path: types.StringValue("ui.color"), Value: types.StringValue("blue")},
+							}),
+							WithComponentChartSensitiveValues([]HelmChartPathValueModel{
+								{Path: types.StringValue("apiKey"), Value: types.StringValue("secret123")},
+							}),
+						),
+					}),
+				),
+			},
+			expectedValuesOverrides: map[string]map[string]map[string]any{
+				"test-optional-default-component-0": {
+					"chart1": {
+						"replicaCount": 3,
+						"ui": map[string]any{
+							"color": "blue",
+						},
+						"apiKey": "secret123",
+					},
+				},
+			},
+			expectedCallToDeploy:  true,
+			expectedErrorContains: "",
+		},
+		{
+			name: "package with multiple components and charts passes overrides deploys with all components overrides map",
+			components: []ComponentModel{
+				NewTestComponentModel("test-required-component-0",
+					WithComponentOverrides([]ComponentChartValuesModel{
+						NewTestComponentChartValuesModel("chart1",
+							WithComponentChartValues([]HelmChartPathValueModel{
+								{Path: types.StringValue("replicaCount"), Value: types.StringValue("3")},
+								{Path: types.StringValue("ui.color"), Value: types.StringValue("blue")},
+							}),
+							WithComponentChartSensitiveValues([]HelmChartPathValueModel{
+								{Path: types.StringValue("apiKey"), Value: types.StringValue("secret123")},
+							}),
+						),
+					}),
+				),
+				NewTestComponentModel("test-optional-default-component-0",
+					WithComponentOverrides([]ComponentChartValuesModel{
+						NewTestComponentChartValuesModel("chart1",
+							WithComponentChartValues([]HelmChartPathValueModel{
+								{Path: types.StringValue("replicaCount"), Value: types.StringValue("2")},
+							}),
+						),
+						NewTestComponentChartValuesModel("chart2",
+							WithComponentChartValues([]HelmChartPathValueModel{
+								{Path: types.StringValue("service.port"), Value: types.StringValue("\"8080\"")},
+							}),
+						),
+					}),
+				),
+				NewTestComponentModel("test-optional-non-default-component-0",
+					WithComponentOverrides([]ComponentChartValuesModel{
+						NewTestComponentChartValuesModel("chart3",
+							WithComponentChartValues([]HelmChartPathValueModel{
+								{Path: types.StringValue("image.tag"), Value: types.StringValue("v2.0.0")},
+							}),
+						),
+					}),
+				),
+			},
+			expectedValuesOverrides: map[string]map[string]map[string]any{
+				"test-required-component-0": {
+					"chart1": {
+						"replicaCount": 3,
+						"ui": map[string]any{
+							"color": "blue",
+						},
+						"apiKey": "secret123",
+					},
+				},
+				"test-optional-default-component-0": {
+					"chart1": {
+						"replicaCount": 2,
+					},
+					"chart2": {
+						"service": map[string]any{
+							"port": "8080",
+						},
+					},
+				},
+				"test-optional-non-default-component-0": {
+					"chart3": {
+						"image": map[string]any{
+							"tag": "v2.0.0",
+						},
+					},
+				},
+			},
+			expectedCallToDeploy:  true,
+			expectedErrorContains: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+			validLoadPackageResult := newValidLoadPackageResult()
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+				validLoadPackageResult.Layout,
+				validLoadPackageResult.Error,
+			)
+
+			if tc.expectedCallToDeploy {
+				mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+				mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+			}
+
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+			testModel := NewTestPackageResourceModel(
+				WithComponents(tc.components),
+			)
+
+			_, err := packageResource.upsert(context.Background(), testModel)
+
+			if tc.expectedErrorContains != "" {
+				assert.NotNil(t, err, "Expected error, got none")
+				assert.Contains(t, err.Error(), tc.expectedErrorContains, "Expected error to contain %q, but got: %v", tc.expectedErrorContains, err.Error())
+			} else {
+				assert.Nil(t, err, "Expected no error, got %v", err)
+			}
+
+			mockPackager.AssertExpectations(t)
+			mockPackageComponentFilter.AssertExpectations(t)
+
+			// Verify that Deploy was called with the expected ValuesOverridesMap
+			if tc.expectedCallToDeploy {
+				var actualValuesOverrides map[string]map[string]map[string]any
+				for _, call := range mockPackager.Calls {
+					if call.Method == "Deploy" && len(call.Arguments) >= 3 {
+						deployOpts := call.Arguments[2].(zarfPackager.DeployOptions)
+						actualValuesOverrides = deployOpts.ValuesOverridesMap
+					}
+				}
+				assert.Equal(t, tc.expectedValuesOverrides, actualValuesOverrides,
+					"ValuesOverridesMap passed to Deploy does not match expected")
+			}
+		})
+	}
+}
+
 func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 	tests := []struct {
 		name                      string
@@ -782,28 +884,28 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 			name:               "no vars at all",
 			expectedErrorCount: 0,
 			model: PackageResourceModel{
-				Vars:          []VariableModel{},
-				SensitiveVars: []VariableModel{},
+				Vars:          variableSliceToSet([]VariableModel{}),
+				SensitiveVars: variableSliceToSet([]VariableModel{}),
 			},
 		},
 		{
 			name:               "only regular vars, no duplicates",
 			expectedErrorCount: 0,
 			model: PackageResourceModel{
-				Vars: []VariableModel{
+				Vars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("variable_1"),
 						Value: types.StringValue("value 1"),
 					},
-				},
-				SensitiveVars: []VariableModel{},
+				}),
+				SensitiveVars: variableSliceToSet([]VariableModel{}),
 			},
 		},
 		{
 			name:               "only regular vars, with duplicates",
 			expectedErrorCount: 1,
 			model: PackageResourceModel{
-				Vars: []VariableModel{
+				Vars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("variable_1"),
 						Value: types.StringValue("value 1"),
@@ -812,16 +914,16 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 						Name:  types.StringValue("variable_1"),
 						Value: types.StringValue("duplicate value"),
 					},
-				},
-				SensitiveVars: []VariableModel{},
+				}),
+				SensitiveVars: variableSliceToSet([]VariableModel{}),
 			},
 		},
 		{
 			name:               "only sensitive vars, no duplicates",
 			expectedErrorCount: 0,
 			model: PackageResourceModel{
-				Vars: []VariableModel{},
-				SensitiveVars: []VariableModel{
+				Vars: variableSliceToSet([]VariableModel{}),
+				SensitiveVars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("sensitive variable_1"),
 						Value: types.StringValue("sensitive value"),
@@ -830,15 +932,15 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 						Name:  types.StringValue("sensitive variable_2"),
 						Value: types.StringValue("sensitive value"),
 					},
-				},
+				}),
 			},
 		},
 		{
 			name:               "only sensitive vars, with duplicates",
 			expectedErrorCount: 1,
 			model: PackageResourceModel{
-				Vars: []VariableModel{},
-				SensitiveVars: []VariableModel{
+				Vars: variableSliceToSet([]VariableModel{}),
+				SensitiveVars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("sensitive variable_1"),
 						Value: types.StringValue("sensitive value"),
@@ -847,14 +949,14 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 						Name:  types.StringValue("sensitive variable_1"),
 						Value: types.StringValue("sensitive value"),
 					},
-				},
+				}),
 			},
 		},
 		{
 			name:               "both var types, no duplicates",
 			expectedErrorCount: 0,
 			model: PackageResourceModel{
-				Vars: []VariableModel{
+				Vars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("variable_1"),
 						Value: types.StringValue("value 1"),
@@ -863,8 +965,8 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 						Name:  types.StringValue("variable_2"),
 						Value: types.StringValue("duplicate value"),
 					},
-				},
-				SensitiveVars: []VariableModel{
+				}),
+				SensitiveVars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("sensitive variable_1"),
 						Value: types.StringValue("sensitive value"),
@@ -873,14 +975,14 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 						Name:  types.StringValue("sensitive varjable_2"),
 						Value: types.StringValue("sensitive value"),
 					},
-				},
+				}),
 			},
 		},
 		{
 			name:               "both var types, with duplicates",
 			expectedErrorCount: 2,
 			model: PackageResourceModel{
-				Vars: []VariableModel{
+				Vars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("variable_1"),
 						Value: types.StringValue("value 1"),
@@ -889,8 +991,8 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 						Name:  types.StringValue("variable_2"),
 						Value: types.StringValue("duplicate value"),
 					},
-				},
-				SensitiveVars: []VariableModel{
+				}),
+				SensitiveVars: variableSliceToSet([]VariableModel{
 					{
 						Name:  types.StringValue("variable_1"),
 						Value: types.StringValue("sensitive value"),
@@ -899,7 +1001,7 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 						Name:  types.StringValue("variable_2"),
 						Value: types.StringValue("sensitive value"),
 					},
-				},
+				}),
 			},
 		},
 	}
@@ -1294,6 +1396,1646 @@ func TestUpdate_RemoveComponents(t *testing.T) {
 				mockCluster.AssertNotCalled(t, "NewWithWait")
 				mockPackager.AssertNotCalled(t, "GetPackageFromSourceOrCluster")
 				mockPackager.AssertNotCalled(t, "Remove")
+			}
+		})
+	}
+}
+
+// Helper function to convert a slice of HelmChartPathValueModel to types.Set
+func helmChartPathValueSliceToSet(values []HelmChartPathValueModel) types.Set {
+	if len(values) == 0 {
+		return types.SetNull(types.ObjectType{
+			AttrTypes: map[string]attr.Type{
+				"path":  types.StringType,
+				"value": types.StringType,
+			},
+		})
+	}
+
+	elements := make([]attr.Value, len(values))
+	for i, v := range values {
+		elements[i] = types.ObjectValueMust(
+			map[string]attr.Type{
+				"path":  types.StringType,
+				"value": types.StringType,
+			},
+			map[string]attr.Value{
+				"path":  v.Path,
+				"value": v.Value,
+			},
+		)
+	}
+
+	setValue, _ := types.SetValue(
+		types.ObjectType{
+			AttrTypes: map[string]attr.Type{
+				"path":  types.StringType,
+				"value": types.StringType,
+			},
+		},
+		elements,
+	)
+	return setValue
+}
+
+// Helper function to convert a slice of ComponentChartValuesModel to types.Set
+func componentChartValuesSliceToSet(overrides []ComponentChartValuesModel) types.Set {
+	if len(overrides) == 0 {
+		return types.SetNull(types.ObjectType{
+			AttrTypes: map[string]attr.Type{
+				"chart_name":       types.StringType,
+				"values":           types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{"path": types.StringType, "value": types.StringType}}},
+				"sensitive_values": types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{"path": types.StringType, "value": types.StringType}}},
+			},
+		})
+	}
+
+	elements := make([]attr.Value, len(overrides))
+	pathValueSetType := types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{"path": types.StringType, "value": types.StringType}}}
+
+	for i, override := range overrides {
+		// Ensure Values and SensitiveValues are properly initialized
+		values := override.Values
+		if values.IsNull() || values.IsUnknown() {
+			values = types.SetNull(pathValueSetType.ElemType.(types.ObjectType))
+		}
+		sensitiveValues := override.SensitiveValues
+		if sensitiveValues.IsNull() || sensitiveValues.IsUnknown() {
+			sensitiveValues = types.SetNull(pathValueSetType.ElemType.(types.ObjectType))
+		}
+
+		elements[i] = types.ObjectValueMust(
+			map[string]attr.Type{
+				"chart_name":       types.StringType,
+				"values":           pathValueSetType,
+				"sensitive_values": pathValueSetType,
+			},
+			map[string]attr.Value{
+				"chart_name":       override.ChartName,
+				"values":           values,
+				"sensitive_values": sensitiveValues,
+			},
+		)
+	}
+
+	setValue, _ := types.SetValue(
+		types.ObjectType{
+			AttrTypes: map[string]attr.Type{
+				"chart_name":       types.StringType,
+				"values":           types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{"path": types.StringType, "value": types.StringType}}},
+				"sensitive_values": types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{"path": types.StringType, "value": types.StringType}}},
+			},
+		},
+		elements,
+	)
+	return setValue
+}
+
+// Helper function to convert a slice of ComponentModel to types.Set
+func componentSliceToSet(components []ComponentModel) types.Set {
+	if len(components) == 0 {
+		return types.SetNull(types.ObjectType{
+			AttrTypes: map[string]attr.Type{
+				"name": types.StringType,
+				"override": types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{
+					"chart_name":       types.StringType,
+					"values":           types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{"path": types.StringType, "value": types.StringType}}},
+					"sensitive_values": types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{"path": types.StringType, "value": types.StringType}}},
+				}}},
+			},
+		})
+	}
+
+	overrideSetType := types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{
+		"chart_name":       types.StringType,
+		"values":           types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{"path": types.StringType, "value": types.StringType}}},
+		"sensitive_values": types.SetType{ElemType: types.ObjectType{AttrTypes: map[string]attr.Type{"path": types.StringType, "value": types.StringType}}},
+	}}}
+
+	elements := make([]attr.Value, len(components))
+	for i, component := range components {
+		overrides := component.Overrides
+		if overrides.IsNull() || overrides.IsUnknown() {
+			overrides = types.SetNull(overrideSetType.ElemType.(types.ObjectType))
+		}
+
+		elements[i] = types.ObjectValueMust(
+			map[string]attr.Type{
+				"name":     types.StringType,
+				"override": overrideSetType,
+			},
+			map[string]attr.Value{
+				"name":     component.Name,
+				"override": overrides,
+			},
+		)
+	}
+
+	setValue, _ := types.SetValue(
+		types.ObjectType{
+			AttrTypes: map[string]attr.Type{
+				"name":     types.StringType,
+				"override": overrideSetType,
+			},
+		},
+		elements,
+	)
+	return setValue
+}
+
+// Helper function to convert a slice of VariableModel to types.Set
+func variableSliceToSet(vars []VariableModel) types.Set {
+	if len(vars) == 0 {
+		return types.SetNull(types.ObjectType{
+			AttrTypes: map[string]attr.Type{
+				"name":  types.StringType,
+				"value": types.StringType,
+			},
+		})
+	}
+
+	elements := make([]attr.Value, len(vars))
+	for i, v := range vars {
+		elements[i] = types.ObjectValueMust(
+			map[string]attr.Type{
+				"name":  types.StringType,
+				"value": types.StringType,
+			},
+			map[string]attr.Value{
+				"name":  v.Name,
+				"value": v.Value,
+			},
+		)
+	}
+
+	setValue, _ := types.SetValue(
+		types.ObjectType{
+			AttrTypes: map[string]attr.Type{
+				"name":  types.StringType,
+				"value": types.StringType,
+			},
+		},
+		elements,
+	)
+	return setValue
+}
+
+// Unit test for flattenComponentOverrides function
+func TestFlattenComponentOverrides(t *testing.T) {
+	tests := []struct {
+		name                  string
+		input                 []ComponentModel
+		expectedMap           map[string]map[string]map[string]any
+		expectedErrorContains string
+	}{
+		{
+			name: "single component without any chart overrides returns empty map",
+			input: []ComponentModel{
+				{
+					Name:      types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{}),
+				},
+			},
+			expectedMap:           map[string]map[string]map[string]any{},
+			expectedErrorContains: "",
+		},
+		{
+			name: "single component with single chart overrides block with no values or sensitive values returns empty map",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+						},
+					}),
+				},
+			},
+			expectedMap:           map[string]map[string]map[string]any{},
+			expectedErrorContains: "",
+		},
+		{
+			name: "single component with single chart overrides block with single simple path value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component1chart1path1Value")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1": "component1chart1path1Value",
+					},
+				},
+			},
+		},
+		{
+			name: "single component with single chart overrides block with single nested path value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component1chart1path1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1": map[string]any{
+							"nestedPath": "component1chart1path1nestedPathValue",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "single component with multiple chart overrides blocks each with single simple path value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component1chart1path1Value")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component1chart2path1Value")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1": "component1chart1path1Value",
+					},
+					"chart2": {
+						"path1": "component1chart2path1Value",
+					},
+				},
+			},
+		},
+		{
+			name: "single component with multiple chart overrides blocks each with single nested path value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component1chart1path1nestedPathValue")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component1chart2path1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1": map[string]any{
+							"nestedPath": "component1chart1path1nestedPathValue",
+						},
+					},
+					"chart2": {
+						"path1": map[string]any{
+							"nestedPath": "component1chart2path1nestedPathValue",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "single component with single chart overrides block with single simple path sensitive value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component1chart1sensitivePath1Value")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"sensitivePath1": "component1chart1sensitivePath1Value",
+					},
+				},
+			},
+		},
+		{
+			name: "single component with single chart overrides block with single nested path sensitive value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("component1chart1sensitivePath1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"sensitivePath1": map[string]any{
+							"nestedPath": "component1chart1sensitivePath1nestedPathValue",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "single component with multiple chart overrides blocks each with single simple path sensitive value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component1chart1sensitivePath1Value")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component1chart2sensitivePath1Value")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"sensitivePath1": "component1chart1sensitivePath1Value",
+					},
+					"chart2": {
+						"sensitivePath1": "component1chart2sensitivePath1Value",
+					},
+				},
+			},
+		},
+		{
+			name: "single component with multiple chart overrides blocks each with single nested path sensitive value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("component1chart1sensitivePath1nestedPathValue")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("component1chart2sensitivePath1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"sensitivePath1": map[string]any{
+							"nestedPath": "component1chart1sensitivePath1nestedPathValue",
+						},
+					},
+					"chart2": {
+						"sensitivePath1": map[string]any{
+							"nestedPath": "component1chart2sensitivePath1nestedPathValue",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "single component with single chart overrides block with single simple path value and single simple path sensitive value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component1chart1path1Value")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component1chart1sensitivePath1Value")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1":          "component1chart1path1Value",
+						"sensitivePath1": "component1chart1sensitivePath1Value",
+					},
+				},
+			},
+		},
+		{
+			name: "single component with single chart overrides block with single nested path value and single nested path sensitive value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component1chart1path1nestedPathValue")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("component1chart1sensitivePath1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1": map[string]any{
+							"nestedPath": "component1chart1path1nestedPathValue",
+						},
+						"sensitivePath1": map[string]any{
+							"nestedPath": "component1chart1sensitivePath1nestedPathValue",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "single component with multiple chart overrides blocks with both single simple path value and single simple path sensitive value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component1chart1path1Value")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component1chart1sensitivePath1Value")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component1chart2path1Value")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component1chart2sensitivePath1Value")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1":          "component1chart1path1Value",
+						"sensitivePath1": "component1chart1sensitivePath1Value",
+					},
+					"chart2": {
+						"path1":          "component1chart2path1Value",
+						"sensitivePath1": "component1chart2sensitivePath1Value",
+					},
+				},
+			},
+		},
+		{
+			name: "single component with multiple chart overrides blocks with both single nested path value and single nested path sensitive value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component1chart1path1nestedPathValue")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("component1chart1sensitivePath1nestedPathValue")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component1chart2path1nestedPathValue")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("component1chart2sensitivePath1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1": map[string]any{
+							"nestedPath": "component1chart1path1nestedPathValue",
+						},
+						"sensitivePath1": map[string]any{
+							"nestedPath": "component1chart1sensitivePath1nestedPathValue",
+						},
+					},
+					"chart2": {
+						"path1": map[string]any{
+							"nestedPath": "component1chart2path1nestedPathValue",
+						},
+						"sensitivePath1": map[string]any{
+							"nestedPath": "component1chart2sensitivePath1nestedPathValue",
+						},
+					},
+				},
+			},
+		},
+
+		// MULTIPLE COMPONENTS
+		{
+			name: "multiple components without any chart overrides returns empty map",
+			input: []ComponentModel{
+				{
+					Name:      types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{}),
+				},
+				{
+					Name:      types.StringValue("component2"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{}),
+				},
+			},
+			expectedMap:           map[string]map[string]map[string]any{},
+			expectedErrorContains: "",
+		},
+		{
+			name: "multiple components with single chart overrides block but no values or sensitive values returns empty map",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+						},
+					}),
+				},
+				{
+					Name: types.StringValue("component2"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+						},
+					}),
+				},
+			},
+			expectedMap:           map[string]map[string]map[string]any{},
+			expectedErrorContains: "",
+		},
+		{
+			name: "multiple components with single chart overrides block with single simple path value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component1chart1path1Value")},
+							}),
+						},
+					}),
+				},
+				{
+					Name: types.StringValue("component2"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component2chart1path1Value")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1": "component1chart1path1Value",
+					},
+				},
+				"component2": {
+					"chart1": {
+						"path1": "component2chart1path1Value",
+					},
+				},
+			},
+		},
+		{
+			name: "multiple components with single chart overrides block each with single nested path value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component1chart1path1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+				{
+					Name: types.StringValue("component2"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component2chart1path1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1": map[string]any{
+							"nestedPath": "component1chart1path1nestedPathValue",
+						},
+					},
+				},
+				"component2": {
+					"chart1": {
+						"path1": map[string]any{
+							"nestedPath": "component2chart1path1nestedPathValue",
+						},
+					},
+				},
+			},
+		},
+		//nolint:dupl // Test structure is similar to other multi-component tests, but tests specific scenario
+		{
+			name: "multiple components with multiple chart overrides blocks each with single simple path value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component1chart1path1Value")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component1chart2path1Value")},
+							}),
+						},
+					}),
+				},
+				{
+					Name: types.StringValue("component2"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component2chart1path1Value")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component2chart2path1Value")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1": "component1chart1path1Value",
+					},
+					"chart2": {
+						"path1": "component1chart2path1Value",
+					},
+				},
+				"component2": {
+					"chart1": {
+						"path1": "component2chart1path1Value",
+					},
+					"chart2": {
+						"path1": "component2chart2path1Value",
+					},
+				},
+			},
+		},
+		//nolint:dupl // Test structure is similar to other multi-component tests, but tests nested paths
+		{
+			name: "multiple components with multiple chart overrides blocks each with single nested path value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component1chart1path1nestedPathValue")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component1chart2path1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+				{
+					Name: types.StringValue("component2"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component2chart1path1nestedPathValue")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component2chart2path1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1": map[string]any{
+							"nestedPath": "component1chart1path1nestedPathValue",
+						},
+					},
+					"chart2": {
+						"path1": map[string]any{
+							"nestedPath": "component1chart2path1nestedPathValue",
+						},
+					},
+				},
+				"component2": {
+					"chart1": {
+						"path1": map[string]any{
+							"nestedPath": "component2chart1path1nestedPathValue",
+						},
+					},
+					"chart2": {
+						"path1": map[string]any{
+							"nestedPath": "component2chart2path1nestedPathValue",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "multiple components with single chart overrides block with single simple path sensitive value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component1chart1sensitivePath1Value")},
+							}),
+						},
+					}),
+				},
+				{
+					Name: types.StringValue("component2"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component2chart1sensitivePath1Value")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"sensitivePath1": "component1chart1sensitivePath1Value",
+					},
+				},
+				"component2": {
+					"chart1": {
+						"sensitivePath1": "component2chart1sensitivePath1Value",
+					},
+				},
+			},
+		},
+		{
+			name: "multiple components with single chart overrides block with single nested path sensitive value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("component1chart1sensitivePath1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+				{
+					Name: types.StringValue("component2"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("component2chart1sensitivePath1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"sensitivePath1": map[string]any{
+							"nestedPath": "component1chart1sensitivePath1nestedPathValue",
+						},
+					},
+				},
+				"component2": {
+					"chart1": {
+						"sensitivePath1": map[string]any{
+							"nestedPath": "component2chart1sensitivePath1nestedPathValue",
+						},
+					},
+				},
+			},
+		},
+		//nolint:dupl // Similar structure to regular values test, but tests sensitive values specifically
+		{
+			name: "multiple components with multiple chart overrides blocks each with single simple path sensitive value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component1chart1sensitivePath1Value")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component1chart2sensitivePath1Value")},
+							}),
+						},
+					}),
+				},
+				{
+					Name: types.StringValue("component2"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component2chart1sensitivePath1Value")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component2chart2sensitivePath1Value")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"sensitivePath1": "component1chart1sensitivePath1Value",
+					},
+					"chart2": {
+						"sensitivePath1": "component1chart2sensitivePath1Value",
+					},
+				},
+				"component2": {
+					"chart1": {
+						"sensitivePath1": "component2chart1sensitivePath1Value",
+					},
+					"chart2": {
+						"sensitivePath1": "component2chart2sensitivePath1Value",
+					},
+				},
+			},
+		},
+		{
+			name: "multiple components with single chart overrides block with single simple path value and single simple path sensitive value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component1chart1path1Value")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component1chart1sensitivePath1Value")},
+							}),
+						},
+					}),
+				},
+				{
+					Name: types.StringValue("component2"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component2chart1path1Value")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component2chart1sensitivePath1Value")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1":          "component1chart1path1Value",
+						"sensitivePath1": "component1chart1sensitivePath1Value",
+					},
+				},
+				"component2": {
+					"chart1": {
+						"path1":          "component2chart1path1Value",
+						"sensitivePath1": "component2chart1sensitivePath1Value",
+					},
+				},
+			},
+		},
+		{
+			name: "multiple components with single chart overrides block with single nested path value and single nested path sensitive value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component1chart1path1nestedPathValue")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("component1chart1sensitivePath1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+				{
+					Name: types.StringValue("component2"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component2chart1path1nestedPathValue")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("component2chart1sensitivePath1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1": map[string]any{
+							"nestedPath": "component1chart1path1nestedPathValue",
+						},
+						"sensitivePath1": map[string]any{
+							"nestedPath": "component1chart1sensitivePath1nestedPathValue",
+						},
+					},
+				},
+				"component2": {
+					"chart1": {
+						"path1": map[string]any{
+							"nestedPath": "component2chart1path1nestedPathValue",
+						},
+						"sensitivePath1": map[string]any{
+							"nestedPath": "component2chart1sensitivePath1nestedPathValue",
+						},
+					},
+				},
+			},
+		},
+		//nolint:dupl // Test structure is similar to other multi-component tests, but tests both values and sensitive values with simple paths
+		{
+			name: "multiple components with multiple chart overrides blocks with both single simple path value and single simple path sensitive value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component1chart1path1Value")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component1chart1sensitivePath1Value")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component1chart2path1Value")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component1chart2sensitivePath1Value")},
+							}),
+						},
+					}),
+				},
+				{
+					Name: types.StringValue("component2"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component2chart1path1Value")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component2chart1sensitivePath1Value")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("component2chart2path1Value")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("component2chart2sensitivePath1Value")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1":          "component1chart1path1Value",
+						"sensitivePath1": "component1chart1sensitivePath1Value",
+					},
+					"chart2": {
+						"path1":          "component1chart2path1Value",
+						"sensitivePath1": "component1chart2sensitivePath1Value",
+					},
+				},
+				"component2": {
+					"chart1": {
+						"path1":          "component2chart1path1Value",
+						"sensitivePath1": "component2chart1sensitivePath1Value",
+					},
+					"chart2": {
+						"path1":          "component2chart2path1Value",
+						"sensitivePath1": "component2chart2sensitivePath1Value",
+					},
+				},
+			},
+		},
+		//nolint:dupl // Test structure is similar to other multi-component tests, but tests both values and sensitive values with nested paths
+		{
+			name: "multiple components with multiple chart overrides blocks with both single nested path value and single nested path sensitive value",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component1chart1path1nestedPathValue")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("component1chart1sensitivePath1nestedPathValue")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component1chart2path1nestedPathValue")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("component1chart2sensitivePath1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+				{
+					Name: types.StringValue("component2"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component2chart1path1nestedPathValue")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("component2chart1sensitivePath1nestedPathValue")},
+							}),
+						},
+						{
+							ChartName: types.StringValue("chart2"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("component2chart2path1nestedPathValue")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("component2chart2sensitivePath1nestedPathValue")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"path1": map[string]any{
+							"nestedPath": "component1chart1path1nestedPathValue",
+						},
+						"sensitivePath1": map[string]any{
+							"nestedPath": "component1chart1sensitivePath1nestedPathValue",
+						},
+					},
+					"chart2": {
+						"path1": map[string]any{
+							"nestedPath": "component1chart2path1nestedPathValue",
+						},
+						"sensitivePath1": map[string]any{
+							"nestedPath": "component1chart2sensitivePath1nestedPathValue",
+						},
+					},
+				},
+				"component2": {
+					"chart1": {
+						"path1": map[string]any{
+							"nestedPath": "component2chart1path1nestedPathValue",
+						},
+						"sensitivePath1": map[string]any{
+							"nestedPath": "component2chart1sensitivePath1nestedPathValue",
+						},
+					},
+					"chart2": {
+						"path1": map[string]any{
+							"nestedPath": "component2chart2path1nestedPathValue",
+						},
+						"sensitivePath1": map[string]any{
+							"nestedPath": "component2chart2sensitivePath1nestedPathValue",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "unescaped integer value is converted to int type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("replicaCount"), Value: types.StringValue("3")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"replicaCount": 3,
+					},
+				},
+			},
+		},
+		{
+			name: "unescaped float value is converted to float type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("cpuLimit"), Value: types.StringValue("1.5")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"cpuLimit": 1.5,
+					},
+				},
+			},
+		},
+		{
+			name: "unescaped boolean true value is converted to bool type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("enabled"), Value: types.StringValue("true")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"enabled": true,
+					},
+				},
+			},
+		},
+		{
+			name: "unescaped boolean false value is converted to bool type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("debug"), Value: types.StringValue("false")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"debug": false,
+					},
+				},
+			},
+		},
+		{
+			name: "quoted string value remains as string type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("port"), Value: types.StringValue("\"8080\"")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"port": "8080",
+					},
+				},
+			},
+		},
+		{
+			name: "mixed types with nested paths are properly converted",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("config.replicas"), Value: types.StringValue("5")},
+								{Path: types.StringValue("config.enabled"), Value: types.StringValue("true")},
+								{Path: types.StringValue("config.name"), Value: types.StringValue("\"my-app\"")},
+								{Path: types.StringValue("config.timeout"), Value: types.StringValue("30.5")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"config": map[string]any{
+							"replicas": 5,
+							"enabled":  true,
+							"name":     "my-app",
+							"timeout":  30.5,
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "sensitive values with unescaped integer are converted to int type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("secretPort"), Value: types.StringValue("9000")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"secretPort": 9000,
+					},
+				},
+			},
+		},
+		{
+			name: "sensitive values with unescaped boolean are converted to bool type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("tlsEnabled"), Value: types.StringValue("true")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"tlsEnabled": true,
+					},
+				},
+			},
+		},
+		{
+			name: "sensitive values with quoted strings remain as string type",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("apiKey"), Value: types.StringValue("\"secret123\"")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"apiKey": "secret123",
+					},
+				},
+			},
+		},
+		{
+			name: "mixed regular and sensitive values both get type conversion",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("replicas"), Value: types.StringValue("3")},
+								{Path: types.StringValue("enabled"), Value: types.StringValue("true")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("adminPort"), Value: types.StringValue("8443")},
+								{Path: types.StringValue("debugMode"), Value: types.StringValue("false")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"replicas":  3,
+						"enabled":   true,
+						"adminPort": 8443,
+						"debugMode": false,
+					},
+				},
+			},
+		},
+		{
+			name: "error when component has overrides with duplicate chart names",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+						},
+						{
+							ChartName: types.StringValue("chart1"),
+						},
+					}),
+				},
+			},
+			expectedMap:           map[string]map[string]map[string]any{},
+			expectedErrorContains: "chart 'chart1' is defined multiple times in component 'component1",
+		},
+		{
+			name: "error when component overrides values has duplicate simple paths",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("value1")},
+								{Path: types.StringValue("path1"), Value: types.StringValue("value2")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap:           map[string]map[string]map[string]any{},
+			expectedErrorContains: "path 'path1' is defined multiple times in overrides for chart 'chart1' of component 'component1'",
+		},
+		{
+			name: "error when component overrides sensitive values has duplicate simple paths",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("value1")},
+								{Path: types.StringValue("sensitivePath1"), Value: types.StringValue("value2")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap:           map[string]map[string]map[string]any{},
+			expectedErrorContains: "path 'sensitivePath1' is defined multiple times in overrides for chart 'chart1' of component 'component1'",
+		},
+		{
+			name: "error when same simple path exists in both component overrides values and sensitive values",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("value1")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1"), Value: types.StringValue("sensitiveValue1")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap:           map[string]map[string]map[string]any{},
+			expectedErrorContains: "path 'path1' is defined multiple times in overrides for chart 'chart1' of component 'component1'",
+		},
+		{
+			name: "error when component overrides values has duplicate nested paths",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("value1")},
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("value2")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap:           map[string]map[string]map[string]any{},
+			expectedErrorContains: "path 'path1.nestedPath' is defined multiple times in overrides for chart 'chart1' of component 'component1'",
+		},
+		{
+			name: "error when component overrides sensitive values has duplicate nested paths",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("value1")},
+								{Path: types.StringValue("sensitivePath1.nestedPath"), Value: types.StringValue("value2")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap:           map[string]map[string]map[string]any{},
+			expectedErrorContains: "path 'sensitivePath1.nestedPath' is defined multiple times in overrides for chart 'chart1' of component 'component1'",
+		},
+		{
+			name: "error when nested path exists in both values and sensitive values arrays",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("value1")},
+							}),
+							SensitiveValues: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("path1.nestedPath"), Value: types.StringValue("sensitiveValue1")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap:           map[string]map[string]map[string]any{},
+			expectedErrorContains: "path 'path1.nestedPath' is defined multiple times in overrides for chart 'chart1' of component 'component1'",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			actual, err := flattenComponentOverrides(context.Background(), tc.input)
+
+			if tc.expectedErrorContains != "" {
+				assert.ErrorContains(t, err, tc.expectedErrorContains)
+			} else {
+				assert.Equal(t, tc.expectedMap, actual)
 			}
 		})
 	}
