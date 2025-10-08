@@ -204,6 +204,7 @@ func TestBlockStringAttributeUniquenessValidator_ValidateList(t *testing.T) {
 	}
 }
 
+//nolint:dupl // Test structure is similar to ValidateList test, but tests Set type specifically
 func TestBlockStringAttributeUniquenessValidator_ValidateSet(t *testing.T) {
 	t.Parallel()
 

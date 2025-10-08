@@ -2480,6 +2480,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 				},
 			},
 		},
+		//nolint:dupl // Test structure is similar to other multi-component tests, but tests both values and sensitive values with simple paths
 		{
 			name: "multiple components with multiple chart overrides blocks with both single simple path value and single simple path sensitive value",
 			input: []ComponentModel{
