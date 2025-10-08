@@ -898,6 +898,40 @@ func convertYAMLToJSONCompatible(o any) any {
 	return o
 }
 
+// convertPathValuesToOverridesMap converts helm chart path values from the Terraform model to the overrides map structure
+func convertPathValuesToOverridesMap(ctx context.Context, pathValues types.Set, chartMap map[string]any, seenPaths map[string]bool, componentName, chartName, valueType string) error {
+	if pathValues.IsNull() || pathValues.IsUnknown() {
+		return nil
+	}
+
+	var values []HelmChartPathValueModel
+	diags := pathValues.ElementsAs(ctx, &values, false)
+	if diags.HasError() {
+		return fmt.Errorf("failed to extract %s: %v", valueType, diags)
+	}
+
+	for _, val := range values {
+		path := val.Path.ValueString()
+		if _, exists := seenPaths[path]; exists {
+			return fmt.Errorf("path '%s' is defined multiple times in overrides for chart '%s' of component '%s'", path, chartName, componentName)
+		}
+		seenPaths[path] = true
+
+		var yamlVal any
+		err := yaml.Unmarshal([]byte(val.Value.ValueString()), &yamlVal)
+		if err != nil {
+			return fmt.Errorf("failed to parse YAML value %s: %w", val.Value.ValueString(), err)
+		}
+
+		// Convert YAML types to JSON-compatible types
+		yamlVal = convertYAMLToJSONCompatible(yamlVal)
+
+		// Handle dot-separated keys by creating nested structure
+		insertNestedValue(chartMap, path, yamlVal)
+	}
+	return nil
+}
+
 func flattenComponentOverrides(ctx context.Context, components []ComponentModel) (map[string]map[string]map[string]any, error) {
 	seen := make(map[string]map[string]map[string]bool)
 	result := make(map[string]map[string]map[string]any)
@@ -949,61 +983,13 @@ func flattenComponentOverrides(ctx context.Context, components []ComponentModel)
 			chartMap := result[componentName][chartName]
 
 			// Process chart values (regular key-value pairs)
-			if !chart.Values.IsNull() && !chart.Values.IsUnknown() {
-				var values []HelmChartPathValueModel
-				diags := chart.Values.ElementsAs(ctx, &values, false)
-				if diags.HasError() {
-					return map[string]map[string]map[string]any{}, fmt.Errorf("failed to extract values: %v", diags)
-				}
-
-				for _, val := range values {
-					path := val.Path.ValueString()
-					if _, exists := seen[componentName][chartName][path]; exists {
-						return map[string]map[string]map[string]any{}, fmt.Errorf("path '%s' is defined multiple times in overrides for chart '%s' of component '%s'", path, chartName, componentName)
-					}
-					seen[componentName][chartName][path] = true
-
-					var yamlVal any
-					err := yaml.Unmarshal([]byte(val.Value.ValueString()), &yamlVal)
-					if err != nil {
-						return map[string]map[string]map[string]any{}, fmt.Errorf("failed to parse YAML value %s: %w", val.Value.ValueString(), err)
-					}
-
-					// Convert YAML types to JSON-compatible types
-					yamlVal = convertYAMLToJSONCompatible(yamlVal)
-
-					// Handle dot-separated keys by creating nested structure
-					insertNestedValue(chartMap, path, yamlVal)
-				}
+			if err := convertPathValuesToOverridesMap(ctx, chart.Values, chartMap, seen[componentName][chartName], componentName, chartName, "values"); err != nil {
+				return map[string]map[string]map[string]any{}, err
 			}
 
 			// Process sensitive chart values (sensitive key-value pairs)
-			if !chart.SensitiveValues.IsNull() && !chart.SensitiveValues.IsUnknown() {
-				var sensitiveValues []HelmChartPathValueModel
-				diags := chart.SensitiveValues.ElementsAs(ctx, &sensitiveValues, false)
-				if diags.HasError() {
-					return map[string]map[string]map[string]any{}, fmt.Errorf("failed to extract sensitive values: %v", diags)
-				}
-
-				for _, sensitiveVar := range sensitiveValues {
-					path := sensitiveVar.Path.ValueString()
-					if _, exists := seen[componentName][chartName][path]; exists {
-						return map[string]map[string]map[string]any{}, fmt.Errorf("path '%s' is defined multiple times in overrides for chart '%s' of component '%s'", path, chartName, componentName)
-					}
-					seen[componentName][chartName][path] = true
-
-					var yamlVal any
-					err := yaml.Unmarshal([]byte(sensitiveVar.Value.ValueString()), &yamlVal)
-					if err != nil {
-						return map[string]map[string]map[string]any{}, fmt.Errorf("failed to parse YAML value %s: %w", sensitiveVar.Value.ValueString(), err)
-					}
-
-					// Convert YAML types to JSON-compatible types
-					yamlVal = convertYAMLToJSONCompatible(yamlVal)
-
-					// Handle dot-separated keys by creating nested structure
-					insertNestedValue(chartMap, path, yamlVal)
-				}
+			if err := convertPathValuesToOverridesMap(ctx, chart.SensitiveValues, chartMap, seen[componentName][chartName], componentName, chartName, "sensitive values"); err != nil {
+				return map[string]map[string]map[string]any{}, err
 			}
 		}
 	}
