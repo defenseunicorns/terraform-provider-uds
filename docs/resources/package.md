@@ -18,18 +18,17 @@ Deploys a UDS Package.
 ### Required
 
 - `architecture` (String) System architecture of the target cluster.
-- `source` (String) OCI distribution reference (including oci:// scheme) or local file path (absolute or relative) to the UDS package.
+- `source` (String) OCI distribution reference (including oci:// scheme) or local file path (absolute or relative) to the package.
 
 ### Optional
 
-- `component` (Block List) Component configuration to include/exclude in the UDS package deployment (see [below for nested schema](#nestedblock--component))
+- `component` (Block Set) Component configuration to include/exclude in the UDS package deployment. (see [below for nested schema](#nestedblock--component))
 - `namespace` (String) [Alpha] Namespace in which to deploy the UDS package.
-- `overrides` (Attributes List) List of overrides for Helm charts. (see [below for nested schema](#nestedatt--overrides))
 - `public_key` (String) Raw public key value to validate against a signed UDS package.
-- `sensitive_vars` (Attributes List) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))
+- `sensitive_vars` (Attributes Set) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))
 - `skip_signature_validation` (Boolean) Skip validating the signature of a signed UDS package.
 - `timeout` (String) Timeout for the deploy operation.
-- `vars` (Attributes List) UDS package variables to set. (see [below for nested schema](#nestedatt--vars))
+- `vars` (Attributes Set) UDS package variables to set. (see [below for nested schema](#nestedatt--vars))
 
 ### Read-Only
 
@@ -44,44 +43,41 @@ Deploys a UDS Package.
 
 Required:
 
-- `name` (String) Name of the component
-
-
-<a id="nestedatt--overrides"></a>
-### Nested Schema for `overrides`
-
-Required:
-
-- `chart_name` (String) Name of the Helm chart being overridden.
-- `component_name` (String) Name of the component being overridden.
+- `name` (String) Name of the component.
 
 Optional:
 
-- `values` (Attributes List) List of values to override in the chart. (see [below for nested schema](#nestedatt--overrides--values))
-- `values_files` (List of String) List of values files to include in the override.
-- `variables` (Attributes List) List of variables for the Helm chart. (see [below for nested schema](#nestedatt--overrides--variables))
+- `override` (Block Set) Helm chart overrides for the component. (see [below for nested schema](#nestedblock--component--override))
 
-<a id="nestedatt--overrides--values"></a>
-### Nested Schema for `overrides.values`
+<a id="nestedblock--component--override"></a>
+### Nested Schema for `component.override`
 
 Required:
 
-- `path` (String) Path of the value to override.
-- `value` (String) Value to set at the given path.
-
-
-<a id="nestedatt--overrides--variables"></a>
-### Nested Schema for `overrides.variables`
-
-Required:
-
-- `name` (String) Name of the variable.
-- `path` (String) Path of the variable in the Helm chart.
+- `chart_name` (String) Name of the Helm chart to set values for.
 
 Optional:
 
-- `default` (String) Default value for the variable.
-- `description` (String) Description of the variable.
+- `sensitive_values` (Attributes Set) Set of sensitive key-value overrides for the chart. (see [below for nested schema](#nestedatt--component--override--sensitive_values))
+- `values` (Attributes Set) Set of path values to set for the chart. (see [below for nested schema](#nestedatt--component--override--values))
+
+<a id="nestedatt--component--override--sensitive_values"></a>
+### Nested Schema for `component.override.sensitive_values`
+
+Required:
+
+- `path` (String) The dot-notation path in the chart values to set.
+- `value` (String, Sensitive) The raw YAML sensitive value to set at the specified path.
+
+
+<a id="nestedatt--component--override--values"></a>
+### Nested Schema for `component.override.values`
+
+Required:
+
+- `path` (String) The dot-notation path in the chart values to set.
+- `value` (String) The raw YAML value to set at the specified path.
+
 
 
 
