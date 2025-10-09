@@ -17,11 +17,11 @@ Deploys a UDS Package.
 
 ### Required
 
-- `architecture` (String) System architecture of the target cluster.
 - `source` (String) OCI distribution reference (including oci:// scheme) or local file path (absolute or relative) to the package.
 
 ### Optional
 
+- `architecture` (String) System architecture of the target cluster. Defaults to the provider default architecture.
 - `component` (Block Set) Component configuration to include/exclude in the UDS package deployment. (see [below for nested schema](#nestedblock--component))
 - `namespace` (String) [Alpha] Namespace in which to deploy the UDS package.
 - `public_key` (String) Raw public key value to validate against a signed UDS package.

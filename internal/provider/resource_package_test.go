@@ -1202,6 +1202,84 @@ func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T
 	}
 }
 
+// Unit tests for upsert method architecture attribute
+func TestPackageResource_Upsert_Architecture(t *testing.T) {
+	tests := []struct {
+		name                 string
+		modelArchitecture    string // Architecture set in the model (empty string means not set)
+		providerArchitecture string // Architecture from provider config
+		expectedArchitecture string // Expected architecture passed to LoadPackage
+	}{
+		{
+			name:                 "architecture not specified in package model uses provider default architecture set to amd64",
+			modelArchitecture:    "",
+			providerArchitecture: "amd64",
+			expectedArchitecture: "amd64",
+		},
+		{
+			name:                 "architecture not specified in package model uses provider default architecture set to arm64",
+			modelArchitecture:    "",
+			providerArchitecture: "arm64",
+			expectedArchitecture: "arm64",
+		},
+		{
+			name:                 "architecture specified in package model uses model value",
+			modelArchitecture:    "arm64",
+			providerArchitecture: "amd64",
+			expectedArchitecture: "arm64",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+			validLoadPackageResult := newValidLoadPackageResult()
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+				validLoadPackageResult.Layout,
+				validLoadPackageResult.Error,
+			)
+			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+			providerConfig := &udsProviderConfig{
+				DefaultArchitecture: tc.providerArchitecture,
+			}
+			packageResource := NewPackageResource(providerConfig, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+			var testModel PackageResourceModel
+			if tc.modelArchitecture != "" {
+				testModel = NewTestPackageResourceModel(WithArchitecture(tc.modelArchitecture))
+			} else {
+				// Create model without architecture set (null value)
+				testModel = NewTestPackageResourceModel()
+				testModel.Architecture = types.StringNull()
+			}
+
+			_, err := packageResource.upsert(context.Background(), testModel)
+			assert.NoError(t, err)
+
+			// Find the LoadOptions from the LoadPackage call
+			loadOptionsArgFound := false
+			var loadOptions zarfPackager.LoadOptions
+			for _, call := range mockPackager.Calls {
+				if call.Method == "LoadPackage" {
+					loadOptions = call.Arguments[2].(zarfPackager.LoadOptions)
+					loadOptionsArgFound = true
+					break
+				}
+			}
+
+			assert.True(t, loadOptionsArgFound, "Could not find LoadOptions argument in LoadPackage call")
+			assert.Equal(t, tc.expectedArchitecture, loadOptions.Architecture,
+				"Expected architecture %s but got %s", tc.expectedArchitecture, loadOptions.Architecture)
+
+			mockPackageComponentFilter.AssertExpectations(t)
+		})
+	}
+}
+
 func TestComputePackageID(t *testing.T) {
 	tests := []struct {
 		name       string
