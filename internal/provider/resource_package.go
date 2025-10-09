@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -41,6 +42,7 @@ import (
 var (
 	_ resource.Resource                = &PackageResource{}
 	_ resource.ResourceWithImportState = &PackageResource{}
+	_ resource.ResourceWithModifyPlan  = &PackageResource{}
 )
 
 const (
@@ -49,9 +51,9 @@ const (
 )
 
 // NewPackageResource creates a new instance of the package resource.
-func NewPackageResource(providerData *customProviderData, packager udsPackager.Packager, packageComponentFilter udsPackager.PackageComponentFilter, cluster udsCluster.Cluster) resource.Resource {
-	if providerData == nil {
-		providerData = &customProviderData{}
+func NewPackageResource(providerConfig *udsProviderConfig, packager udsPackager.Packager, packageComponentFilter udsPackager.PackageComponentFilter, cluster udsCluster.Cluster) resource.Resource {
+	if providerConfig == nil {
+		providerConfig = &udsProviderConfig{}
 	}
 	if packager == nil {
 		packager = udsPackager.NewPackager()
@@ -63,10 +65,10 @@ func NewPackageResource(providerData *customProviderData, packager udsPackager.P
 		cluster = udsCluster.NewCluster()
 	}
 	return &PackageResource{
-		providerData:  providerData,
-		packager:      packager,
-		cluster:       cluster,
-		packageFilter: packageComponentFilter,
+		providerConfig: providerConfig,
+		packager:       packager,
+		packageFilter:  packageComponentFilter,
+		cluster:        cluster,
 	}
 }
 
@@ -143,12 +145,12 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"architecture": schema.StringAttribute{
-				Description: "System architecture of the target cluster.",
-				Required:    true,
-				// TODO(erickson): Add validator for architecture values?
-				//Validators: []validator.String{
-				//	stringvalidator.OneOf("amd64", "arm64"),
-				//},
+				Description: "System architecture of the target cluster. Defaults to the provider default architecture.",
+				Optional:    true,
+				Computed:    true,
+				Validators: []validator.String{
+					stringvalidator.OneOf("amd64", "arm64"),
+				},
 			},
 			"version": schema.StringAttribute{
 				Description: "Version of the deployed UDS package.",
@@ -334,10 +336,10 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 
 // PackageResource defines the resource implementation.
 type PackageResource struct {
-	providerData  *customProviderData
-	packager      udsPackager.Packager
-	cluster       udsCluster.Cluster
-	packageFilter udsPackager.PackageComponentFilter
+	providerConfig *udsProviderConfig
+	packager       udsPackager.Packager
+	cluster        udsCluster.Cluster
+	packageFilter  udsPackager.PackageComponentFilter
 }
 
 // ValidateConfig ensures validation between interdependant fields within a PackageResourceModel.
@@ -358,7 +360,7 @@ func (r *PackageResource) Configure(_ context.Context, req resource.ConfigureReq
 		return
 	}
 
-	r.providerData = req.ProviderData.(*customProviderData)
+	r.providerConfig = req.ProviderData.(*udsProviderConfig)
 
 	// Initialize the packager if it wasn't set in NewPackageResource
 	if r.packager == nil {
@@ -438,6 +440,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	data.Name = types.StringValue(deployedPackage.Name)
 	data.Version = types.StringValue(deployedPackage.Data.Metadata.Version)
 	data.Kind = types.StringValue(string(deployedPackage.Data.Kind))
+	data.Architecture = types.StringValue(deployedPackage.Data.Metadata.Architecture)
 
 	// populate the package metadata type.
 	// TODO(clint): this is ugly and I got it from https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/custom
@@ -511,7 +514,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-	packageSource, err := getPackageSource(data, *r.providerData)
+	packageSource, err := getPackageSource(data, *r.providerConfig)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error determine package source",
@@ -558,18 +561,19 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	// TODO(erickson): Do we need configurable remote options?
 	remoteOpts := zarfPackager.RemoteOptions{
-		PlainHTTP:             r.providerData.InsecureForceHTTP,
-		InsecureSkipTLSVerify: r.providerData.InsecureSkipTLSVerification,
+		PlainHTTP:             r.providerConfig.InsecureForceHTTP,
+		InsecureSkipTLSVerify: r.providerConfig.InsecureSkipTLSVerification,
 	}
 
 	loadOpts := zarfPackager.LoadOptions{
 		Filter:                  r.packageFilter.ForRemove([]string{}),
-		Architecture:            getArchitecture(data, *r.providerData),
+		Architecture:            getArchitecture(data, *r.providerConfig),
 		PublicKeyPath:           publicKeyPath,
 		SkipSignatureValidation: skipSignatureValidation,
 		RemoteOptions:           remoteOpts,
 		CachePath:               zarfConfig.ZarfDefaultCachePath,
 	}
+
 	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, c, packageSource, "", loadOpts)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -597,6 +601,37 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 }
 
+// ModifyPlan handles plan modifications for computed attributes that depend on provider configuration
+func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	// Only modify if we have a plan (not a destroy operation)
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan PackageResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var config PackageResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// If architecture is not explicitly set in config, set it to provider default
+	if config.Architecture.IsNull() && r.providerConfig != nil {
+		defaultArch := r.providerConfig.DefaultArchitecture
+		tflog.Debug(ctx, "ModifyPlan: Setting architecture to provider default", map[string]any{
+			"DefaultArchitecture": defaultArch,
+			"PlanArchitecture":    plan.Architecture.ValueString(),
+		})
+		plan.Architecture = types.StringValue(defaultArch)
+		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+	}
+}
+
 // ImportState imports the resource state from an external system.
 func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
@@ -605,13 +640,13 @@ func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportSt
 func (r *PackageResource) getRemoteOptions() zarfPackager.RemoteOptions {
 	// TODO(erickson): configure remote options from provider config
 	return zarfPackager.RemoteOptions{
-		PlainHTTP:             r.providerData.InsecureForceHTTP,
-		InsecureSkipTLSVerify: r.providerData.InsecureSkipTLSVerification,
+		PlainHTTP:             r.providerConfig.InsecureForceHTTP,
+		InsecureSkipTLSVerify: r.providerConfig.InsecureSkipTLSVerification,
 	}
 }
 
 func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
-	packageSource, err := getPackageSource(model, *r.providerData)
+	packageSource, err := getPackageSource(model, *r.providerConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -631,7 +666,7 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 	// TODO(erickson): add support for Shasum, CachePath, OCIConcurrency?
 	loadOpt := zarfPackager.LoadOptions{
 		Filter:                  zarfFilters.Empty(),
-		Architecture:            getArchitecture(model, *r.providerData),
+		Architecture:            getArchitecture(model, *r.providerConfig),
 		PublicKeyPath:           publicKeyPath,
 		SkipSignatureValidation: skipSignatureValidation,
 		RemoteOptions:           r.getRemoteOptions(),
@@ -661,7 +696,7 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	}
 
 	// get a reference to the ZarfPackage
-	packageSource, err := getPackageSource(plan, *r.providerData)
+	packageSource, err := getPackageSource(plan, *r.providerConfig)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error getting package source",
@@ -670,7 +705,7 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 		return
 	}
 	loadOpts := zarfPackager.LoadOptions{
-		Architecture: getArchitecture(plan, *r.providerData),
+		Architecture: getArchitecture(plan, *r.providerConfig),
 		Filter:       r.packageFilter.ForRemove(componentsToRemove),
 		CachePath:    zarfConfig.ZarfDefaultCachePath,
 	}
@@ -700,7 +735,7 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	// Fetch a new zarfPackage from the cluster, with a new filter of components
 	if foundRequired {
 		loadOpts := zarfPackager.LoadOptions{
-			Architecture: getArchitecture(plan, *r.providerData),
+			Architecture: getArchitecture(plan, *r.providerConfig),
 			Filter:       r.packageFilter.ForRemove(newComponentsToRemove),
 			CachePath:    zarfConfig.ZarfDefaultCachePath,
 		}
@@ -871,6 +906,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	plan.Name = types.StringValue(pkgLayout.Pkg.Metadata.Name)
 	plan.Version = types.StringValue(pkgLayout.Pkg.Metadata.Version)
 	plan.Kind = types.StringValue(string(pkgLayout.Pkg.Kind))
+	plan.Architecture = types.StringValue(getArchitecture(plan, *r.providerConfig))
 
 	pkgMetaData, err := newPackageMetadata(pkgLayout)
 	if err != nil {
@@ -1091,15 +1127,15 @@ func deleteNestedValue(root map[string]any, path string) {
 	}
 }
 
-func getArchitecture(pkg PackageResourceModel, providerData customProviderData) string {
-	if providerData.BundleArch != "" {
-		return providerData.BundleArch
+func getArchitecture(pkg PackageResourceModel, providerConfig udsProviderConfig) string {
+	if !pkg.Architecture.IsNull() && !pkg.Architecture.IsUnknown() {
+		return pkg.Architecture.ValueString()
 	}
-	return pkg.Architecture.ValueString()
+	return providerConfig.DefaultArchitecture
 }
 
-func getPackageSource(pkg PackageResourceModel, providerData customProviderData) (string, error) {
-	_ = providerData // TODO: Will be used for future local cache package download/lookup logic
+func getPackageSource(pkg PackageResourceModel, providerConfig udsProviderConfig) (string, error) {
+	_ = providerConfig // TODO: Will be used for future local cache package download/lookup logic
 	source := pkg.Source.ValueString()
 
 	if udsValidator.ValidateOCIReferencePackageSource(source) == nil {
@@ -1279,7 +1315,6 @@ func newPackageMetadata(pkgLayout *zarfLayout.PackageLayout) (types.Object, erro
 		for _, diag := range diags.Errors() {
 			diagErrors = append(diagErrors, fmt.Errorf("%s: %s", diag.Summary(), diag.Detail()))
 		}
-		return meta, fmt.Errorf("failed to create package metadata: %w", errors.Join(diagErrors...))
 	}
 
 	return meta, nil
