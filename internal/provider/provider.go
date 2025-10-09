@@ -95,21 +95,21 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 		resp.Diagnostics.AddAttributeError(
 			path.Root("default_architecture"),
 			configErrorSummaryUnknownProviderConfigValue,
-			"Unkown configuration value for the default architecture. Either target apply the source of the value first, set the value statically in the configuration, or use the UDS_DEFAULT_ARCHITECTURE environment variable.",
+			"Unknown configuration value for the default architecture. Either target apply the source of the value first, set the value statically in the configuration, or use the UDS_DEFAULT_ARCHITECTURE environment variable.",
 		)
 	}
 	if config.InsecureForceHTTP.IsUnknown() {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("insecure_force_http"),
 			configErrorSummaryUnknownProviderConfigValue,
-			"Unkown configuration value for the insecure force HTTP flag. Either target apply the source of the value first, set the value statically in the configuration, or use the UDS_INSECURE_FORCE_HTTP environment variable.",
+			"Unknown configuration value for the insecure force HTTP flag. Either target apply the source of the value first, set the value statically in the configuration, or use the UDS_INSECURE_FORCE_HTTP environment variable.",
 		)
 	}
 	if config.InsecureSkipTLSVerify.IsUnknown() {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("insecure_skip_tls_verification"),
 			configErrorSummaryUnknownProviderConfigValue,
-			"Unkown configuration value for the insecure skip TLS verification flag. Either target apply the source of the value first, set the value statically in the configuration, or use the UDS_INSECURE_SKIP_TLS_VERIFICATION environment variable.",
+			"Unknown configuration value for the insecure skip TLS verification flag. Either target apply the source of the value first, set the value statically in the configuration, or use the UDS_INSECURE_SKIP_TLS_VERIFICATION environment variable.",
 		)
 	}
 	if resp.Diagnostics.HasError() {
@@ -119,7 +119,7 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 	defaultArchitecture, _, err := resolveProviderStringConfig(ctx, config.DefaultArchitecture, "UDS_DEFAULT_ARCHITECTURE", runtime.GOARCH, "default_architecture",
 		strings.ToLower, // transformer
 		func(value string) error { // validator
-			if !IsValidArchitecture(value) {
+			if !isValidArchitecture(value) {
 				return fmt.Errorf("architecture must be `amd64` or `arm64`, received %q", value)
 			}
 			return nil
@@ -262,6 +262,6 @@ func (p *udsProvider) Metadata(_ context.Context, _ provider.MetadataRequest, re
 	resp.TypeName = "uds"
 }
 
-func IsValidArchitecture(arch string) bool {
+func isValidArchitecture(arch string) bool {
 	return arch == "amd64" || arch == "arm64"
 }
