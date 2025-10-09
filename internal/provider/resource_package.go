@@ -1315,6 +1315,7 @@ func newPackageMetadata(pkgLayout *zarfLayout.PackageLayout) (types.Object, erro
 		for _, diag := range diags.Errors() {
 			diagErrors = append(diagErrors, fmt.Errorf("%s: %s", diag.Summary(), diag.Detail()))
 		}
+		return meta, fmt.Errorf("failed to create package metadata: %w", errors.Join(diagErrors...))
 	}
 
 	return meta, nil
