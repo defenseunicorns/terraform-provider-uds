@@ -87,10 +87,11 @@ type PackageResourceModel struct {
 	SensitiveVars types.Set `tfsdk:"sensitive_vars"` // Set of VariableModel objects
 
 	// readonly metadata
-	Name     types.String `tfsdk:"name"`
-	Kind     types.String `tfsdk:"kind"` // Kind reflects the type of UDS package; either ZarfInit or ZarfPackage
-	Version  types.String `tfsdk:"version"`
-	Metadata types.Object `tfsdk:"metadata"`
+	Name           types.String `tfsdk:"name"`
+	Kind           types.String `tfsdk:"kind"` // Kind reflects the type of UDS package; either ZarfInit or ZarfPackage
+	Version        types.String `tfsdk:"version"`
+	Metadata       types.Object `tfsdk:"metadata"`
+	ConnectStrings types.Set    `tfsdk:"connect_strings"` // Set of ConnectString objects
 }
 
 // ComponentModel represents a UDS package component configuration.
@@ -245,6 +246,22 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"connect_strings": schema.SetNestedAttribute{
+				Computed:    true,
+				Description: "Connect strings for connecting to services deployed by the package.",
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							Computed:    true,
+							Description: "Name of the service/connection.",
+						},
+						"description": schema.StringAttribute{
+							Computed:    true,
+							Description: "Description of the service/compute-resource that this connect string is for.",
+						},
+					},
 				},
 			},
 		},
@@ -466,6 +483,17 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 	data.Metadata = pkgMetadata
+
+	// Populate connect_strings from deployed package
+	connectStrings, err := getConnectStringsFromDeployedPackage(deployedPackage)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error converting connect strings",
+			"Could not convert connect strings: "+err.Error(),
+		)
+		return
+	}
+	data.ConnectStrings = connectStrings
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -895,11 +923,17 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 
 	tflog.Debug(ctx, "starting deploy")
-	_, err = r.packager.Deploy(ctx, pkgLayout, deployOpts)
+	deployResult, err := r.packager.Deploy(ctx, pkgLayout, deployOpts)
 	if err != nil {
 		return plan, err
 	}
 	tflog.Debug(ctx, "ending deploy")
+
+	// Populate connect strings from deploy result
+	connectStrings, err := getConnectStringsFromDeployResult(deployResult)
+	if err != nil {
+		tflog.Warn(ctx, "failed to create connect strings set", map[string]interface{}{"error": err})
+	}
 
 	// Populate/set resource computed values so that they can be saved to state
 	plan.ID = types.StringValue(computePackageID(plan.Namespace.ValueString(), pkgLayout.Pkg.Metadata.Name))
@@ -907,12 +941,15 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	plan.Version = types.StringValue(pkgLayout.Pkg.Metadata.Version)
 	plan.Kind = types.StringValue(string(pkgLayout.Pkg.Kind))
 	plan.Architecture = types.StringValue(getArchitecture(plan, *r.providerConfig))
+	plan.ConnectStrings = connectStrings
 
 	pkgMetaData, err := newPackageMetadata(pkgLayout)
 	if err != nil {
 		return plan, err
 	}
 	plan.Metadata = pkgMetaData
+
+	plan.ConnectStrings = connectStrings
 
 	return plan, err
 }
@@ -1319,4 +1356,81 @@ func newPackageMetadata(pkgLayout *zarfLayout.PackageLayout) (types.Object, erro
 	}
 
 	return meta, nil
+}
+
+func getConnectStringsFromDeployResult(deployResult zarfPackager.DeployResult) (types.Set, error) {
+	connectStrings := make(map[string]string)
+	for _, component := range deployResult.DeployedComponents {
+		for _, chart := range component.InstalledCharts {
+			for k, v := range chart.ConnectStrings {
+				connectStrings[k] = v.Description
+			}
+		}
+	}
+	return buildConnectStringsSet(connectStrings)
+}
+
+func getConnectStringsFromDeployedPackage(deployedPackage zarfState.DeployedPackage) (types.Set, error) {
+	connectStrings := make(map[string]string)
+	for name, connectString := range deployedPackage.ConnectStrings {
+		connectStrings[name] = connectString.Description
+	}
+	return buildConnectStringsSet(connectStrings)
+}
+
+func buildConnectStringsSet(connectStrings map[string]string) (types.Set, error) {
+	if len(connectStrings) == 0 {
+		return emptyConnectStringSet(), nil
+	}
+
+	connectStringObjType := types.ObjectType{
+		AttrTypes: map[string]attr.Type{
+			"name":        types.StringType,
+			"description": types.StringType,
+		},
+	}
+
+	connectStringList := make([]attr.Value, 0, len(connectStrings))
+	for name, description := range connectStrings {
+		obj, diags := types.ObjectValue(
+			map[string]attr.Type{
+				"name":        types.StringType,
+				"description": types.StringType,
+			},
+			map[string]attr.Value{
+				"name":        types.StringValue(name),
+				"description": types.StringValue(description),
+			},
+		)
+		if diags.HasError() {
+			var diagErrors []error
+			for _, diag := range diags.Errors() {
+				diagErrors = append(diagErrors, fmt.Errorf("%s: %s", diag.Summary(), diag.Detail()))
+			}
+			return types.SetNull(connectStringObjType), errors.Join(diagErrors...)
+		}
+		connectStringList = append(connectStringList, obj)
+	}
+
+	setValue, diags := types.SetValue(connectStringObjType, connectStringList)
+	if diags.HasError() {
+		var diagErrors []error
+		for _, diag := range diags.Errors() {
+			diagErrors = append(diagErrors, fmt.Errorf("%s: %s", diag.Summary(), diag.Detail()))
+		}
+		return types.SetNull(connectStringObjType), errors.Join(diagErrors...)
+	}
+	return setValue, nil
+}
+
+func emptyConnectStringSet() types.Set {
+	return types.SetValueMust(
+		types.ObjectType{
+			AttrTypes: map[string]attr.Type{
+				"name":        types.StringType,
+				"description": types.StringType,
+			},
+		},
+		[]attr.Value{}, // empty slice
+	)
 }
