@@ -6,6 +6,7 @@ package validator
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -835,6 +836,119 @@ func TestValidateOCIReferencePackageSource(t *testing.T) {
 			} else {
 				assert.Nil(t, err, "Expected no error for value %q, but got: %v", tc.value, err)
 			}
+		})
+	}
+}
+
+func TestDurationGreaterThanValidator(t *testing.T) {
+	t.Parallel()
+
+	minDuration := time.Hour // 1h
+	invalidDurationErrorSummary := "Invalid Duration"
+	durationTooShortErrorSummary := "Duration Too Short"
+
+	tests := []struct {
+		name                 string
+		duration             string
+		hasError             bool
+		expectedErrorSummary string
+	}{
+		{
+			name:     "duration value greater than minimum is valid",
+			duration: (minDuration + time.Nanosecond).String(),
+			hasError: false,
+		},
+		{
+			name:                 "duration value equal to minimum is not valid",
+			duration:             minDuration.String(),
+			hasError:             true,
+			expectedErrorSummary: durationTooShortErrorSummary,
+		},
+		{
+			name:                 "duration less than minimum is not valid",
+			duration:             (minDuration - time.Nanosecond).String(),
+			hasError:             true,
+			expectedErrorSummary: durationTooShortErrorSummary,
+		},
+		{
+			name:                 "duration value missing unit is not valid",
+			duration:             "30",
+			hasError:             true,
+			expectedErrorSummary: invalidDurationErrorSummary,
+		},
+		{
+			name:                 "duration value with unknown unit is not valid",
+			duration:             "30x",
+			hasError:             true,
+			expectedErrorSummary: invalidDurationErrorSummary,
+		},
+		{
+			name:                 "empty duration value is not valid",
+			duration:             "",
+			hasError:             true,
+			expectedErrorSummary: invalidDurationErrorSummary,
+		},
+		{
+			name:                 "non-numeric duration value is not valid",
+			duration:             "thirty minutes",
+			hasError:             true,
+			expectedErrorSummary: invalidDurationErrorSummary,
+		},
+	}
+
+	v := DurationGreaterThan(minDuration)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := validator.StringRequest{
+				ConfigValue: types.StringValue(tc.duration),
+			}
+			resp := &validator.StringResponse{
+				Diagnostics: diag.Diagnostics{},
+			}
+
+			v.ValidateString(context.Background(), req, resp)
+			if tc.hasError {
+				assert.True(t, resp.Diagnostics.HasError(), "Expected error for duration %q, but got none", tc.duration)
+				assertValidatorResponseDiagnosticsContainsErrorSummary(t, resp.Diagnostics, tc.expectedErrorSummary)
+			} else {
+				assert.False(t, resp.Diagnostics.HasError(), "Expected no error for duration %q, but got: %v", tc.duration, resp.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestDurationGreaterThanValidator_NullAndUnknown(t *testing.T) {
+	t.Parallel()
+
+	minDuration := time.Hour
+	v := DurationGreaterThan(minDuration)
+
+	tests := []struct {
+		name  string
+		value types.String
+	}{
+		{
+			name:  "null value is valid",
+			value: types.StringNull(),
+		},
+		{
+			name:  "unknown value is valid",
+			value: types.StringUnknown(),
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			req := validator.StringRequest{
+				Path:           path.Root("test"),
+				PathExpression: path.MatchRoot("test"),
+				ConfigValue:    tc.value,
+			}
+			resp := &validator.StringResponse{}
+
+			v.ValidateString(context.Background(), req, resp)
+			assert.False(t, resp.Diagnostics.HasError(), "Expected no error for %s value, but got: %v", tc.name, resp.Diagnostics)
 		})
 	}
 }
