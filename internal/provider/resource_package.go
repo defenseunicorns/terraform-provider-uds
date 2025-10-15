@@ -949,8 +949,6 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 	plan.Metadata = pkgMetaData
 
-	plan.ConnectStrings = connectStrings
-
 	return plan, err
 }
 
