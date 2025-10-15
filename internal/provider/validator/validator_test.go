@@ -188,6 +188,7 @@ func TestBlockStringAttributeUniquenessValidator_ValidateList(t *testing.T) {
 	validator, _ := NewBlockStringAttributeUniquenessValidator(blockName, attributeName)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			req := tfvalidator.ListRequest{
 				ConfigValue: tc.configValue,
 			}
@@ -287,6 +288,7 @@ func TestBlockStringAttributeUniquenessValidator_ValidateSet(t *testing.T) {
 	validator, _ := NewBlockStringAttributeUniquenessValidator(blockName, attributeName)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			req := tfvalidator.SetRequest{
 				ConfigValue: tc.configValue,
 			}
@@ -466,6 +468,7 @@ func TestNewBlockStringAttributeUniquenessValidator(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			validator, err := NewBlockStringAttributeUniquenessValidator(tc.blockName, tc.attributeName)
 
 			if tc.expectError {
@@ -899,6 +902,7 @@ func TestDurationGreaterThanValidator(t *testing.T) {
 	v := DurationGreaterThanValidator(minDuration)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			req := validator.StringRequest{
 				ConfigValue: types.StringValue(tc.duration),
 			}
@@ -938,8 +942,8 @@ func TestDurationGreaterThanValidator_NullAndUnknown(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			req := validator.StringRequest{
 				Path:           path.Root("test"),
 				PathExpression: path.MatchRoot("test"),

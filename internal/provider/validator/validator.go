@@ -200,21 +200,21 @@ func ValidateOCIReferencePackageSource(value string) error {
 	return nil
 }
 
-// durationGreaterThanValidator validates that a duration is greater than a minimum value.
-type durationGreaterThanValidator struct {
-	min time.Duration
+// DurationGreaterThanValidator creates a validator that ensures a duration is greater than a minimum value.
+func DurationGreaterThanValidator(minDuration time.Duration) validator.String {
+	return durationGreaterThanValidator{
+		minDuration: minDuration,
+	}
 }
 
-// DurationGreaterThan creates a validator that ensures a duration is greater than a minimum value.
-func DurationGreaterThanValidator(min time.Duration) validator.String {
-	return durationGreaterThanValidator{
-		min: min,
-	}
+// durationGreaterThanValidator validates that a duration is greater than a minimum value.
+type durationGreaterThanValidator struct {
+	minDuration time.Duration
 }
 
 // Description returns a plain text description of the validator.
 func (v durationGreaterThanValidator) Description(_ context.Context) string {
-	return fmt.Sprintf("value must be a valid duration greater than %s", v.min)
+	return fmt.Sprintf("value must be a valid duration greater than %s", v.minDuration)
 }
 
 // MarkdownDescription returns the markdown description for the validator.
@@ -240,11 +240,11 @@ func (v durationGreaterThanValidator) ValidateString(_ context.Context, req vali
 		return
 	}
 
-	if duration <= v.min {
+	if duration <= v.minDuration {
 		resp.Diagnostics.AddAttributeError(
 			req.Path,
 			"Duration Too Short",
-			fmt.Sprintf("The %s duration value %q must be greater than %s.", req.Path.String(), value, v.min),
+			fmt.Sprintf("The %s duration value %q must be greater than %s.", req.Path.String(), value, v.minDuration),
 		)
 	}
 }
