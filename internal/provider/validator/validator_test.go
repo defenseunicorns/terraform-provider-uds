@@ -896,7 +896,7 @@ func TestDurationGreaterThanValidator(t *testing.T) {
 		},
 	}
 
-	v := DurationGreaterThan(minDuration)
+	v := DurationGreaterThanValidator(minDuration)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			req := validator.StringRequest{
@@ -921,7 +921,7 @@ func TestDurationGreaterThanValidator_NullAndUnknown(t *testing.T) {
 	t.Parallel()
 
 	minDuration := time.Hour
-	v := DurationGreaterThan(minDuration)
+	v := DurationGreaterThanValidator(minDuration)
 
 	tests := []struct {
 		name  string

@@ -200,66 +200,30 @@ func ValidateOCIReferencePackageSource(value string) error {
 	return nil
 }
 
-// durationValidator validates that a string value is a valid duration.
-type durationValidator struct{}
-
-// Duration creates a validator that ensures a string is a valid duration format.
-func Duration() validator.String {
-	return durationValidator{}
-}
-
-// Description returns a plain text description of the validator.
-func (v durationValidator) Description(_ context.Context) string {
-	return "value must be a valid duration"
-}
-
-// MarkdownDescription returns the markdown description for the validator.
-func (v durationValidator) MarkdownDescription(ctx context.Context) string {
-	return v.Description(ctx)
-}
-
-// ValidateString validates that the string value is a valid duration.
-func (v durationValidator) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
-	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
-		return
-	}
-
-	value := req.ConfigValue.ValueString()
-
-	_, err := time.ParseDuration(value)
-	if err != nil {
-		resp.Diagnostics.AddAttributeError(
-			req.Path,
-			"Invalid Duration",
-			fmt.Sprintf("The provided value %q is not a valid duration. Valid examples: \"1h\", \"30m\", \"1h30m\", \"90s\". Error: %s", value, err.Error()),
-		)
-	}
-}
-
-// durationGreaterThan validates that a duration is greater than a minimum value.
-type durationGreaterThan struct {
+// durationGreaterThanValidator validates that a duration is greater than a minimum value.
+type durationGreaterThanValidator struct {
 	min time.Duration
 }
 
 // DurationGreaterThan creates a validator that ensures a duration is greater than a minimum value.
-func DurationGreaterThan(min time.Duration) validator.String {
-	return durationGreaterThan{
+func DurationGreaterThanValidator(min time.Duration) validator.String {
+	return durationGreaterThanValidator{
 		min: min,
 	}
 }
 
 // Description returns a plain text description of the validator.
-func (v durationGreaterThan) Description(_ context.Context) string {
+func (v durationGreaterThanValidator) Description(_ context.Context) string {
 	return fmt.Sprintf("value must be a valid duration greater than %s", v.min)
 }
 
 // MarkdownDescription returns the markdown description for the validator.
-func (v durationGreaterThan) MarkdownDescription(ctx context.Context) string {
+func (v durationGreaterThanValidator) MarkdownDescription(ctx context.Context) string {
 	return v.Description(ctx)
 }
 
 // ValidateString validates that the duration is at least the minimum value.
-func (v durationGreaterThan) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+func (v durationGreaterThanValidator) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
 	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
 		return
 	}
@@ -271,7 +235,7 @@ func (v durationGreaterThan) ValidateString(_ context.Context, req validator.Str
 		resp.Diagnostics.AddAttributeError(
 			req.Path,
 			"Invalid Duration",
-			fmt.Sprintf("The provided value %q is not a valid duration. Valid examples: \"1h\", \"30m\", \"1h30m\", \"90s\". Error: %s", value, err.Error()),
+			fmt.Sprintf("The %s value %q is not a valid duration. Valid examples: \"1h\", \"30m\", \"1h30m\", \"90s\". Error: %s", req.Path.String(), value, err.Error()),
 		)
 		return
 	}
@@ -280,7 +244,7 @@ func (v durationGreaterThan) ValidateString(_ context.Context, req validator.Str
 		resp.Diagnostics.AddAttributeError(
 			req.Path,
 			"Duration Too Short",
-			fmt.Sprintf("The provided duration %q (%s) must be at least %s.", value, duration, v.min),
+			fmt.Sprintf("The %s duration value %q must be greater than %s.", req.Path.String(), value, v.min),
 		)
 	}
 }
