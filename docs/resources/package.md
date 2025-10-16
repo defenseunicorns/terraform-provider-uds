@@ -32,6 +32,7 @@ Deploys a UDS Package.
 
 ### Read-Only
 
+- `connect_strings` (Attributes Set) Connect strings for connecting to services deployed by the package. (see [below for nested schema](#nestedatt--connect_strings))
 - `id` (String) Identifier for the deployed UDS package.
 - `kind` (String) Kind of UDS package; ZarfInitConfig or ZarfPackageConfig.
 - `metadata` (Attributes) Metadata retrieved from the UDS package (zarf.yaml). (see [below for nested schema](#nestedatt--metadata))
@@ -97,6 +98,15 @@ Required:
 
 - `name` (String) Name of the variable to set.
 - `value` (String) Value for the variable to set.
+
+
+<a id="nestedatt--connect_strings"></a>
+### Nested Schema for `connect_strings`
+
+Read-Only:
+
+- `description` (String) Description of the service/compute-resource that this connect string is for.
+- `name` (String) Name of the service/connection.
 
 
 <a id="nestedatt--metadata"></a>

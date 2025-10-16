@@ -24,6 +24,7 @@ import (
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
+	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
 
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 )
@@ -1276,6 +1277,142 @@ func TestPackageResource_Upsert_Architecture(t *testing.T) {
 				"Expected architecture %s but got %s", tc.expectedArchitecture, loadOptions.Architecture)
 
 			mockPackageComponentFilter.AssertExpectations(t)
+		})
+	}
+}
+
+func TestPackageResource_Upsert_ConnectStrings(t *testing.T) {
+	packageLayout := layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Metadata: v1alpha1.ZarfMetadata{
+				Name:        "test-package",
+				Description: "Test package",
+				Version:     "0.0.1",
+			},
+			Components: []v1alpha1.ZarfComponent{
+				{
+					Name:     "test-component",
+					Required: helpers.BoolPtr(true),
+					Default:  false,
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name                       string
+		deployResultConnectStrings map[string]zarfState.ConnectString
+		expectedConnectStrings     []struct {
+			name        string
+			description string
+		}
+	}{
+		{
+			name:                       "no connect strings results in empty set",
+			deployResultConnectStrings: map[string]zarfState.ConnectString{},
+			expectedConnectStrings:     []struct{ name, description string }{},
+		},
+		{
+			name: "one connect string results in single entity set",
+			deployResultConnectStrings: map[string]zarfState.ConnectString{
+				"test-app-1": {
+					Description: "Test application 1",
+				},
+			},
+			expectedConnectStrings: []struct{ name, description string }{
+				{
+					name:        "test-app-1",
+					description: "Test application 1",
+				},
+			},
+		},
+		{
+			name: "multiple connect strings result in multiple entities in set",
+			deployResultConnectStrings: map[string]zarfState.ConnectString{
+				"test-app-1": {
+					Description: "Test application 1",
+				},
+				"test-app-2": {
+					Description: "Test application 2",
+				},
+				"test-app-3": {
+					Description: "Test application 3",
+				},
+			},
+			expectedConnectStrings: []struct{ name, description string }{
+				{
+					name:        "test-app-1",
+					description: "Test application 1",
+				},
+				{
+					name:        "test-app-2",
+					description: "Test application 2",
+				},
+				{
+					name:        "test-app-3",
+					description: "Test application 3",
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+				&packageLayout,
+				nil,
+			)
+
+			deployResult := packager.DeployResult{
+				DeployedComponents: []zarfState.DeployedComponent{
+					{
+						Name: "test-component",
+						InstalledCharts: []zarfState.InstalledChart{
+							{
+								Namespace:      "default",
+								ChartName:      "test-chart",
+								ConnectStrings: tc.deployResultConnectStrings,
+							},
+						},
+					},
+				},
+			}
+
+			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployResult, nil)
+			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+			testModel := NewTestPackageResourceModel()
+
+			result, err := packageResource.upsert(context.Background(), testModel)
+			assert.NoError(t, err)
+			assert.False(t, result.ConnectStrings.IsNull(), "ConnectStrings should not be null")
+
+			// Verify connect strings were populated
+			expectedConnectStringsCount := len(tc.expectedConnectStrings)
+			if expectedConnectStringsCount == 0 {
+				assert.True(t, result.ConnectStrings.IsUnknown() || len(result.ConnectStrings.Elements()) == 0, "ConnectStrings should be empty")
+			} else {
+				assert.Len(t, result.ConnectStrings.Elements(), expectedConnectStringsCount)
+
+				connectStringsMap := make(map[string]string)
+				for _, elem := range result.ConnectStrings.Elements() {
+					obj := elem.(types.Object)
+					attrs := obj.Attributes()
+					name := attrs["name"].(types.String).ValueString()
+					description := attrs["description"].(types.String).ValueString()
+					connectStringsMap[name] = description
+				}
+
+				for _, expected := range tc.expectedConnectStrings {
+					description, found := connectStringsMap[expected.name]
+					assert.True(t, found, "Expected connect string %s not found", expected.name)
+					assert.Equal(t, expected.description, description, "Connect string %s has incorrect description", expected.name)
+				}
+			}
 		})
 	}
 }
