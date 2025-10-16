@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -197,4 +198,53 @@ func ValidateOCIReferencePackageSource(value string) error {
 		return err
 	}
 	return nil
+}
+
+// DurationGreaterThanValidator creates a validator that ensures a duration is greater than a minimum value.
+func DurationGreaterThanValidator(minDuration time.Duration) validator.String {
+	return durationGreaterThanValidator{
+		minDuration: minDuration,
+	}
+}
+
+// durationGreaterThanValidator validates that a duration is greater than a minimum value.
+type durationGreaterThanValidator struct {
+	minDuration time.Duration
+}
+
+// Description returns a plain text description of the validator.
+func (v durationGreaterThanValidator) Description(_ context.Context) string {
+	return fmt.Sprintf("value must be a valid duration greater than %s", v.minDuration)
+}
+
+// MarkdownDescription returns the markdown description for the validator.
+func (v durationGreaterThanValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+// ValidateString validates that the duration is at least the minimum value.
+func (v durationGreaterThanValidator) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	value := req.ConfigValue.ValueString()
+
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(
+			req.Path,
+			"Invalid Duration",
+			fmt.Sprintf("The %s value %q is not a valid duration. Valid examples: \"1h\", \"30m\", \"1h30m\", \"90s\". Error: %s", req.Path.String(), value, err.Error()),
+		)
+		return
+	}
+
+	if duration <= v.minDuration {
+		resp.Diagnostics.AddAttributeError(
+			req.Path,
+			"Duration Too Short",
+			fmt.Sprintf("The %s duration value %q must be greater than %s.", req.Path.String(), value, v.minDuration),
+		)
+	}
 }

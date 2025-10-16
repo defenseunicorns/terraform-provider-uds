@@ -171,8 +171,10 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Description: "Timeout for the deploy operation.",
 				Optional:    true,
 				Computed:    true,
-				Default:     stringdefault.StaticString("30m"),
-				// TODO(erickson): Add duration validator
+				Default:     stringdefault.StaticString("15m"),
+				Validators: []validator.String{
+					udsValidator.DurationGreaterThanValidator(0),
+				},
 			},
 			"kind": schema.StringAttribute{
 				Description: "Kind of UDS package; ZarfInitConfig or ZarfPackageConfig.",
