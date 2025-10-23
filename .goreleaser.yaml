@@ -42,7 +42,6 @@ sboms:
     documents:
       - "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json"
 
-
 release:
   extra_files:
     - glob: "terraform-registry-manifest.json"
