@@ -1,3 +1,6 @@
+# Copyright 2024 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
 # Terraform Provider release workflow.
 name: Release
 
@@ -24,6 +27,7 @@ on:
 # Releases need permissions to read and write the repository contents.
 permissions:
   contents: write
+  packages: write  # Added for GHCR
 
 jobs:
   goreleaser:
@@ -57,10 +61,14 @@ jobs:
           GOTMPDIR: "/var/tmp"
           # GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
 
-      - run: echo "$UDS_REGISTRY_TOKEN" | go tool oras login -u "$UDS_REGISTRY_USER" --password-stdin registry.defenseunicorns.com
+      - name: Login to UDS Registry
+        run: echo "$UDS_REGISTRY_TOKEN" | go tool oras login -u "$UDS_REGISTRY_USER" --password-stdin registry.defenseunicorns.com
         env:
           UDS_REGISTRY_USER: ${{ secrets.UDS_REGISTRY_USER }}
           UDS_REGISTRY_TOKEN: ${{ secrets.UDS_REGISTRY_TOKEN }}
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | go tool oras login -u "${{ github.actor }}" --password-stdin ghcr.io
 
       # https://github.com/opentofu/opentofu/blob/main/website/docs/cli/oci_registries/provider-mirror.mdx
       - name: Publish to OCI Registries
@@ -116,18 +124,33 @@ jobs:
 
           go tool oras manifest push --oci-layout "$layout:$version" "$index_to_tag"
 
-          # Copy/publish to UDS Registry
-          go tool oras cp \
-            --from-oci-layout "$layout:$version" \
-            "registry.defenseunicorns.com/ops/$name:$version"
+          # Function to publish provider and attach SBOMs to a registry
+          publish_to_registry() {
+            local registry_url=$1
+            
+            echo "Publishing to $registry_url"
+            go tool oras cp \
+              --from-oci-layout "$layout:$version" \
+              "$registry_url:$version"
 
-          # Copy/publish to GHCR with OpenTofu multi-namespace mirror structure
-          # Assumes provider source is registry.opentofu.org/defenseunicorns/TYPE
+            echo "Attaching SBOMs to $registry_url"
+            for sbom in *.sbom.json; do
+              if [ -f "$sbom" ]; then
+                go tool oras attach \
+                  --artifact-type application/spdx+json \
+                  "$registry_url:$version" \
+                  "$sbom:application/spdx+json"
+              fi
+            done
+          }
+
+          # Publish to UDS registry
+          publish_to_registry "registry.defenseunicorns.com/ops/$name"
+          
+          # Publish to GHCR
           namespace="${{ github.repository_owner }}"
           type_name="${name#terraform-provider-}"
-          go tool oras cp \
-            --from-oci-layout "$layout:$version" \
-            "ghcr.io/${{ github.repository_owner }}/opentofu-providers/$namespace/$type_name:$version"
+          publish_to_registry "ghcr.io/${{ github.repository_owner }}/opentofu-providers/$namespace/$type_name"
 
       - name: Upload release assets (if any failed)
         if: failure()
