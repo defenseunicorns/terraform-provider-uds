@@ -7,6 +7,9 @@ before:
   hooks:
     - go mod tidy
 
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
 builds:
   - env:
       - CGO_ENABLED=0
@@ -27,20 +30,18 @@ archives:
   - formats: [zip]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
-sboms:
-  - artifacts: archive
-    documents:
-      - "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json"
-
-snapshot:
-  version_template: "{{ incpatch .Version }}-snapshot"
-
 checksum:
   extra_files:
     - glob: "terraform-registry-manifest.json"
       name_template: "{{ .ProjectName }}_{{ .Version }}_manifest.json"
   name_template: "{{ .ProjectName }}_{{ .Version }}_SHA256SUMS"
   algorithm: sha256
+
+sboms:
+  - artifacts: archive
+    documents:
+      - "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json"
+
 
 release:
   extra_files:
