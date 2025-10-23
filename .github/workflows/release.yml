@@ -1,3 +1,6 @@
+# Copyright 2024 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
 # Terraform Provider release workflow.
 name: Release
 
@@ -24,6 +27,7 @@ on:
 # Releases need permissions to read and write the repository contents.
 permissions:
   contents: write
+  packages: write # Added for GHCR
 
 jobs:
   goreleaser:
@@ -57,13 +61,17 @@ jobs:
           GOTMPDIR: "/var/tmp"
           # GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
 
-      - run: echo "$UDS_REGISTRY_TOKEN" | go tool oras login -u "$UDS_REGISTRY_USER" --password-stdin registry.defenseunicorns.com
+      - name: Login to UDS Registry
+        run: echo "$UDS_REGISTRY_TOKEN" | go tool oras login -u "$UDS_REGISTRY_USER" --password-stdin registry.defenseunicorns.com
         env:
           UDS_REGISTRY_USER: ${{ secrets.UDS_REGISTRY_USER }}
           UDS_REGISTRY_TOKEN: ${{ secrets.UDS_REGISTRY_TOKEN }}
 
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | go tool oras login -u "${{ github.actor }}" --password-stdin ghcr.io
+
       # https://github.com/opentofu/opentofu/blob/main/website/docs/cli/oci_registries/provider-mirror.mdx
-      - name: Publish to UDS Registry
+      - name: Publish to OCI Registries
         shell: bash
         working-directory: dist
         run: |
@@ -116,9 +124,15 @@ jobs:
 
           go tool oras manifest push --oci-layout "$layout:$version" "$index_to_tag"
 
-          go tool oras cp \
-            --from-oci-layout "$layout:$version" \
-            "registry.defenseunicorns.com/ops/$name:$version"
+          # Publish to UDS registry
+          uds_registry_url="registry.defenseunicorns.com/ops/$name"
+          go tool oras cp --from-oci-layout "$layout:$version" "$uds_registry_url:$version"
+
+          # Publish to GHCR
+          namespace="${{ github.repository_owner }}"
+          type_name="${name#terraform-provider-}"
+          ghcr_url="ghcr.io/${{ github.repository_owner }}/opentofu-providers/$namespace/$type_name"
+          go tool oras cp --from-oci-layout "$layout:$version" "$ghcr_url:$version"
 
       - name: Upload release assets (if any failed)
         if: failure()

@@ -7,6 +7,9 @@ before:
   hooks:
     - go mod tidy
 
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
 builds:
   - env:
       - CGO_ENABLED=0
@@ -34,10 +37,26 @@ checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_SHA256SUMS"
   algorithm: sha256
 
+sboms:
+  - artifacts: archive
+    documents:
+      - "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json"
+
 release:
+  draft: true # TODO(erickson): Use draft for first release, to allow clean up of change log & release process
   extra_files:
     - glob: "terraform-registry-manifest.json"
       name_template: "{{ .ProjectName }}_{{ .Version }}_manifest.json"
+    - glob: "*.sbom.json"
 
 changelog:
-  disable: true
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "Merge pull request"
+      - "Merge branch"
