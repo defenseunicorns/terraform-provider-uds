@@ -63,7 +63,7 @@ jobs:
           UDS_REGISTRY_TOKEN: ${{ secrets.UDS_REGISTRY_TOKEN }}
 
       # https://github.com/opentofu/opentofu/blob/main/website/docs/cli/oci_registries/provider-mirror.mdx
-      - name: Publish to UDS Registry
+      - name: Publish to OCI Registries
         shell: bash
         working-directory: dist
         run: |
@@ -116,9 +116,18 @@ jobs:
 
           go tool oras manifest push --oci-layout "$layout:$version" "$index_to_tag"
 
+          # Copy/publish to UDS Registry
           go tool oras cp \
             --from-oci-layout "$layout:$version" \
             "registry.defenseunicorns.com/ops/$name:$version"
+
+          # Copy/publish to GHCR with OpenTofu multi-namespace mirror structure
+          # Assumes provider source is registry.opentofu.org/defenseunicorns/TYPE
+          namespace="${{ github.repository_owner }}"
+          type_name="${name#terraform-provider-}"
+          go tool oras cp \
+            --from-oci-layout "$layout:$version" \
+            "ghcr.io/${{ github.repository_owner }}/opentofu-providers/$namespace/$type_name:$version"
 
       - name: Upload release assets (if any failed)
         if: failure()
