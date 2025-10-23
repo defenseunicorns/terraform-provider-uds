@@ -42,6 +42,13 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
       - name: Setup golang
         uses: ./.github/actions/setup-golang
 
@@ -58,7 +65,7 @@ jobs:
           args: release --clean --timeout 60m
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GOTMPDIR: "/var/tmp"
+          GOTMPDIR: ${{ runner.temp }}
           # GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
 
       - name: Login to UDS Registry
