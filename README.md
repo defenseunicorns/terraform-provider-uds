@@ -30,7 +30,7 @@ tofu apply
 - [Kubernetes](https://kubernetes.io/) cluster with sufficient permissions
 - [kubectl](https://kubernetes.io/docs/tasks/tools/) configured to access your cluster
 - UDS packages from the following sources:
-  - OCI registry reference (e.g., `oci://ghcr.io/zarf-dev/packages/init:v0.61.0`)
+  - OCI registry reference (e.g., `oci://ghcr.io/zarf-dev/packages/init:v0.63.0`) <!-- renovate: datasource=github-tags depName=zarf-dev/zarf -->
   - Local `.tar` or `.tar.zst` archive file (e.g., `./path/to/package.tar` or `./path/to/package.tar.zst`)
 
 ### Provider Registry Authentication/Authorization
@@ -96,7 +96,8 @@ provider "uds" {
 }
 
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.61.0"
+  # renovate: datasource=github-tags depName=zarf-dev/zarf
+  source = "oci://ghcr.io/zarf-dev/packages/init:v0.63.0"
 }
 
 resource "uds_package" "podinfo" {
