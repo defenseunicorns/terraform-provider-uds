@@ -80,6 +80,7 @@ Once your OpenTofu client is configured with the OCI mirror, you can use the UDS
 
 Example configuration:
 
+<!-- renovate: datasource=github-tags depName=zarf-dev/zarf versioning=semver -->
 ```hcl
 terraform {
   required_providers {
@@ -96,7 +97,6 @@ provider "uds" {
 }
 
 resource "uds_package" "init" {
-  # renovate: datasource=github-tags depName=zarf-dev/zarf
   source = "oci://ghcr.io/zarf-dev/packages/init:v0.63.0"
 }
 
