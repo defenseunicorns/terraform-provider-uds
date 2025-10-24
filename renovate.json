@@ -53,9 +53,27 @@
       "datasourceTemplate": "github-tags"
     },
     {
-      "fileMatch": ["^README\\.md$", "\\.tf$"],
+      "fileMatch": ["\\.tf$"],
       "matchStrings": [
         "zarf-dev/packages/init:v(?<currentValue>\\d+\\.\\d+\\.\\d+)\\s*#\\s*renovate:\\s*datasource=github-tags\\s+depName=zarf-dev/zarf"
+      ],
+      "depNameTemplate": "zarf-dev/zarf",
+      "datasourceTemplate": "github-tags",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "fileMatch": ["^README\\.md$"],
+      "matchStrings": [
+        "<!--\\s*renovate:\\s*datasource=github-tags\\s+depName=zarf-dev/zarf[^>]*-->\\s*```[\\s\\S]*?zarf-dev/packages/init:v(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "zarf-dev/zarf",
+      "datasourceTemplate": "github-tags",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "fileMatch": ["\\.go$"],
+      "matchStrings": [
+        "//\\s*renovate:\\s*datasource=github-tags\\s+depName=zarf-dev/zarf\\s*\\nconst\\s+\\w+\\s*=\\s*\"v(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
       ],
       "depNameTemplate": "zarf-dev/zarf",
       "datasourceTemplate": "github-tags",
