@@ -2,7 +2,7 @@ terraform {
   required_providers {
     uds = {
       source  = "defenseunicorns/uds"
-      version = "0.0.1"
+      version = "~> 0.1.0" # renovate: datasource=github-releases depName=defenseunicorns/terraform-provider-uds
     }
   }
 }

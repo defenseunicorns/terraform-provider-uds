@@ -41,6 +41,13 @@
       "matchUpdateTypes": ["major", "minor", "patch"],
       "groupName": "readme-versions",
       "commitMessageTopic": "readme versions"
+    },
+    {
+      "matchPackageNames": ["defenseunicorns/terraform-provider-uds"],
+      "matchManagers": ["regex"],
+      "ignoreUnstable": true,
+      "groupName": "uds-provider-version",
+      "commitMessageTopic": "uds provider version"
     }
   ],
   "regexManagers": [
@@ -78,6 +85,24 @@
       "depNameTemplate": "zarf-dev/zarf",
       "datasourceTemplate": "github-tags",
       "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "fileMatch": ["\\.tf$"],
+      "matchStrings": [
+        "source\\s*=\\s*\"defenseunicorns/uds\"\\s*\\n\\s*version\\s*=\\s*\"~>\\s*(?<currentValue>\\d+\\.\\d+)\\.\\d+\"\\s*#\\s*renovate:\\s*datasource=github-releases\\s+depName=defenseunicorns/terraform-provider-uds"
+      ],
+      "depNameTemplate": "defenseunicorns/terraform-provider-uds",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver"
+    },
+    {
+      "fileMatch": ["^README\\.md$"],
+      "matchStrings": [
+        "<!--\\s*renovate:\\s*datasource=github-releases\\s+depName=defenseunicorns/terraform-provider-uds[^>]*-->\\s*```[\\s\\S]*?version\\s*=\\s*\"~>\\s*(?<currentValue>\\d+\\.\\d+)\\.\\d+\""
+      ],
+      "depNameTemplate": "defenseunicorns/terraform-provider-uds",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver"
     }
   ]
 }
