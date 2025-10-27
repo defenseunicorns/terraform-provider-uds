@@ -58,21 +58,27 @@ Currently, released/stable versions and nightly builds of the UDS provider are d
 > For now, please use the OCI registry configuration shown above.
 
 ### Configure OpenTofu Client OCI Mirror
+The OpenTofu client must be configured to pull the `defenseunicorns/uds` provider from the desired registry by configuring an OCI mirror.
+To temporarily apply this configuration, create a local CLI config file and set the `TF_CLI_CONFIG_FILE` environment variable to its path:
 
-In your $HOME/.tofurc file, add an OCI mirror configuration specifically for the `defenseunicorns/uds` provider:
-
-```hcl
+```bash
+# Create a CLI config file with the OCI mirror configuration
+UDS_TOFU_CLI_CONFIG_FILE="uds-tofurc"
+cat > "$UDS_TOFU_CLI_CONFIG_FILE" <<'EOF'
 provider_installation {
   oci_mirror {
-    url = "ghcr.io/defenseunicorns/opentofu-providers/defenseunicorns/uds"
-    include = ["defenseunicorns/uds"]
+    repository_template = "ghcr.io/defenseunicorns/opentofu-providers/defenseunicorns/uds"
+    include             = ["defenseunicorns/uds"]
   }
 
-  # For all other providers, install them directly from their origin provider registries as normal.
-  # This is optional, but recommended.
   direct {}
 }
+EOF
+
+# Set the environment variable to use this config
+export TF_CLI_CONFIG_FILE="$(pwd)/$UDS_TOFU_CLI_CONFIG_FILE"
 ```
+Alternatively, for a permanent configuration, copy the content to the [default OpenTofu  CLI configuration file](https://opentofu.org/docs/cli/config/config-file/).
 
 ### Initialize and Apply Configuration
 
