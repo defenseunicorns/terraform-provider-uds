@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"crypto/sha1"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -3254,4 +3255,53 @@ func TestFlattenComponentOverrides(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGetPackageOverrideName(t *testing.T) {
+	t.Run("oci source uses full reference", func(t *testing.T) {
+		source := "oci://ghcr.io/defenseunicorns/packages/test:latest"
+		model := NewTestPackageResourceModel(WithSource(source))
+
+		expectedHash := sha1.Sum([]byte(source))
+		expectedName := fmt.Sprintf("zarf-package-%x.tar.zst", expectedHash)
+
+		assert.Equal(t, expectedName, getPackageOverrideName(model))
+	})
+
+	t.Run("local path uses base filename", func(t *testing.T) {
+		source := filepath.Join("some", "nested", "dir", "custom-package.tar.zst")
+		model := NewTestPackageResourceModel(WithSource(source))
+
+		expectedHash := sha1.Sum([]byte(filepath.Base(source)))
+		expectedName := fmt.Sprintf("zarf-package-%x.tar.zst", expectedHash)
+
+		assert.Equal(t, expectedName, getPackageOverrideName(model))
+	})
+}
+
+func TestGetPackageSource_LocalPathOverride(t *testing.T) {
+	t.Run("returns override path for oci source when file exists", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		model := NewTestPackageResourceModel()
+		overrideFilename := getPackageOverrideName(model)
+		overridePath := filepath.Join(tempDir, overrideFilename)
+
+		err := os.WriteFile(overridePath, []byte("test"), 0o600)
+		assert.NoError(t, err)
+		defer os.Remove(overridePath)
+
+		source, err := getPackageSource(model, udsProviderConfig{LocalPathOverride: tempDir})
+		assert.NoError(t, err)
+		assert.Equal(t, overridePath, source)
+	})
+
+	t.Run("returns error when override file missing", func(t *testing.T) {
+		tempDir := t.TempDir()
+
+		model := NewTestPackageResourceModel()
+		source, err := getPackageSource(model, udsProviderConfig{LocalPathOverride: tempDir})
+		assert.Error(t, err)
+		assert.Equal(t, "", source)
+	})
 }
