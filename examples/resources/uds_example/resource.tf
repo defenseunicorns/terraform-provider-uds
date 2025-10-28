@@ -2,7 +2,7 @@ terraform {
   required_providers {
     uds = {
       source  = "defenseunicorns/uds"
-      version = "0.0.1"
+      version = "~> 0.1.0" # renovate: datasource=github-releases depName=defenseunicorns/terraform-provider-uds
     }
   }
 }
@@ -17,7 +17,8 @@ resource "uds_bundle_metadata" "example_bundle" {
 }
 
 resource "uds_package" "init" {
-  source       = "oci://ghcr.io/zarf-dev/packages/init:v0.61.0"
+  # renovate: datasource=github-tags depName=zarf-dev/zarf
+  source       = "oci://ghcr.io/zarf-dev/packages/init:v0.63.0"
   architecture = uds_bundle_metadata.example_bundle.architecture
 
   # Install optional git-server

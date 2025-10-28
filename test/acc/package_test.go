@@ -11,7 +11,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
-const initPackageVersion = "v0.60.0"
+// renovate: datasource=github-tags depName=zarf-dev/zarf
+const initPackageVersion = "v0.63.0"
 
 func TestAccPackageResource(t *testing.T) {
 	resource.Test(t, resource.TestCase{
