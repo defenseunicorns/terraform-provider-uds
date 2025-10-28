@@ -30,7 +30,6 @@ func main() {
 
 	// Check if the zarf command is being run
 	if fixzarf.IsZarf() {
-		zarfConfig.CommonOptions.Confirm = true
 		zarfConfig.ActionsCommandZarfPrefix = "zarf"
 		zarfCLI.Execute(ctx)
 		return
