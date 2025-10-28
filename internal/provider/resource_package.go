@@ -5,9 +5,12 @@ package provider
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -544,14 +547,6 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-	packageSource, err := getPackageSource(data, *r.providerConfig)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error determine package source",
-			"Could not determine package source: "+err.Error(),
-		)
-		return
-	}
 
 	// convert the terraform timeout to a time.Duration
 	deleteTimeout, err := time.ParseDuration(data.Timeout.ValueString())
@@ -604,6 +599,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		CachePath:               zarfConfig.ZarfDefaultCachePath,
 	}
 
+	packageSource := data.Name.ValueString()
 	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, c, packageSource, "", loadOpts)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -1175,6 +1171,10 @@ func getPackageSource(pkg PackageResourceModel, providerConfig udsProviderConfig
 	_ = providerConfig // TODO: Will be used for future local cache package download/lookup logic
 	source := pkg.Source.ValueString()
 
+	if providerConfig.LocalPathOverride != "" {
+		source = filepath.Join(providerConfig.LocalPathOverride, getPackageOverrideName(pkg))
+	}
+
 	if udsValidator.ValidateOCIReferencePackageSource(source) == nil {
 		// TODO: Add future local cache package download/lookup logic
 		return source, nil
@@ -1190,6 +1190,24 @@ func getPackageSource(pkg PackageResourceModel, providerConfig udsProviderConfig
 		}
 	}
 	return "", fmt.Errorf("invalid package source: %s. Must be a valid OCI distribution reference (including oci:// scheme) or local file path (absolute or relative)", source)
+}
+
+// getPackageOverrideName generates a deterministic tarball filename for a package based on its original source value.
+// Returns a filename in the format "zarf-package-{sha1-checksum}.tar.zst".
+func getPackageOverrideName(pkg PackageResourceModel) string {
+
+	sourceString := pkg.Source.ValueString()
+	if !strings.HasPrefix(sourceString, "oci://") {
+		sourceString = filepath.Base(sourceString)
+	}
+	// Compute SHA-1 checksum
+	hash := sha1.Sum([]byte(sourceString))
+	sourceChecksum := hex.EncodeToString(hash[:])
+
+	tarballNameTemplate := "zarf-package-%s.tar.zst"
+	tarballName := fmt.Sprintf(tarballNameTemplate, sourceChecksum)
+
+	return tarballName
 }
 
 func findPackageComponent(components []v1alpha1.ZarfComponent, name string) (v1alpha1.ZarfComponent, bool) {
