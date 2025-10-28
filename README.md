@@ -50,12 +50,11 @@ to pull the package from the registry. Please contact the corresponding registry
 
 Currently, released/stable versions and nightly builds of the UDS provider are distributed only through the following OCI registries:
 
-- **GitHub Container Registry (GHCR)** - `ghcr.io/defenseunicorns/opentofu-providers/defenseunicorns/uds` (recommended)
-- **UDS Registry** - `registry.defenseunicorns.com/ops/terraform-provider-uds`
+- **UDS Registry** - `registry.defenseunicorns.com/ops/terraform-provider-uds` (recommended)
+- **GitHub Container Registry (GHCR)** - `ghcr.io/defenseunicorns/opentofu-providers/defenseunicorns/uds`
 
 > **Note:** In the future, released/stable versions of the UDS provider will be published to the official
 > [OpenTofu Public Registry](https://opentofu.org/registry) for typical consumption.
-> For now, please use the OCI registry configuration shown above.
 
 ### Configure OpenTofu Client OCI Mirror
 The OpenTofu client must be configured to pull the `defenseunicorns/uds` provider from the desired private registry by configuring an OCI mirror.
@@ -67,7 +66,7 @@ UDS_TOFU_CLI_CONFIG_FILE="uds-tofurc"
 cat > "$UDS_TOFU_CLI_CONFIG_FILE" <<'EOF'
 provider_installation {
   oci_mirror {
-    repository_template = "ghcr.io/defenseunicorns/opentofu-providers/defenseunicorns/uds"
+    repository_template = "registry.defenseunicorns.com/ops/terraform-provider-uds"
     include             = ["defenseunicorns/uds"]
   }
 
