@@ -1,6 +1,6 @@
 # OpenTofu Provider for UDS (Unicorn Delivery Service)
 
-The UDS (Universal Deployment System) OpenTofu Provider enables declarative infrastructure-as-code capabilities to manage deployment of UDS packages and bundles using OpenTofu.
+The UDS (Unicorn Delivery Service) OpenTofu Provider enables declarative infrastructure-as-code capabilities to manage deployment of UDS packages and bundles using OpenTofu.
 
 ## Quick Start
 
