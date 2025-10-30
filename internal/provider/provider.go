@@ -19,6 +19,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+
+	zarfConfig "github.com/zarf-dev/zarf/src/config"
 )
 
 // configSource represents where a configuration value came from
@@ -37,6 +39,7 @@ type udsProviderConfig struct {
 	DefaultArchitecture         string
 	InsecureForceHTTP           bool
 	InsecureSkipTLSVerification bool
+	ZarfCachePath               string
 }
 
 type udsProviderModel struct {
@@ -144,17 +147,27 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 		return
 	}
 
+	zarfConfig.CommonOptions.CachePath = zarfConfig.ZarfDefaultCachePath
+	zarfCachePath, err := zarfConfig.GetAbsCachePath()
+	if err != nil {
+		resp.Diagnostics.AddError("Could not load Zarf Cache Path: ", err.Error())
+		return
+	}
+	zarfConfig.CommonOptions.CachePath = zarfCachePath
+
 	providerCfg := udsProviderConfig{
 		LocalPathOverride:           os.Getenv("UDS_LOCAL_PATH_OVERRIDE"),
 		DefaultArchitecture:         defaultArchitecture,
 		InsecureForceHTTP:           forceHTTP,
 		InsecureSkipTLSVerification: skipTLS,
+		ZarfCachePath:               zarfCachePath,
 	}
 
 	tflog.Info(ctx, "Provider configured", map[string]interface{}{
 		"default_architecture":           defaultArchitecture,
 		"insecure_force_http":            forceHTTP,
 		"insecure_skip_tls_verification": skipTLS,
+		"zarf_cache_path":                zarfCachePath,
 	})
 
 	resp.DataSourceData = &providerCfg
