@@ -46,6 +46,7 @@ type udsProviderModel struct {
 	DefaultArchitecture   types.String `tfsdk:"default_architecture"`
 	InsecureForceHTTP     types.Bool   `tfsdk:"insecure_force_http"`
 	InsecureSkipTLSVerify types.Bool   `tfsdk:"insecure_skip_tls_verification"`
+	ZarfCachePath         types.String `tfsdk:"zarf_cache_path"`
 }
 
 // New creates a new provider factory function that returns a provider instance.
@@ -80,6 +81,10 @@ func (p *udsProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *
 			"insecure_skip_tls_verification": schema.BoolAttribute{
 				Optional:            true,
 				MarkdownDescription: "Skip TLS certificate verification when fetching remote packages over HTTPS. Defaults to `false`. Can also be configured with the `UDS_INSECURE_SKIP_TLS_VERIFICATION` environment variable.",
+			},
+			"zarf_cache_path": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Filesystem path to the local Zarf cache directory. Defaults to `~/.zarf-cache`. Can also be configured with the `UDS_ZARF_CACHE_PATH` environment variable.",
 			},
 		},
 	}
@@ -118,6 +123,13 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if config.ZarfCachePath.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("zarf_cache_path"),
+			configErrorSummaryUnknownProviderConfigValue,
+			"Unknown configuration value for the zarf cache path. Either target apply the source of the value first, set the value statically in the configuration, or use the UDS_ZARF_CACHE_PATH environment variable.",
+		)
+	}
 
 	defaultArchitecture, _, err := resolveProviderStringConfig(ctx, config.DefaultArchitecture, "UDS_DEFAULT_ARCHITECTURE", runtime.GOARCH, "default_architecture",
 		strings.ToLower, // transformer
@@ -147,10 +159,24 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 		return
 	}
 
-	zarfConfig.CommonOptions.CachePath = zarfConfig.ZarfDefaultCachePath
-	zarfCachePath, err := zarfConfig.GetAbsCachePath()
+	// Resolve zarf_cache_path
+	zarfCachePath, _, err := resolveProviderStringConfig(
+		ctx,
+		config.ZarfCachePath,
+		"UDS_ZARF_CACHE_PATH",
+		zarfConfig.ZarfDefaultCachePath,
+		"zarf_cache_path",
+		nil,
+		nil,
+	)
 	if err != nil {
-		resp.Diagnostics.AddError("Could not load Zarf Cache Path: ", err.Error())
+		resp.Diagnostics.AddAttributeError(path.Root("zarf_cache_path"), configErrorSummaryInvalidProviderConfigValue, err.Error())
+		return
+	}
+	zarfConfig.CommonOptions.CachePath = zarfCachePath
+	zarfCachePath, err = zarfConfig.GetAbsCachePath()
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("zarf_cache_path"), configErrorSummaryInvalidProviderConfigValue, fmt.Sprintf("Could not resolve Zarf cache path: %s", err))
 		return
 	}
 	zarfConfig.CommonOptions.CachePath = zarfCachePath
