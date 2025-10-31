@@ -34,7 +34,6 @@ import (
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
-	zarfConfig "github.com/zarf-dev/zarf/src/config"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	zarfFilters "github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	zarfLayout "github.com/zarf-dev/zarf/src/pkg/packager/layout"
@@ -596,7 +595,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		PublicKeyPath:           publicKeyPath,
 		SkipSignatureValidation: skipSignatureValidation,
 		RemoteOptions:           remoteOpts,
-		CachePath:               zarfConfig.ZarfDefaultCachePath,
+		CachePath:               r.providerConfig.ZarfCachePath,
 	}
 
 	packageSource := data.Name.ValueString()
@@ -696,7 +695,7 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 		PublicKeyPath:           publicKeyPath,
 		SkipSignatureValidation: skipSignatureValidation,
 		RemoteOptions:           r.getRemoteOptions(),
-		CachePath:               zarfConfig.ZarfDefaultCachePath,
+		CachePath:               r.providerConfig.ZarfCachePath,
 	}
 
 	return r.packager.LoadPackage(ctx, packageSource, loadOpt)
@@ -733,7 +732,7 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	loadOpts := zarfPackager.LoadOptions{
 		Architecture: getArchitecture(plan, *r.providerConfig),
 		Filter:       r.packageFilter.ForRemove(componentsToRemove),
-		CachePath:    zarfConfig.ZarfDefaultCachePath,
+		CachePath:    r.providerConfig.ZarfCachePath,
 	}
 	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
 	if err != nil {
@@ -763,7 +762,7 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 		loadOpts := zarfPackager.LoadOptions{
 			Architecture: getArchitecture(plan, *r.providerConfig),
 			Filter:       r.packageFilter.ForRemove(newComponentsToRemove),
-			CachePath:    zarfConfig.ZarfDefaultCachePath,
+			CachePath:    r.providerConfig.ZarfCachePath,
 		}
 
 		pkg, err = r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
