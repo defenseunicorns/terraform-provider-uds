@@ -23,7 +23,7 @@ UDS Bundle Metadata resource. This resource is used to track the metadata for a 
 
 - `architecture` (String) The target cluster architecture for this package
 - `description` (String) Additional information about this package
-- `kind` (String) Kind of Zarf package; ZarfInitConfig or ZarfPackageConfig
+- `kind` (String) Kind of UDS Bundle. Currently only `UDSBundle` is supported
 - `url` (String) Link to package information when online
 
 ### Read-Only

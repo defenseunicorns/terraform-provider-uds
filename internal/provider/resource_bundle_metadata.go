@@ -7,10 +7,13 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
@@ -64,9 +67,13 @@ func (r *BundleMetadataResource) Schema(_ context.Context, _ resource.SchemaRequ
 				},
 			},
 			"kind": schema.StringAttribute{
-				Computed:            true,
 				Optional:            true,
-				MarkdownDescription: "Kind of Zarf package; ZarfInitConfig or ZarfPackageConfig",
+				Computed:            true,
+				MarkdownDescription: "Kind of UDS Bundle. Currently only `UDSBundle` is supported",
+				Default:             stringdefault.StaticString("UDSBundle"),
+				Validators: []validator.String{
+					stringvalidator.OneOf("UDSBundle"),
+				},
 			},
 			"description": schema.StringAttribute{
 				Optional:            true,
@@ -100,7 +107,6 @@ func (r *BundleMetadataResource) Create(ctx context.Context, req resource.Create
 	}
 
 	data.ID = types.StringValue(uuid.NewString())
-	data.Kind = types.StringValue("UDSBundle")
 
 	tflog.Trace(ctx, "created uds bundle metadata package resource")
 
