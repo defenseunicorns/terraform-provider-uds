@@ -58,7 +58,10 @@ resource "uds_package" "podinfo" {
     override {
       chart_name = "podinfo"
       values = [
-        { path = "replicaCount", value = "3" }
+        { path = "replicaCount", value = "3" },
+        # Use single quotes to escape the # character, which would otherwise be interpreted as a comment in HCL
+        # Also could use yamlencode("#663399") to avoid escaping
+        { path = "ui.color", value = "'#663399'" }
       ]
     }
   }
