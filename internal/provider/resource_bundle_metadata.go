@@ -54,14 +54,14 @@ func (r *BundleMetadataResource) Schema(_ context.Context, _ resource.SchemaRequ
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "Generated unique identifier",
+				MarkdownDescription: "Generated unique identifier.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"version": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Generic string set by a package author to track the package version",
+				MarkdownDescription: "Generic string set by a package author to track the bundle version.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -69,7 +69,7 @@ func (r *BundleMetadataResource) Schema(_ context.Context, _ resource.SchemaRequ
 			"kind": schema.StringAttribute{
 				Optional:            true,
 				Computed:            true,
-				MarkdownDescription: "Kind of UDS Bundle. Currently only `UDSBundle` is supported",
+				MarkdownDescription: "Kind of UDS Bundle. Currently only `UDSBundle` is supported.",
 				Default:             stringdefault.StaticString("UDSBundle"),
 				Validators: []validator.String{
 					stringvalidator.OneOf("UDSBundle"),
@@ -77,15 +77,15 @@ func (r *BundleMetadataResource) Schema(_ context.Context, _ resource.SchemaRequ
 			},
 			"description": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Additional information about this package",
+				MarkdownDescription: "Additional information about this package.",
 			},
 			"url": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Link to package information when online",
+				MarkdownDescription: "Link to package information when online.",
 			},
 			"architecture": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "The target cluster architecture for this package",
+				MarkdownDescription: "The target cluster architecture for this package.",
 			},
 		},
 	}
