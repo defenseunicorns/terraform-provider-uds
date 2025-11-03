@@ -59,8 +59,7 @@ resource "uds_package" "podinfo" {
       chart_name = "podinfo"
       values = [
         { path = "replicaCount", value = "3" },
-        # Use single quotes to escape the # character, which would otherwise be interpreted as a comment in HCL
-        # Also could use yamlencode("#663399") to avoid escaping
+        # Use single quotes or yamlencode function in single-line strings to escape special HCL characters ("#").
         { path = "ui.color", value = "'#663399'" }
       ]
     }
