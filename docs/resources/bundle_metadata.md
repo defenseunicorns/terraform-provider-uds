@@ -17,15 +17,15 @@ UDS Bundle Metadata resource. This resource is used to track the metadata for a 
 
 ### Required
 
-- `version` (String) Generic string set by a package author to track the package version
+- `version` (String) Generic string set by a package author to track the bundle version.
 
 ### Optional
 
-- `architecture` (String) The target cluster architecture for this package
-- `description` (String) Additional information about this package
-- `kind` (String) Kind of UDS Bundle. Currently only `UDSBundle` is supported
-- `url` (String) Link to package information when online
+- `architecture` (String) The target cluster architecture for this package.
+- `description` (String) Additional information about this package.
+- `kind` (String) Kind of UDS Bundle. Currently only `UDSBundle` is supported.
+- `url` (String) Link to package information when online.
 
 ### Read-Only
 
-- `id` (String) Generated unique identifier
+- `id` (String) Generated unique identifier.

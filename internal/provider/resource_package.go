@@ -133,11 +133,11 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Description: "Identifier for the deployed UDS package.",
+				MarkdownDescription: "Identifier for the deployed UDS package.",
 				Computed:    true,
 			},
 			"name": schema.StringAttribute{
-				Description: "Name of the UDS Package.",
+				MarkdownDescription: "Name of the UDS Package.",
 				Computed:    true,
 			},
 			"source": schema.StringAttribute{
@@ -148,7 +148,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"architecture": schema.StringAttribute{
-				Description: "System architecture of the target cluster. Defaults to the provider default architecture.",
+				MarkdownDescription: "System architecture of the target cluster. Defaults to the provider default architecture.",
 				Optional:    true,
 				Computed:    true,
 				Validators: []validator.String{
@@ -156,21 +156,21 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"version": schema.StringAttribute{
-				Description: "Version of the deployed UDS package.",
+				MarkdownDescription: "Version of the deployed UDS package.",
 				Computed:    true,
 			},
 			"public_key": schema.StringAttribute{
-				Description: "Raw public key value to validate against a signed UDS package.",
+				MarkdownDescription: "Raw public key value to validate against a signed UDS package.",
 				Optional:    true,
 			},
 			"skip_signature_validation": schema.BoolAttribute{
-				Description: "Skip validating the signature of a signed UDS package.",
+				MarkdownDescription: "Skip validating the signature of a signed UDS package.",
 				Computed:    true,
 				Optional:    true,
 				Default:     booldefault.StaticBool(false),
 			},
 			"timeout": schema.StringAttribute{
-				Description: "Timeout for the deploy operation.",
+				MarkdownDescription: "Timeout for the deploy operation.",
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString("15m"),
@@ -179,38 +179,38 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"kind": schema.StringAttribute{
-				Description: "Kind of UDS package; ZarfInitConfig or ZarfPackageConfig.",
+				MarkdownDescription: "Kind of UDS package; ZarfInitConfig or ZarfPackageConfig.",
 				Computed:    true,
 			},
 			"metadata": &schema.SingleNestedAttribute{
 				Computed:    true,
-				Description: "Metadata retrieved from the UDS package (zarf.yaml).",
+				MarkdownDescription: "Metadata retrieved from the UDS package (zarf.yaml).",
 				Attributes: map[string]schema.Attribute{
 					"name": &schema.StringAttribute{
 						Computed:    true,
-						Description: "Name of the UDS package. Used to identify the deployed UDS package.",
+						MarkdownDescription: "Name of the UDS package. Used to identify the deployed UDS package.",
 					},
 					"description": &schema.StringAttribute{
 						Computed:    true,
-						Description: "Description of the UDS package, from the zarf.yaml file.",
+						MarkdownDescription: "Description of the UDS package, from the zarf.yaml file.",
 					},
 					"version": &schema.StringAttribute{
 						Computed:    true,
-						Description: "Version of the UDS package, from the zarf.yaml file.",
+						MarkdownDescription: "Version of the UDS package, from the zarf.yaml file.",
 					},
 				},
 			},
 			"vars": schema.SetNestedAttribute{
-				Description: "UDS package variables to set.",
+				MarkdownDescription: "UDS package variables to set.",
 				Optional:    true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
-							Description: "Name of the variable to set.",
+							MarkdownDescription: "Name of the variable to set.",
 							Required:    true,
 						},
 						"value": schema.StringAttribute{
-							Description: "Value for the variable to set.",
+							MarkdownDescription: "Value for the variable to set.",
 							Required:    true,
 						},
 					},
@@ -223,16 +223,16 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"sensitive_vars": schema.SetNestedAttribute{
-				Description: "Sensitive UDS package variables to set.",
+				MarkdownDescription: "Sensitive UDS package variables to set.",
 				Optional:    true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
-							Description: "Name of the variable to set.",
+							MarkdownDescription: "Name of the variable to set.",
 							Required:    true,
 						},
 						"value": schema.StringAttribute{
-							Description: "Value for the variable to set.",
+							MarkdownDescription: "Value for the variable to set.",
 							Required:    true,
 							Sensitive:   true,
 						},
@@ -246,7 +246,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"namespace": schema.StringAttribute{
-				Description: "[Alpha] Namespace in which to deploy the UDS package.",
+				MarkdownDescription: "[Alpha] Namespace in which to deploy the UDS package.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -254,16 +254,16 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 			"connect_strings": schema.SetNestedAttribute{
 				Computed:    true,
-				Description: "Connect strings for connecting to services deployed by the package.",
+				MarkdownDescription: "Connect strings for connecting to services deployed by the package.",
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
 							Computed:    true,
-							Description: "Name of the service/connection.",
+							MarkdownDescription: "Name of the service/connection.",
 						},
 						"description": schema.StringAttribute{
 							Computed:    true,
-							Description: "Description of the service/compute-resource that this connect string is for.",
+							MarkdownDescription: "Description of the service/compute-resource that this connect string is for.",
 						},
 					},
 				},
@@ -271,34 +271,34 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 		},
 		Blocks: map[string]schema.Block{
 			"component": schema.SetNestedBlock{
-				Description: "Component configuration to include/exclude in the UDS package deployment.",
+				MarkdownDescription: "Component configuration to include/exclude in the UDS package deployment.",
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
 							Required:    true,
-							Description: "Name of the component.",
+							MarkdownDescription: "Name of the component.",
 						},
 					},
 					Blocks: map[string]schema.Block{
 						"override": schema.SetNestedBlock{
-							Description: "Helm chart overrides for the component.",
+							MarkdownDescription: "Helm chart overrides for the component.",
 							NestedObject: schema.NestedBlockObject{
 								Attributes: map[string]schema.Attribute{
 									"chart_name": schema.StringAttribute{
 										Required:    true,
-										Description: "Name of the Helm chart to set values for.",
+										MarkdownDescription: "Name of the Helm chart to set values for.",
 									},
 									"values": schema.SetNestedAttribute{
-										Description: "Set of path values to set for the chart.",
+										MarkdownDescription: "Set of path values to set for the chart.",
 										Optional:    true,
 										NestedObject: schema.NestedAttributeObject{
 											Attributes: map[string]schema.Attribute{
 												"path": schema.StringAttribute{
-													Description: "The dot-notation path in the chart values to set.",
+													MarkdownDescription: "The dot-notation path in the chart values to set.",
 													Required:    true,
 												},
 												"value": schema.StringAttribute{
-													Description: "The raw YAML value to set at the specified path.",
+													MarkdownDescription: "The raw YAML value to set at the specified path.",
 													Required:    true,
 												},
 											},
@@ -311,16 +311,16 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 										},
 									},
 									"sensitive_values": schema.SetNestedAttribute{
-										Description: "Set of sensitive key-value overrides for the chart.",
+										MarkdownDescription: "Set of sensitive key-value overrides for the chart.",
 										Optional:    true,
 										NestedObject: schema.NestedAttributeObject{
 											Attributes: map[string]schema.Attribute{
 												"path": schema.StringAttribute{
-													Description: "The dot-notation path in the chart values to set.",
+													MarkdownDescription: "The dot-notation path in the chart values to set.",
 													Required:    true,
 												},
 												"value": schema.StringAttribute{
-													Description: "The raw YAML sensitive value to set at the specified path.",
+													MarkdownDescription: "The raw YAML sensitive value to set at the specified path.",
 													Required:    true,
 													Sensitive:   true,
 												},
