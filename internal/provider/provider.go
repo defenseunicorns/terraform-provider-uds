@@ -181,6 +181,19 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 	}
 	zarfConfig.CommonOptions.CachePath = zarfCachePath
 
+	// Enable Zarf's alpha values feature via environment variable
+	// Zarf's Viper config automatically reads ZARF_FEATURES due to AutomaticEnv()
+	if err := os.Setenv("ZARF_FEATURES", "values=true"); err != nil {
+		resp.Diagnostics.AddError(
+			"Failed to enable Zarf values feature",
+			fmt.Sprintf("Could not set ZARF_FEATURES environment variable: %s", err),
+		)
+		return
+	}
+	tflog.Debug(ctx, "Enabled Zarf values feature", map[string]any{
+		"ZARF_FEATURES": "values=true",
+	})
+
 	providerCfg := udsProviderConfig{
 		LocalPathOverride:           os.Getenv("UDS_LOCAL_PATH_OVERRIDE"),
 		DefaultArchitecture:         defaultArchitecture,

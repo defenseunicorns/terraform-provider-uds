@@ -1,0 +1,6 @@
+# Base values file for acceptance testing
+domain: test.example.com
+replicas: 2
+sso:
+  enabled: true
+  provider: keycloak

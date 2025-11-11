@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -32,6 +34,7 @@ import (
 	"github.com/defenseunicorns/terraform-provider-uds/internal/fileutil"
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
+	"github.com/defenseunicorns/terraform-provider-uds/internal/value"
 
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
@@ -84,9 +87,10 @@ type PackageResourceModel struct {
 	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
 	Namespace               types.String `tfsdk:"namespace"`
 
-	Components    types.Set `tfsdk:"component"`      // Set of ComponentModel objects
-	Vars          types.Set `tfsdk:"vars"`           // Set of VariableModel objects
-	SensitiveVars types.Set `tfsdk:"sensitive_vars"` // Set of VariableModel objects
+	Components    types.Set  `tfsdk:"component"`      // Set of ComponentModel objects
+	Vars          types.Set  `tfsdk:"vars"`           // Set of VariableModel objects
+	SensitiveVars types.Set  `tfsdk:"sensitive_vars"` // Set of VariableModel objects
+	ValuesFiles   types.List `tfsdk:"values_files"`   // List of values files to use for helm charts
 
 	// readonly metadata
 	Name           types.String `tfsdk:"name"`
@@ -243,6 +247,24 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						v, _ := udsValidator.NewBlockStringAttributeUniquenessValidator("sensitive_var", "name")
 						return v
 					}(),
+				},
+			},
+			"values_files": schema.ListAttribute{
+				ElementType: types.StringType,
+				Optional:    true,
+				MarkdownDescription: "[Alpha] List of YAML values files to apply to the package. " +
+					"Files are processed in order with later files taking precedence over earlier ones. " +
+					"Paths can be absolute or relative to the Terraform module directory. " +
+					"Requires the Zarf package to be built with values support. " +
+					"This feature is alpha and requires the Zarf values feature to be enabled.",
+				Validators: []validator.List{
+					// Add custom validator to check file extensions
+					listvalidator.ValueStringsAre(
+						stringvalidator.RegexMatches(
+							regexp.MustCompile(`\.(yaml|yml)$`),
+							"values files must have .yaml or .yml extension",
+						),
+					),
 				},
 			},
 			"namespace": schema.StringAttribute{
@@ -897,6 +919,28 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, err
 	}
 
+	// Extract values files from plan
+	var valuesFiles []string
+	if !plan.ValuesFiles.IsNull() && !plan.ValuesFiles.IsUnknown() {
+		diags := plan.ValuesFiles.ElementsAs(ctx, &valuesFiles, false)
+		if diags.HasError() {
+			return plan, fmt.Errorf("failed to extract values files: %v", diags)
+		}
+
+		// Resolve relative paths and validate file existence
+		for i, vf := range valuesFiles {
+			absPath, err := r.resolveValuesFilePath(vf)
+			if err != nil {
+				return plan, fmt.Errorf("values file '%s' not found: %w", vf, err)
+			}
+			valuesFiles[i] = absPath
+			tflog.Debug(ctx, "Resolved values file", map[string]any{
+				"original": vf,
+				"resolved": absPath,
+			})
+		}
+	}
+
 	// TODO(erickson): Add support for Retries, OCIConcurrency?
 	deployOpts := zarfPackager.DeployOptions{
 		AdoptExistingResources: false,
@@ -912,6 +956,23 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 			PushUsername: zarfState.ZarfRegistryPushUser,
 		},
 		IsInteractive: false,
+	}
+
+	// Parse values files using our vendored value package and populate the embedded Values field
+	if len(valuesFiles) > 0 {
+		vals, err := value.ParseFiles(ctx, valuesFiles, value.ParseFilesOptions{})
+		if err != nil {
+			return plan, fmt.Errorf("failed to parse values files: %w", err)
+		}
+		// Initialize the embedded Values field (which is of type zarf's internal value.Values)
+		// We can't directly assign our vendored type, so we copy the underlying map entries
+		deployOpts.Values = make(map[string]any)
+		for k, v := range vals {
+			deployOpts.Values[k] = v
+		}
+		tflog.Debug(ctx, "Parsed values files", map[string]any{
+			"file_count": len(valuesFiles),
+		})
 	}
 
 	filter := r.packageFilter.ForDeploy(optionalComponents)
@@ -1451,4 +1512,29 @@ func emptyConnectStringSet() types.Set {
 		},
 		[]attr.Value{}, // empty slice
 	)
+}
+
+// resolveValuesFilePath resolves relative paths to absolute paths and validates existence
+func (r *PackageResource) resolveValuesFilePath(filePath string) (string, error) {
+	// If already absolute, just validate it exists
+	if filepath.IsAbs(filePath) {
+		if _, err := os.Stat(filePath); err != nil {
+			return "", err
+		}
+		return filePath, nil
+	}
+
+	// For relative paths, resolve against current working directory
+	// This matches standard Terraform behavior for file() functions
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get current working directory: %w", err)
+	}
+
+	absPath := filepath.Join(cwd, filePath)
+	if _, err := os.Stat(absPath); err != nil {
+		return "", err
+	}
+
+	return absPath, nil
 }

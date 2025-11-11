@@ -1,0 +1,5 @@
+# Override values file for acceptance testing
+replicas: 5
+storage:
+  backend: s3
+  bucket: test-bucket

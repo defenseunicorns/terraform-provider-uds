@@ -69,3 +69,55 @@ resource "uds_package" "init" {
   architecture = "%s"
 }
 `, initPackageVersion, runtime.GOARCH)
+
+func TestAccPackage_ValuesFiles(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Test with a single values file
+			{
+				Config: testAccPackageWithSingleValuesFile,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("uds_package.init", "values_files.#", "1"),
+					resource.TestCheckResourceAttr("uds_package.init", "values_files.0", "test/acc/testdata/base-values.yaml"),
+					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", initPackageVersion),
+				),
+			},
+			// Test with multiple values files
+			{
+				Config: testAccPackageWithMultipleValuesFiles,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("uds_package.init", "values_files.#", "2"),
+					resource.TestCheckResourceAttr("uds_package.init", "values_files.0", "test/acc/testdata/base-values.yaml"),
+					resource.TestCheckResourceAttr("uds_package.init", "values_files.1", "test/acc/testdata/override-values.yaml"),
+					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", initPackageVersion),
+				),
+			},
+			// Delete testing automatically occurs in TestCase
+		},
+	})
+}
+
+var testAccPackageWithSingleValuesFile = fmt.Sprintf(`
+resource "uds_package" "init" {
+  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
+  architecture = "%s"
+
+  values_files = [
+    "test/acc/testdata/base-values.yaml"
+  ]
+}
+`, initPackageVersion, runtime.GOARCH)
+
+var testAccPackageWithMultipleValuesFiles = fmt.Sprintf(`
+resource "uds_package" "init" {
+  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
+  architecture = "%s"
+
+  values_files = [
+    "test/acc/testdata/base-values.yaml",
+    "test/acc/testdata/override-values.yaml"
+  ]
+}
+`, initPackageVersion, runtime.GOARCH)

@@ -79,3 +79,14 @@ resource "uds_package" "dos_games" {
   #    curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub
   #public_key                = file("dosgames.pub") 
 }
+
+# Example: Using values files for package configuration
+resource "uds_package" "podinfo_with_values" {
+  source = "oci://ghcr.io/defenseunicorns/uds-cli/podinfo:0.0.2"
+
+  # Specify one or more values files
+  values_files = [
+    "${path.module}/base-values.yaml",
+    "${path.module}/environment-values.yaml",
+  ]
+}

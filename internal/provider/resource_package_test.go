@@ -3305,3 +3305,217 @@ func TestGetPackageSource_LocalPathOverride(t *testing.T) {
 		assert.Equal(t, "", source)
 	})
 }
+
+func TestPackageResource_ResolveValuesFilePath(t *testing.T) {
+	t.Run("resolves absolute path successfully", func(t *testing.T) {
+		r := &PackageResource{}
+		tmpFile := filepath.Join(t.TempDir(), "values.yaml")
+		err := os.WriteFile(tmpFile, []byte("test: value"), 0o644)
+		assert.NoError(t, err)
+
+		resolved, err := r.resolveValuesFilePath(tmpFile)
+		assert.NoError(t, err)
+		assert.Equal(t, tmpFile, resolved)
+	})
+
+	t.Run("returns error for non-existent absolute path", func(t *testing.T) {
+		r := &PackageResource{}
+		nonExistent := "/nonexistent/path/to/values.yaml"
+
+		_, err := r.resolveValuesFilePath(nonExistent)
+		assert.Error(t, err)
+		assert.True(t, os.IsNotExist(err))
+	})
+
+	t.Run("resolves relative path successfully", func(t *testing.T) {
+		r := &PackageResource{}
+
+		// Create a temp file in current working directory
+		cwd, err := os.Getwd()
+		assert.NoError(t, err)
+
+		tmpFile := filepath.Join(cwd, "test-values.yaml")
+		err = os.WriteFile(tmpFile, []byte("test: value"), 0o644)
+		assert.NoError(t, err)
+		defer os.Remove(tmpFile)
+
+		resolved, err := r.resolveValuesFilePath("test-values.yaml")
+		assert.NoError(t, err)
+		assert.Equal(t, tmpFile, resolved)
+	})
+
+	t.Run("returns error for non-existent relative path", func(t *testing.T) {
+		r := &PackageResource{}
+
+		_, err := r.resolveValuesFilePath("nonexistent-values.yaml")
+		assert.Error(t, err)
+		assert.True(t, os.IsNotExist(err))
+	})
+}
+
+func TestPackageResource_Upsert_ValuesFiles(t *testing.T) {
+	packageLayout := layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Metadata: v1alpha1.ZarfMetadata{
+				Name:        "test-package",
+				Description: "Test package",
+				Version:     "0.0.1",
+			},
+			Components: []v1alpha1.ZarfComponent{
+				{
+					Name:     "test-component",
+					Required: helpers.BoolPtr(true),
+					Default:  false,
+				},
+			},
+		},
+	}
+
+	t.Run("parses single values file successfully", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		valuesFile := filepath.Join(tmpDir, "values.yaml")
+		err := os.WriteFile(valuesFile, []byte("domain: example.com\nreplicas: 3"), 0o644)
+		assert.NoError(t, err)
+
+		mockPackager := &MockPackager{}
+		mockPackageComponentFilter := &MockPackageComponentFilter{}
+		mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+		mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+		mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+		packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+		// Create model with values_files
+		model := NewTestPackageResourceModel()
+		model.ValuesFiles, _ = types.ListValue(types.StringType, []attr.Value{
+			types.StringValue(valuesFile),
+		})
+
+		_, err = packageResource.upsert(context.Background(), model)
+		assert.NoError(t, err)
+
+		// Verify Deploy was called with Values populated
+		for _, call := range mockPackager.Calls {
+			if call.Method == "Deploy" {
+				deployOptions := call.Arguments[2].(zarfPackager.DeployOptions)
+				assert.NotNil(t, deployOptions.Values)
+				assert.Equal(t, "example.com", deployOptions.Values["domain"])
+				// YAML parses integers as uint64
+				assert.Equal(t, uint64(3), deployOptions.Values["replicas"])
+			}
+		}
+	})
+
+	t.Run("parses multiple values files with correct merge order", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// First file
+		valuesFile1 := filepath.Join(tmpDir, "values1.yaml")
+		err := os.WriteFile(valuesFile1, []byte("domain: first.com\nreplicas: 2"), 0o644)
+		assert.NoError(t, err)
+
+		// Second file (should override first)
+		valuesFile2 := filepath.Join(tmpDir, "values2.yaml")
+		err = os.WriteFile(valuesFile2, []byte("replicas: 5\nstorage:\n  backend: s3"), 0o644)
+		assert.NoError(t, err)
+
+		mockPackager := &MockPackager{}
+		mockPackageComponentFilter := &MockPackageComponentFilter{}
+		mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+		mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+		mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+		packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+		// Create model with multiple values_files
+		model := NewTestPackageResourceModel()
+		model.ValuesFiles, _ = types.ListValue(types.StringType, []attr.Value{
+			types.StringValue(valuesFile1),
+			types.StringValue(valuesFile2),
+		})
+
+		_, err = packageResource.upsert(context.Background(), model)
+		assert.NoError(t, err)
+
+		// Verify Deploy was called with merged Values
+		for _, call := range mockPackager.Calls {
+			if call.Method == "Deploy" {
+				deployOptions := call.Arguments[2].(zarfPackager.DeployOptions)
+				assert.NotNil(t, deployOptions.Values)
+				// domain should be from first file
+				assert.Equal(t, "first.com", deployOptions.Values["domain"])
+				// replicas should be overridden by second file (YAML parses as uint64)
+				assert.Equal(t, uint64(5), deployOptions.Values["replicas"])
+				// storage should be from second file
+				storage, ok := deployOptions.Values["storage"].(map[string]any)
+				assert.True(t, ok)
+				assert.Equal(t, "s3", storage["backend"])
+			}
+		}
+	})
+
+	t.Run("returns error for missing values file", func(t *testing.T) {
+		mockPackager := &MockPackager{}
+		mockPackageComponentFilter := &MockPackageComponentFilter{}
+		mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+		mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+		packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+		model := NewTestPackageResourceModel()
+		model.ValuesFiles, _ = types.ListValue(types.StringType, []attr.Value{
+			types.StringValue("/nonexistent/values.yaml"),
+		})
+
+		_, err := packageResource.upsert(context.Background(), model)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "not found")
+	})
+
+	t.Run("returns error for malformed YAML in values file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		valuesFile := filepath.Join(tmpDir, "bad-values.yaml")
+		err := os.WriteFile(valuesFile, []byte("invalid: yaml: content: [unclosed"), 0o644)
+		assert.NoError(t, err)
+
+		mockPackager := &MockPackager{}
+		mockPackageComponentFilter := &MockPackageComponentFilter{}
+		mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+		mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+		packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+		model := NewTestPackageResourceModel()
+		model.ValuesFiles, _ = types.ListValue(types.StringType, []attr.Value{
+			types.StringValue(valuesFile),
+		})
+
+		_, err = packageResource.upsert(context.Background(), model)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to parse values files")
+	})
+
+	t.Run("handles empty values_files list", func(t *testing.T) {
+		mockPackager := &MockPackager{}
+		mockPackageComponentFilter := &MockPackageComponentFilter{}
+		mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+		mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+		mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+		packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+		model := NewTestPackageResourceModel()
+		// ValuesFiles is not set, should be null/empty
+
+		_, err := packageResource.upsert(context.Background(), model)
+		assert.NoError(t, err)
+
+		// Verify Deploy was called with nil/empty Values
+		for _, call := range mockPackager.Calls {
+			if call.Method == "Deploy" {
+				deployOptions := call.Arguments[2].(zarfPackager.DeployOptions)
+				assert.Empty(t, deployOptions.Values)
+			}
+		}
+	})
+}
