@@ -2,7 +2,7 @@ module github.com/defenseunicorns/terraform-provider-uds
 
 go 1.25.0
 
-toolchain go1.25.3
+toolchain go1.25.4
 
 tool (
 	github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs
