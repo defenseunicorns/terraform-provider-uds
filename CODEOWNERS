@@ -1,0 +1,5 @@
+* @defenseunicorns/uds-cli
+
+# Additional privileged files
+/CODEOWNERS @jeff-mccoy @daveworth
+/LICENS* @jeff-mccoy @austenbryan
