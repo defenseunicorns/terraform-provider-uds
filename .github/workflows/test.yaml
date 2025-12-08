@@ -29,10 +29,10 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
       - uses: ./.github/actions/setup-golang
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@e7fa5ac41e1cf5b7d48e45e42232ce7ada589601 # v9.1.0
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
         with:
           version: latest
 
@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: Install UDS CLI
         uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1.0.1
@@ -60,7 +60,7 @@ jobs:
         run: uds run test-acc
 
       - name: Save Logs
-        uses: defenseunicorns/uds-core/.github/actions/save-logs@2649090fff7085b6cbcec5d31c23a47d15a9fdef
+        uses: defenseunicorns/uds-core/.github/actions/save-logs@f471eb913d6873a0e6cb7cc167dca088432d0259
         if: always()
         with:
           suffix: acc
@@ -69,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: Install UDS CLI
         uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1.0.1
@@ -84,7 +84,7 @@ jobs:
         run: uds run test-unit
 
       - name: Save Logs
-        uses: defenseunicorns/uds-core/.github/actions/save-logs@2649090fff7085b6cbcec5d31c23a47d15a9fdef
+        uses: defenseunicorns/uds-core/.github/actions/save-logs@f471eb913d6873a0e6cb7cc167dca088432d0259
         if: always()
         with:
           suffix: unit
