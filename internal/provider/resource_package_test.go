@@ -974,7 +974,7 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 						Value: types.StringValue("sensitive value"),
 					},
 					{
-						Name:  types.StringValue("sensitive varjable_2"),
+						Name:  types.StringValue("sensitive variable_2"),
 						Value: types.StringValue("sensitive value"),
 					},
 				}),
@@ -1108,6 +1108,22 @@ func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T
 			expectedCallToDeploy:                         true,
 		},
 		{
+			name:                         "public key provided with signature validation enabled for unsigned package loads package with public key file",
+			publicKey:                    "test-public-key",
+			skipSignatureValidation:      false,
+			zarfPackagerLoadPackageError: nil,
+			expectedLoadPackageWithPublicKeyPathProvided: true,
+			expectedCallToDeploy:                         true,
+		},
+		{
+			name:                         "public key provided with signature validation disabled for unsigned package loads package with public key file",
+			publicKey:                    "test-public-key",
+			skipSignatureValidation:      true,
+			zarfPackagerLoadPackageError: nil,
+			expectedLoadPackageWithPublicKeyPathProvided: true,
+			expectedCallToDeploy:                         true,
+		},
+		{
 			name:                         "public key provided with signature validation enabled for signed package loads package with public key file",
 			publicKey:                    "test-public-key",
 			skipSignatureValidation:      false,
@@ -1116,11 +1132,11 @@ func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T
 			expectedCallToDeploy:                         true,
 		},
 		{
-			name:                         "package key provided with signature validation disabled for signed package loads package without public key file",
+			name:                         "package key provided with signature validation disabled for signed package loads package with public key file",
 			publicKey:                    "test-public-key",
 			skipSignatureValidation:      true,
 			zarfPackagerLoadPackageError: nil,
-			expectedLoadPackageWithPublicKeyPathProvided: false,
+			expectedLoadPackageWithPublicKeyPathProvided: true,
 			expectedCallToDeploy:                         true,
 		},
 		{
