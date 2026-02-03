@@ -1387,7 +1387,7 @@ func newPackageMetadata(pkgLayout *zarfLayout.PackageLayout) (types.Object, erro
 	meta, diags := types.ObjectValue(elementTypes, elements)
 
 	if diags.HasError() {
-		var diagErrors []error
+		diagErrors := make([]error, 0, len(diags.Errors()))
 		for _, diag := range diags.Errors() {
 			diagErrors = append(diagErrors, fmt.Errorf("%s: %s", diag.Summary(), diag.Detail()))
 		}
@@ -1442,7 +1442,7 @@ func buildConnectStringsSet(connectStrings map[string]string) (types.Set, error)
 			},
 		)
 		if diags.HasError() {
-			var diagErrors []error
+			diagErrors := make([]error, 0, len(diags.Errors()))
 			for _, diag := range diags.Errors() {
 				diagErrors = append(diagErrors, fmt.Errorf("%s: %s", diag.Summary(), diag.Detail()))
 			}
@@ -1453,7 +1453,7 @@ func buildConnectStringsSet(connectStrings map[string]string) (types.Set, error)
 
 	setValue, diags := types.SetValue(connectStringObjType, connectStringList)
 	if diags.HasError() {
-		var diagErrors []error
+		diagErrors := make([]error, 0, len(diags.Errors()))
 		for _, diag := range diags.Errors() {
 			diagErrors = append(diagErrors, fmt.Errorf("%s: %s", diag.Summary(), diag.Detail()))
 		}
