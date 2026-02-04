@@ -788,7 +788,7 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 	return pkgLayout, nil
 }
 
-// getEffectiveSignatureVerification determines whether to verify package signatures based based on the
+// getEffectiveSignatureVerification determines whether to verify package signatures based on the
 // verify_signature and (deprecated) skip_signature_validation attributes.
 func getEffectiveSignatureVerification(model PackageResourceModel) bool {
 	// Use verify_signature if set and skip_signature_validation not set
