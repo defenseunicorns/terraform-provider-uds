@@ -36,8 +36,10 @@ import (
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	zarfFilters "github.com/zarf-dev/zarf/src/pkg/packager/filters"
+	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfLayout "github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
+	zarfUtils "github.com/zarf-dev/zarf/src/pkg/utils"
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
@@ -439,7 +441,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error getting deployed packages",
-			"Failed to get deployed packages:"+err.Error(),
+			"Failed to get deployed packages: "+err.Error(),
 		)
 		return
 	}
@@ -563,13 +565,12 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Could not connect to cluster",
-			"Error connecting to cluster:"+err.Error(),
+			"Error connecting to cluster: "+err.Error(),
 		)
 		return
 	}
 
-	skipSignatureValidation := data.SkipSignatureValidation.ValueBool()
-	publicKeyPath, err := getTempPublicKeyPath(data.PublicKey.ValueString(), skipSignatureValidation)
+	publicKeyPath, err := getTempPublicKeyPath(data.PublicKey.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Public key path error",
@@ -590,12 +591,12 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 
 	loadOpts := zarfPackager.LoadOptions{
-		Filter:                  r.packageFilter.ForRemove([]string{}),
-		Architecture:            getArchitecture(data, *r.providerConfig),
-		PublicKeyPath:           publicKeyPath,
-		SkipSignatureValidation: skipSignatureValidation,
-		RemoteOptions:           remoteOpts,
-		CachePath:               r.providerConfig.ZarfCachePath,
+		Filter:               r.packageFilter.ForRemove([]string{}),
+		Architecture:         getArchitecture(data, *r.providerConfig),
+		PublicKeyPath:        publicKeyPath,
+		VerificationStrategy: layout.VerifyNever,
+		RemoteOptions:        remoteOpts,
+		CachePath:            r.providerConfig.ZarfCachePath,
 	}
 
 	packageSource := data.Name.ValueString()
@@ -677,8 +678,7 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 	}
 
 	// generate a temporary public key file if needed
-	skipSignatureValidation := model.SkipSignatureValidation.ValueBool()
-	publicKeyPath, err := getTempPublicKeyPath(model.PublicKey.ValueString(), skipSignatureValidation)
+	publicKeyPath, err := getTempPublicKeyPath(model.PublicKey.ValueString())
 	if err != nil {
 		return nil, err
 	}
@@ -690,15 +690,35 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 
 	// TODO(erickson): add support for Shasum, CachePath, OCIConcurrency?
 	loadOpt := zarfPackager.LoadOptions{
-		Filter:                  zarfFilters.Empty(),
-		Architecture:            getArchitecture(model, *r.providerConfig),
-		PublicKeyPath:           publicKeyPath,
-		SkipSignatureValidation: skipSignatureValidation,
-		RemoteOptions:           r.getRemoteOptions(),
-		CachePath:               r.providerConfig.ZarfCachePath,
+		Filter:               zarfFilters.Empty(),
+		Architecture:         getArchitecture(model, *r.providerConfig),
+		PublicKeyPath:        publicKeyPath,
+		VerificationStrategy: layout.VerifyNever,
+		RemoteOptions:        r.getRemoteOptions(),
+		CachePath:            r.providerConfig.ZarfCachePath,
 	}
 
-	return r.packager.LoadPackage(ctx, packageSource, loadOpt)
+	pkgLayout, err := r.packager.LoadPackage(ctx, packageSource, loadOpt)
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify package signature
+	enforceSignatureVerification := !model.SkipSignatureValidation.ValueBool()
+	verifyOpts := zarfUtils.DefaultVerifyBlobOptions()
+	verifyOpts.KeyRef = publicKeyPath
+	err = pkgLayout.VerifyPackageSignature(ctx, verifyOpts)
+	if err != nil {
+		// Error only if package is signed and enforcing signature verification
+		if enforceSignatureVerification && pkgLayout.IsSigned() {
+			return nil, err
+		}
+
+		// Only warn if package is unsigned or not enforcing signature verification
+		tflog.Warn(ctx, "package signature could not be verified", map[string]any{"error": err.Error()})
+	}
+
+	return pkgLayout, nil
 }
 
 func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string, resp *resource.UpdateResponse) {
@@ -852,7 +872,7 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	return r.upsert(ctx, plan)
 }
 
-// TODO(erickson): Remove response paramater and return an error after refactoring removeComponents to do the same
+// TODO(erickson): Remove response parameter and return an error after refactoring removeComponents to do the same
 func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel, resp *resource.UpdateResponse) (PackageResourceModel, error) {
 
 	// TODO(erickson): Need to revisit this logic. If deploy errors, can we recover?
@@ -1285,15 +1305,16 @@ func validateUniqueVarNames(model PackageResourceModel, resp *resource.ValidateC
 	}
 }
 
-func getTempPublicKeyPath(publicKey string, skipSignatureValidation bool) (string, error) {
-	var err error
-	publicKeyPath := ""
-	if !skipSignatureValidation && publicKey != "" {
-		publicKeyPath, err = fileutil.CreateTempPublicKeyFile(publicKey)
-		if err != nil {
-			return "", err
-		}
+func getTempPublicKeyPath(publicKey string) (string, error) {
+	if publicKey == "" {
+		return "", nil
 	}
+
+	publicKeyPath, err := fileutil.CreateTempPublicKeyFile(publicKey)
+	if err != nil {
+		return "", err
+	}
+
 	return publicKeyPath, nil
 }
 
@@ -1366,7 +1387,7 @@ func newPackageMetadata(pkgLayout *zarfLayout.PackageLayout) (types.Object, erro
 	meta, diags := types.ObjectValue(elementTypes, elements)
 
 	if diags.HasError() {
-		var diagErrors []error
+		diagErrors := make([]error, 0, len(diags.Errors()))
 		for _, diag := range diags.Errors() {
 			diagErrors = append(diagErrors, fmt.Errorf("%s: %s", diag.Summary(), diag.Detail()))
 		}
@@ -1421,7 +1442,7 @@ func buildConnectStringsSet(connectStrings map[string]string) (types.Set, error)
 			},
 		)
 		if diags.HasError() {
-			var diagErrors []error
+			diagErrors := make([]error, 0, len(diags.Errors()))
 			for _, diag := range diags.Errors() {
 				diagErrors = append(diagErrors, fmt.Errorf("%s: %s", diag.Summary(), diag.Detail()))
 			}
@@ -1432,7 +1453,7 @@ func buildConnectStringsSet(connectStrings map[string]string) (types.Set, error)
 
 	setValue, diags := types.SetValue(connectStringObjType, connectStringList)
 	if diags.HasError() {
-		var diagErrors []error
+		diagErrors := make([]error, 0, len(diags.Errors()))
 		for _, diag := range diags.Errors() {
 			diagErrors = append(diagErrors, fmt.Errorf("%s: %s", diag.Summary(), diag.Detail()))
 		}
