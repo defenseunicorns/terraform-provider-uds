@@ -15,6 +15,7 @@ import (
 
 	"github.com/defenseunicorns/pkg/helpers/v2"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stretchr/testify/assert"
@@ -117,6 +118,12 @@ func WithSkipSignatureValidation(skip bool) PackageResourceModelDataOption {
 	}
 }
 
+func WithVerifySignature(verify bool) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.VerifySignature = types.BoolValue(verify)
+	}
+}
+
 func WithTimeout(timeout string) PackageResourceModelDataOption {
 	return func(model *PackageResourceModel) {
 		model.Timeout = types.StringValue(timeout)
@@ -154,6 +161,7 @@ func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) Pack
 		Architecture:            types.StringValue(runtime.GOARCH),
 		PublicKey:               types.StringValue(""),
 		SkipSignatureValidation: types.BoolValue(false),
+		VerifySignature:         types.BoolValue(true),
 		Timeout:                 types.StringValue("10m"),
 		Namespace:               types.StringValue(""),
 		Components:              componentSliceToSet([]ComponentModel{}),
@@ -1081,11 +1089,11 @@ func TestPackageResource_Upsert_NamespaceOverride(t *testing.T) {
 	}
 }
 
-// Unit tests for upsert method public key and skip signature validation
-func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T) {
+func TestPackageResource_Upsert_PublicKeyAndPackageSignatureVerification(t *testing.T) {
 	tests := []struct {
 		name                                         string
 		publicKey                                    string
+		verifySignature                              bool
 		skipSignatureValidation                      bool
 		zarfPackagerLoadPackageError                 error
 		expectedLoadPackageWithPublicKeyPathProvided bool
@@ -1094,6 +1102,7 @@ func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T
 		{
 			name:                         "public key not provided with signature validation enabled for unsigned package loads package without public key file",
 			publicKey:                    "",
+			verifySignature:              true,
 			skipSignatureValidation:      false,
 			zarfPackagerLoadPackageError: nil,
 			expectedLoadPackageWithPublicKeyPathProvided: false,
@@ -1102,6 +1111,7 @@ func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T
 		{
 			name:                         "public key not provided with signature validation disabled for unsigned package loads package without public key file",
 			publicKey:                    "",
+			verifySignature:              false,
 			skipSignatureValidation:      true,
 			zarfPackagerLoadPackageError: nil,
 			expectedLoadPackageWithPublicKeyPathProvided: false,
@@ -1110,6 +1120,7 @@ func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T
 		{
 			name:                         "public key provided with signature validation enabled for unsigned package loads package with public key file",
 			publicKey:                    "test-public-key",
+			verifySignature:              true,
 			skipSignatureValidation:      false,
 			zarfPackagerLoadPackageError: nil,
 			expectedLoadPackageWithPublicKeyPathProvided: true,
@@ -1118,6 +1129,7 @@ func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T
 		{
 			name:                         "public key provided with signature validation disabled for unsigned package loads package with public key file",
 			publicKey:                    "test-public-key",
+			verifySignature:              false,
 			skipSignatureValidation:      true,
 			zarfPackagerLoadPackageError: nil,
 			expectedLoadPackageWithPublicKeyPathProvided: true,
@@ -1126,6 +1138,7 @@ func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T
 		{
 			name:                         "public key provided with signature validation enabled for signed package loads package with public key file",
 			publicKey:                    "test-public-key",
+			verifySignature:              true,
 			skipSignatureValidation:      false,
 			zarfPackagerLoadPackageError: nil,
 			expectedLoadPackageWithPublicKeyPathProvided: true,
@@ -1134,6 +1147,7 @@ func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T
 		{
 			name:                         "package key provided with signature validation disabled for signed package loads package with public key file",
 			publicKey:                    "test-public-key",
+			verifySignature:              false,
 			skipSignatureValidation:      true,
 			zarfPackagerLoadPackageError: nil,
 			expectedLoadPackageWithPublicKeyPathProvided: true,
@@ -1142,6 +1156,7 @@ func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T
 		{
 			name:                         "signed package load error when public key path not provided and signature validation enabled returns error without deploying",
 			publicKey:                    "",
+			verifySignature:              true,
 			skipSignatureValidation:      false,
 			zarfPackagerLoadPackageError: fmt.Errorf("package is signed but no key was provided"),
 			expectedLoadPackageWithPublicKeyPathProvided: false,
@@ -1150,6 +1165,7 @@ func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T
 		{
 			name:                         "unsigned package load error when public key path provided and signature validation enabled returns error without deploying",
 			publicKey:                    "test-public-key",
+			verifySignature:              true,
 			skipSignatureValidation:      false,
 			zarfPackagerLoadPackageError: fmt.Errorf("a key was provided but the package is not signed"),
 			expectedLoadPackageWithPublicKeyPathProvided: true,
@@ -1158,6 +1174,7 @@ func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T
 		{
 			name:                         "signed package load when public key path provided and signature validation enabled with mismatched or malformed key returns error without deploying",
 			publicKey:                    "mismatched-or-malformed-public-key",
+			verifySignature:              true,
 			skipSignatureValidation:      false,
 			zarfPackagerLoadPackageError: fmt.Errorf("any error regarding mistmatched or malfored key"),
 			expectedLoadPackageWithPublicKeyPathProvided: true,
@@ -1167,6 +1184,9 @@ func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			// TODO: Remove when (deprecated) skip_signature_validation removed
+			assert.NotEqual(t, tc.verifySignature, tc.skipSignatureValidation, "verify_signature and skip_signature_validation attribute values cannot be equal (conflict)")
+
 			mockPackager := &MockPackager{}
 			mockPackageComponentFilter := &MockPackageComponentFilter{}
 			if tc.zarfPackagerLoadPackageError == nil {
@@ -1188,6 +1208,7 @@ func TestPackageResource_Upsert_PublicKeyAndSkipSignatureValidation(t *testing.T
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 			testModel := NewTestPackageResourceModel(
 				WithPublicKey(tc.publicKey),
+				WithVerifySignature(tc.verifySignature),
 				WithSkipSignatureValidation(tc.skipSignatureValidation),
 			)
 			_, err := packageResource.upsert(context.Background(), testModel)
@@ -3320,4 +3341,174 @@ func TestGetPackageSource_LocalPathOverride(t *testing.T) {
 		assert.Error(t, err)
 		assert.Equal(t, "", source)
 	})
+}
+
+func TestPackageResource_ValidateConfig_SignatureVerificationConflict(t *testing.T) {
+	tests := []struct {
+		name        string
+		configFunc  func() PackageResourceModel
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "no error if neither VerifySignature or SkipSignatureValidation attributes set",
+			configFunc: func() PackageResourceModel {
+				model := NewTestPackageResourceModel()
+				model.SkipSignatureValidation = types.BoolNull()
+				model.VerifySignature = types.BoolNull()
+				return model
+			},
+			expectError: false,
+		},
+		{
+			name: "no error if only VerifySignature set",
+			configFunc: func() PackageResourceModel {
+				model := NewTestPackageResourceModel(WithVerifySignature(false))
+				model.SkipSignatureValidation = types.BoolNull()
+				return model
+			},
+			expectError: false,
+		},
+		{
+			name: "no error if only SkipSignatureValidation set",
+			configFunc: func() PackageResourceModel {
+				model := NewTestPackageResourceModel(WithSkipSignatureValidation(true))
+				model.VerifySignature = types.BoolNull()
+				return model
+			},
+			expectError: false,
+		},
+		{
+			name: "no error if VerifySignature set to true and SkipSignatureValidation set to false",
+			configFunc: func() PackageResourceModel {
+				return NewTestPackageResourceModel(WithVerifySignature(true), WithSkipSignatureValidation(false))
+			},
+			expectError: false,
+		},
+		{
+			name: "no error if VerifySignature set to false and SkipSignatureValidation set to true",
+			configFunc: func() PackageResourceModel {
+				return NewTestPackageResourceModel(WithVerifySignature(false), WithSkipSignatureValidation(true))
+			},
+			expectError: false,
+		},
+		{
+			name: "conflicting values error if VerifySignature and SkipSignatureValidation both set to true",
+			configFunc: func() PackageResourceModel {
+				return NewTestPackageResourceModel(WithVerifySignature(true), WithSkipSignatureValidation(true))
+			},
+			expectError: true,
+			errorMsg:    "conflicting values",
+		},
+		{
+			name: "conflicting values error if VerifySignature and SkipSignatureValidation both set to false",
+			configFunc: func() PackageResourceModel {
+				return NewTestPackageResourceModel(WithVerifySignature(false), WithSkipSignatureValidation(false))
+			},
+			expectError: true,
+			errorMsg:    "conflicting values",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			model := tc.configFunc()
+			resp := &resource.ValidateConfigResponse{
+				Diagnostics: diag.Diagnostics{},
+			}
+
+			validateSignatureVerificationAttributes(model, resp)
+
+			if tc.expectError {
+				assert.True(t, resp.Diagnostics.HasError(), "expected error but got none")
+				if tc.errorMsg != "" {
+					found := false
+					errorDetails := ""
+					for _, d := range resp.Diagnostics.Errors() {
+						errorDetails += d.Summary() + ": " + d.Detail() + "\n"
+						if strings.Contains(d.Summary()+d.Detail(), tc.errorMsg) {
+							found = true
+							break
+						}
+					}
+					assert.True(t, found, "expected error to contain '%s', got: %s", tc.errorMsg, errorDetails)
+				}
+			} else {
+				assert.False(t, resp.Diagnostics.HasError(), "expected no error but got: %v", resp.Diagnostics.Errors())
+			}
+		})
+	}
+}
+
+// TODO: Remove when skip_signature_validation removed
+func TestPackageResource_GetEffectiveSignatureVerification(t *testing.T) {
+	tests := []struct {
+		name                    string
+		verifySignature         *bool // nil = not set
+		skipSignatureValidation *bool // nil = not set
+		expected                bool
+	}{
+		{
+			name:                    "neither VerifySignature or SkipSignatureValidation set returns true",
+			verifySignature:         nil,
+			skipSignatureValidation: nil,
+			expected:                true,
+		},
+		{
+			name:                    "only VerifySignature set to true returns true",
+			verifySignature:         helpers.BoolPtr(true),
+			skipSignatureValidation: nil,
+			expected:                true,
+		},
+		{
+			name:                    "only VerifySignature set to false returns false",
+			verifySignature:         helpers.BoolPtr(false),
+			skipSignatureValidation: nil,
+			expected:                false,
+		},
+		{
+			name:                    "only SkipSignatureValidation set to true returns false",
+			verifySignature:         nil,
+			skipSignatureValidation: helpers.BoolPtr(true),
+			expected:                false,
+		},
+		{
+			name:                    "only SkipSignatureValidation set to false returns true",
+			verifySignature:         nil,
+			skipSignatureValidation: helpers.BoolPtr(false),
+			expected:                true,
+		},
+		{
+			name:                    "VerifySignature set to true and SkipSignatureValidation set to false returns true",
+			verifySignature:         helpers.BoolPtr(true),
+			skipSignatureValidation: helpers.BoolPtr(false),
+			expected:                true,
+		},
+		{
+			name:                    "VerifySignature set to false and SkipSignatureValidation set to true returns false",
+			verifySignature:         helpers.BoolPtr(false),
+			skipSignatureValidation: helpers.BoolPtr(true),
+			expected:                false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			model := PackageResourceModel{}
+
+			if tc.verifySignature == nil {
+				model.VerifySignature = types.BoolNull()
+			} else {
+				model.VerifySignature = types.BoolValue(*tc.verifySignature)
+			}
+			if tc.skipSignatureValidation == nil {
+				model.SkipSignatureValidation = types.BoolNull()
+			} else {
+				model.SkipSignatureValidation = types.BoolValue(*tc.skipSignatureValidation)
+			}
+
+			result := getEffectiveSignatureVerification(model)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
 }
