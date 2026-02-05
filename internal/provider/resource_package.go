@@ -85,6 +85,7 @@ type PackageResourceModel struct {
 	Timeout                 types.String `tfsdk:"timeout"`
 	PublicKey               types.String `tfsdk:"public_key"`
 	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
+	VerifySignature         types.Bool   `tfsdk:"verify_signature"`
 	Namespace               types.String `tfsdk:"namespace"`
 
 	Components    types.Set `tfsdk:"component"`      // Set of ComponentModel objects
@@ -166,11 +167,19 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				MarkdownDescription: "Raw public key value to validate against a signed UDS package.",
 				Optional:            true,
 			},
+			// TODO: Remove skip_signature_validation attribute in subsequent release
 			"skip_signature_validation": schema.BoolAttribute{
 				MarkdownDescription: "Skip validating the signature of a signed UDS package.",
+				DeprecationMessage:  "This attribute is deprecated. Use `verify_signature` instead. The `skip_signature_validation` attribute will be removed in a future version.",
 				Computed:            true,
 				Optional:            true,
 				Default:             booldefault.StaticBool(false),
+			},
+			"verify_signature": schema.BoolAttribute{
+				MarkdownDescription: "Verify the signature of a UDS package. When enabled, a signed package with an invalid or missing signature will fail to deploy. When disabled, the package will continue to deploy with signature verification issues logged as warnings.",
+				Computed:            true,
+				Optional:            true,
+				Default:             booldefault.StaticBool(true),
 			},
 			"timeout": schema.StringAttribute{
 				MarkdownDescription: "Timeout for the deploy operation.",
@@ -376,6 +385,7 @@ func (r *PackageResource) ValidateConfig(ctx context.Context, req resource.Valid
 		return
 	}
 	validateUniqueVarNames(model, resp)
+	validateSignatureVerificationAttributes(model, resp)
 }
 
 // Configure configures the resource with provider data.
@@ -655,8 +665,26 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 			"PlanArchitecture":    plan.Architecture.ValueString(),
 		})
 		plan.Architecture = types.StringValue(defaultArch)
-		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 	}
+
+	// Migrate signature verification attributes
+	syncSignatureVerificationAttributes(ctx, &config, &plan)
+
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+}
+
+// syncSignatureVerificationAttributes syncs skip_signature_validation and verify_signature attributes
+// to ensure they are consistent in the plan.
+func syncSignatureVerificationAttributes(ctx context.Context, config *PackageResourceModel, plan *PackageResourceModel) {
+	effective := getEffectiveSignatureVerification(*config)
+
+	plan.VerifySignature = types.BoolValue(effective)
+	plan.SkipSignatureValidation = types.BoolValue(!effective)
+
+	tflog.Debug(ctx, "Synchronized signature verification attributes", map[string]any{
+		"verify_signature":          plan.VerifySignature.ValueBool(),
+		"skip_signature_validation": plan.SkipSignatureValidation.ValueBool(),
+	})
 }
 
 // ImportState imports the resource state from an external system.
@@ -704,7 +732,7 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 	}
 
 	// Verify package signature
-	enforceSignatureVerification := !model.SkipSignatureValidation.ValueBool()
+	enforceSignatureVerification := getEffectiveSignatureVerification(model)
 	verifyOpts := zarfUtils.DefaultVerifyBlobOptions()
 	verifyOpts.KeyRef = publicKeyPath
 	err = pkgLayout.VerifyPackageSignature(ctx, verifyOpts)
@@ -719,6 +747,23 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 	}
 
 	return pkgLayout, nil
+}
+
+// getEffectiveSignatureVerification determines whether to verify package signatures based on the
+// verify_signature and (deprecated) skip_signature_validation attributes.
+func getEffectiveSignatureVerification(model PackageResourceModel) bool {
+	// Use verify_signature if set and skip_signature_validation not set
+	if !model.VerifySignature.IsNull() && !model.VerifySignature.IsUnknown() {
+		return model.VerifySignature.ValueBool()
+	}
+
+	// Use skip_signature_validation if set and verify_signature not set
+	if !model.SkipSignatureValidation.IsNull() && !model.SkipSignatureValidation.IsUnknown() {
+		return !model.SkipSignatureValidation.ValueBool()
+	}
+
+	// Verify by default
+	return true
 }
 
 func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string, resp *resource.UpdateResponse) {
@@ -1301,6 +1346,30 @@ func validateUniqueVarNames(model PackageResourceModel, resp *resource.ValidateC
 		resp.Diagnostics.AddError(
 			"Duplicate variable name",
 			fmt.Sprintf("The variable name %q is defined more than once across `vars` and `sensitive_vars`. Names must be unique.", name),
+		)
+	}
+}
+
+// validateSignatureVerificationAttributes validates that verify_signature and (deprecated) skip_signature_validation
+// don't have conflicting values when both are explicitly set.
+func validateSignatureVerificationAttributes(model PackageResourceModel, resp *resource.ValidateConfigResponse) {
+	// Only need to validate if both attributes are explicitly set
+	if model.SkipSignatureValidation.IsNull() || model.SkipSignatureValidation.IsUnknown() || model.VerifySignature.IsNull() || model.VerifySignature.IsUnknown() {
+		return
+	}
+
+	// Conflict when both are true or both are false
+	skip := model.SkipSignatureValidation.ValueBool()
+	verify := model.VerifySignature.ValueBool()
+	if skip == verify {
+		resp.Diagnostics.AddError(
+			"Conflicting signature verification configuration",
+			fmt.Sprintf(
+				"The attributes 'skip_signature_validation=%t' and 'verify_signature=%t' have conflicting values. "+
+					"Please use only 'verify_signature' (recommended) or ensure both attributes are consistent. "+
+					"Note: 'skip_signature_validation' is deprecated and will be removed in a future version.",
+				skip, verify,
+			),
 		)
 	}
 }
