@@ -40,6 +40,7 @@ import (
 	zarfLayout "github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
 	zarfUtils "github.com/zarf-dev/zarf/src/pkg/utils"
+	zarfTypes "github.com/zarf-dev/zarf/src/types"
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
@@ -585,7 +586,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}()
 
 	// TODO(erickson): Do we need configurable remote options?
-	remoteOpts := zarfPackager.RemoteOptions{
+	remoteOpts := zarfTypes.RemoteOptions{
 		PlainHTTP:             r.providerConfig.InsecureForceHTTP,
 		InsecureSkipTLSVerify: r.providerConfig.InsecureSkipTLSVerification,
 	}
@@ -663,9 +664,8 @@ func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportSt
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
-func (r *PackageResource) getRemoteOptions() zarfPackager.RemoteOptions {
-	// TODO(erickson): configure remote options from provider config
-	return zarfPackager.RemoteOptions{
+func (r *PackageResource) getRemoteOptions() zarfTypes.RemoteOptions {
+	return zarfTypes.RemoteOptions{
 		PlainHTTP:             r.providerConfig.InsecureForceHTTP,
 		InsecureSkipTLSVerify: r.providerConfig.InsecureSkipTLSVerification,
 	}
