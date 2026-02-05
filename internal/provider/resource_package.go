@@ -676,54 +676,15 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 // syncSignatureVerificationAttributes syncs skip_signature_validation and verify_signature attributes
 // to ensure they are consistent in the plan.
 func syncSignatureVerificationAttributes(ctx context.Context, config *PackageResourceModel, plan *PackageResourceModel) {
-	skipSet := !config.SkipSignatureValidation.IsNull()
-	verifySet := !config.VerifySignature.IsNull()
+	effective := getEffectiveSignatureVerification(*config)
 
-	tflog.Debug(ctx, "Signature verification attributes", map[string]any{
-		"skip_set":   skipSet,
-		"verify_set": verifySet,
+	plan.VerifySignature = types.BoolValue(effective)
+	plan.SkipSignatureValidation = types.BoolValue(!effective)
+
+	tflog.Debug(ctx, "Synchronized signature verification attributes", map[string]any{
+		"verify_signature":          plan.VerifySignature.ValueBool(),
+		"skip_signature_validation": plan.SkipSignatureValidation.ValueBool(),
 	})
-
-	// Set verify_signature if only skip_signature_validation is set
-	if skipSet && !verifySet {
-		skip := config.SkipSignatureValidation.ValueBool()
-		plan.VerifySignature = types.BoolValue(!skip)
-		tflog.Debug(ctx, "Synchronized verify_signature from skip_signature_validation", map[string]any{
-			"verify_signature":          plan.VerifySignature.ValueBool(),
-			"skip_signature_validation": skip,
-		})
-	}
-
-	// Set skip_signature_validation if only verify_signature is set
-	if verifySet && !skipSet {
-		verify := config.VerifySignature.ValueBool()
-		plan.SkipSignatureValidation = types.BoolValue(!verify)
-		tflog.Debug(ctx, "Synchronized skip_signature_validation from verify_signature", map[string]any{
-			"verify_signature":          verify,
-			"skip_signature_validation": plan.SkipSignatureValidation.ValueBool(),
-		})
-	}
-
-	// Prioritize verify_signature if both are set
-	if skipSet && verifySet {
-		verify := config.VerifySignature.ValueBool()
-		plan.VerifySignature = types.BoolValue(verify)
-		plan.SkipSignatureValidation = types.BoolValue(!verify)
-		tflog.Debug(ctx, "both verify_signature and skip_signature_validation specified, prioritizing verify_signature", map[string]any{
-			"verify_signature":          plan.VerifySignature.ValueBool(),
-			"skip_signature_validation": plan.SkipSignatureValidation.ValueBool(),
-		})
-	}
-
-	// Use defaults if neither are set
-	if !skipSet && !verifySet {
-		plan.SkipSignatureValidation = types.BoolValue(false)
-		plan.VerifySignature = types.BoolValue(true)
-		tflog.Debug(ctx, "neither verify_signature or skip_signature_validation attributes set, using defaults", map[string]any{
-			"verify_signature":          plan.VerifySignature.ValueBool(),
-			"skip_signature_validation": plan.SkipSignatureValidation.ValueBool(),
-		})
-	}
 }
 
 // ImportState imports the resource state from an external system.
