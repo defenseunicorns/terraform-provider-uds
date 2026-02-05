@@ -26,9 +26,10 @@ Deploys a UDS Package.
 - `namespace` (String) [Alpha] Namespace in which to deploy the UDS package.
 - `public_key` (String) Raw public key value to validate against a signed UDS package.
 - `sensitive_vars` (Attributes Set) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))
-- `skip_signature_validation` (Boolean) Skip validating the signature of a signed UDS package.
+- `skip_signature_validation` (Boolean, Deprecated) Skip validating the signature of a signed UDS package.
 - `timeout` (String) Timeout for the deploy operation.
 - `vars` (Attributes Set) UDS package variables to set. (see [below for nested schema](#nestedatt--vars))
+- `verify_signature` (Boolean) Verify the signature of a UDS package. When enabled, a signed package with an invalid or missing signature will fail to deploy. When disabled, the package will continue to deploy with signature verification issues logged as warnings.
 
 ### Read-Only
 
