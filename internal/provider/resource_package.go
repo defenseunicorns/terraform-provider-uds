@@ -1217,31 +1217,6 @@ func insertNestedValue(root map[string]any, path string, value any) {
 	}
 }
 
-// Deletes a nested value based on the dot-separated path
-func deleteNestedValue(root map[string]any, path string) {
-	parts := strings.Split(path, ".")
-	current := root
-
-	for i, part := range parts {
-		if i == len(parts)-1 {
-			delete(current, part)
-			return
-		}
-
-		next, exists := current[part]
-		if !exists {
-			return // Path doesn't exist, nothing to delete
-		}
-
-		// Ensure type safety
-		nestedMap, ok := next.(map[string]any)
-		if !ok {
-			return // Invalid structure, cannot proceed
-		}
-		current = nestedMap
-	}
-}
-
 func getArchitecture(pkg PackageResourceModel, providerConfig udsProviderConfig) string {
 	if !pkg.Architecture.IsNull() && !pkg.Architecture.IsUnknown() {
 		return pkg.Architecture.ValueString()
