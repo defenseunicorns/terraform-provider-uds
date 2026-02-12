@@ -52,6 +52,7 @@ var (
 
 const (
 	clusterTimeoutMinutes = 5
+	defaultPackageTimeout = "15m"
 )
 
 // NewPackageResource creates a new instance of the package resource.
@@ -184,7 +185,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				MarkdownDescription: "Timeout for the deploy operation.",
 				Optional:            true,
 				Computed:            true,
-				Default:             stringdefault.StaticString("15m"),
+				Default:             stringdefault.StaticString(defaultPackageTimeout),
 				Validators: []validator.String{
 					udsValidator.DurationGreaterThanValidator(0),
 				},
@@ -476,11 +477,13 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	}
 
 	// Populate/set resource computed values from deployed package info so that they can be saved to state
-	//data.ID = types.StringValue(computePackageID(deployedPackage.NamespaceOverride, deployedPackage.Name))
 	data.Name = types.StringValue(deployedPackage.Name)
 	data.Version = types.StringValue(deployedPackage.Data.Metadata.Version)
 	data.Kind = types.StringValue(string(deployedPackage.Data.Kind))
 	data.Architecture = types.StringValue(deployedPackage.Data.Metadata.Architecture)
+	if data.Timeout.IsNull() {
+		data.Timeout = types.StringValue(defaultPackageTimeout)
+	}
 
 	// populate the package metadata type.
 	// TODO(clint): this is ugly and I got it from https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/custom
