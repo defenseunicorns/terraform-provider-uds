@@ -47,6 +47,7 @@ The UDS Tofu provider targets a release at least every two weeks. Final timing i
 Manual releases may be necessary for exceptional cases.
 
 - [ ] Review open [Pull Requests](https://github.com/defenseunicorns/terraform-provider-uds/pulls)
+- [ ] Update `.release-please-manifest.json` to reflect the new version (e.g. `X.Y.Z` without the `v` prefix)
 - [ ] Create and push the version tag
 
   ```bash
@@ -54,7 +55,6 @@ Manual releases may be necessary for exceptional cases.
   git push origin vX.Y.Z
   ```
 
-- [ ] Update `.release-please-manifest.json` to reflect the new version
 - [ ] Review the GitHub release:
   - [ ] Add a high-level summary of changes
   - [ ] Document any required upgrade steps or breaking changes
