@@ -33,7 +33,9 @@ The UDS Tofu provider targets a release at least every two weeks. Final timing i
 
 ### Standard Releases (via Release Please)
 
-- [ ] Review and merge the open Release Please PR
+- [ ] Review the open Release Please PR
+- [ ] Assign the PR to a milestone (typically `Releases`) to trigger additional CI checks
+- [ ] Ensure all required status checks are passing and merge the Release Please PR
 - [ ] Confirm the version tag was created and pushed (this triggers the release workflow)
 - [ ] Review the GitHub release:
   - [ ] Add a high-level summary of changes
