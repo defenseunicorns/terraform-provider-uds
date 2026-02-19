@@ -1,3 +1,5 @@
+# Copyright 2024 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 name: Release Please
 
 on:
@@ -11,6 +13,9 @@ permissions:
 
 jobs:
   release-please:
+    permissions:
+      contents: write
+      pull-requests: write
     runs-on: ubuntu-latest
     # Only run in the upstream repository
     if: github.repository == 'defenseunicorns/terraform-provider-uds'
@@ -18,16 +23,9 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - name: Get Release Please token
-        id: app-token
-        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
-        with:
-          # TODO(erickson): BLOCKED. Request (from #tech-support) and replace with org-level secrets corresponding to org-level GitHub app integration (uds-release-please)
-          app-id: ${{ secrets.RELEASE_PLEASE_GITHUB_APP_ID }}
-          private-key: ${{ secrets.RELEASE_PLEASE_GITHUB_APP_SECRET }}
-
-      - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
-        id: release
+      - name: Create release tag
+        id: tag
+        uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
