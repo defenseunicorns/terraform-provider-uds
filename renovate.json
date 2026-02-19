@@ -48,6 +48,12 @@
       "ignoreUnstable": true,
       "groupName": "uds-provider-version",
       "commitMessageTopic": "uds provider version"
+    },
+    {
+      "matchFileNames": ["package.json", "package-lock.json"],
+      "groupName": "dev-dependencies",
+      "matchDepTypes": ["devDependencies"],
+      "commitMessageTopic": "dev dependencies"
     }
   ],
   "regexManagers": [
