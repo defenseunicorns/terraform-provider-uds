@@ -89,5 +89,5 @@ uds run generate     # regenerate provider docs
 
 ## Tips
 
-- To switch back to registry builds, unset `TF_CLI_CONFIG_FILE` or remove the `dev` block from your CLI config.
+- To switch back to registry builds, unset `TF_CLI_CONFIG_FILE` or remove the `dev_overrides` configuration from your CLI config.
 - Verify which binary OpenTofu is picking up with `tofu providers mirror` or by inspecting `.terraform/plugins` after `tofu init`.
