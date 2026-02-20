@@ -457,8 +457,6 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	//packageName := data.Name.ValueString()
-	//packageNamespace := data.Namespace.ValueString()
 	deployedPackage, found, err := r.getDeployedPackage(timeoutCtx, packageName, packageNamespace)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -481,6 +479,9 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	data.Version = types.StringValue(deployedPackage.Data.Metadata.Version)
 	data.Kind = types.StringValue(string(deployedPackage.Data.Kind))
 	data.Architecture = types.StringValue(deployedPackage.Data.Metadata.Architecture)
+	if deployedPackage.NamespaceOverride != "" {
+		data.Namespace = types.StringValue(deployedPackage.NamespaceOverride)
+	}
 	if data.Timeout.IsNull() {
 		data.Timeout = types.StringValue(defaultPackageTimeout)
 	}
