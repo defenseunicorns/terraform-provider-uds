@@ -2,7 +2,10 @@
   "enabled": true,
   "forkProcessing": "enabled",
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
+  "extends": [
+    "github>defenseunicorns/uds-common//config/renovate.json5",
+    "config:recommended"
+  ],
   "branchConcurrentLimit": 0,
   "prConcurrentLimit": 0,
   "prHourlyLimit": 0,
@@ -48,6 +51,12 @@
       "ignoreUnstable": true,
       "groupName": "uds-provider-version",
       "commitMessageTopic": "uds provider version"
+    },
+    {
+      "matchFileNames": ["package.json", "package-lock.json"],
+      "groupName": "dev-dependencies",
+      "matchDepTypes": ["devDependencies"],
+      "commitMessageTopic": "dev dependencies"
     }
   ],
   "regexManagers": [
