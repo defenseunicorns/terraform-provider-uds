@@ -129,6 +129,81 @@ Apply to create the resources:
 tofu apply
 ```
 
+### Importing Resources to OpenTofu State
+
+Existing resources can be imported into OpenTofu state using their resource IDs.
+
+The `tofu import` command imports a single resource at a time. Alternatively, `import` blocks with `tofu apply` allow multiple resources to be imported in a single operation.
+
+The following examples demonstrate both mechanisms using the `uds_package` resource.
+
+> Import ID Format for `uds_package`
+> - No namespace override → package-name (e.g. `dos-games`) 
+> - Namespace override specified → namespace:package-name (e.g. `demo:dos-games`)
+
+Run `zarf package list` to view the deployed packages and their corresponding names and namespace overrides.
+
+#### Using Tofu Import
+
+The [tofu import](https://opentofu.org/docs/cli/import/usage/) command requires the resource to be declared in the OpenTofu configuration before running the import command.
+
+Example (no namespace override):
+
+```hcl
+# package to import without namespace override
+resource "uds_package" "dos_games" {
+  source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
+  depends_on = [uds_package.init]
+  public_key = file("zarf-dev-cosign.pub")
+}
+```
+
+Import the resource:
+
+```bash
+tofu import uds_package.dos_games dos-games 
+```
+
+After importing, it is recommended to run `tofu plan` and/or `tofu apply` to completely synchronizing the OpenTofu state with the resource's specified configuration.
+
+#### Using Import Blocks
+
+Each imported resource requires its own `import` block. Running `tofu apply` will both import the resource to OpenTofu state and apply the corresponding configuration in a single step.
+
+```hcl
+import {
+  to = uds_package.dos_games
+  id = "dos-games" 
+}
+
+# package to import without no namespace override
+resource "uds_package" "dos_games" {
+  source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
+  depends_on = [uds_package.init]
+  public_key = file("zarf-dev-cosign.pub")
+}
+
+import {
+  to = uds_package.demo_dos_games
+  id = "demo:dos-games" 
+}
+
+# package to import with "demo" namespace override
+resource "uds_package" "demo_dos_games" {
+  source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
+  depends_on = [uds_package.init]
+  public_key = file("zarf-dev-cosign.pub")
+  namespace  = "demo"
+}
+```
+
+```bash
+tofu plan
+tofu apply
+```
+
+Remove the `import` blocks from the OpenTofu configuration once the import has succeeded.
+
 ## Documentation
 
 For detailed documentation on the provider, resources and their attributes, see:
