@@ -69,3 +69,36 @@ resource "uds_package" "init" {
   architecture = "%s"
 }
 `, initPackageVersion, runtime.GOARCH)
+
+func TestNamespacedPackage(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Create and Read testing
+			{
+				Config: testAccNamespacedPackageResourceConfig,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("uds_package.dos_games", "namespace", "demo"),
+				),
+			},
+			// Delete testing automatically occurs in TestCase
+		},
+	})
+}
+
+var testAccNamespacedPackageResourceConfig = fmt.Sprintf(`
+resource "uds_package" "init" {
+  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
+  architecture = "%s"
+}
+
+resource "uds_package" "dos_games" {
+  source       = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
+  architecture = uds_package.init.architecture
+  namespace    = "demo"
+  depends_on   = [uds_package.init]
+
+  verify_signature = false
+}
+`, initPackageVersion, runtime.GOARCH)
