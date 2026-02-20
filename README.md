@@ -140,60 +140,7 @@ For detailed documentation on the provider, resources and their attributes, see:
 
 ## Development
 
-### Development Requirements
-
-- [Go](https://golang.org/doc/install) >= 1.21
-- [OpenTofu](https://opentofu.org/) >= 1.6
-- [golangci-lint](https://golangci-lint.run/usage/install/) for linting
-- Access to a Kubernetes cluster for testing
-
-### Configure OpenTofu Client Dev Overrides
-
-Since the UDS provider will be built and installed locally, the OpenTofu client (.tofurc) will need to be configured with a `dev_overrides` to reference the local provider build. The path to the provider build is dependent upon your go configuration. Please refer to the
-[Terraform plug-in framework documentation](https://developer.hashicorp.com/terraform/tutorials/providers-plugin-framework/providers-plugin-framework-provider#prepare-terraform-for-local-provider-install) for more information.
-
-Example contents of `$HOME/.tofurc` on macOS:
-
-```hcl
-provider_installation {
-  dev {
-    path = "/Users/username/go/bin"
-    include = ["defenseunicorns/uds"]
-  }
-
-  # For all other providers, install them directly from their origin provider registries as normal.
-  # If you omit this, OpenTofu will _only_ use the dev_overrides block, and so no other providers will be available.
-  direct {}
-}
-```
-
-Refer to the [OpenTofu documentation](https://opentofu.org/docs/cli/config/config-file/#development-overrides-for-provider-developers) for more information.
-
-### Build/Install the Provider Locally
-
-```bash
-uds run install
-```
-
-### Run Unit Tests
-
-```bash
-uds run test-unit
-```
-
-### Run Acceptance Tests
-
-```bash
-uds run test-acc
-```
-
-### Generate Documentation
-
-This provider leverages [terraform-plugin-docs](https://github.com/hashicorp/terraform-plugin-docs) to generate documentation:
-
-```bash
-uds run generate
-```
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for all local development guidance, including prerequisites, dev_overrides setup, build/install commands, lint/test instructions, and docs generation.
 
 ## License
 
