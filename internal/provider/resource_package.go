@@ -1029,13 +1029,6 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	return plan, err
 }
 
-// PackageResourceIdentityModel describes identity data for a PackageResource
-type PackageResourceIdentityModel struct {
-	Name      types.String `tfsdk:"name"`
-	Namespace types.String `tfsdk:"namespace"`
-	Source    types.String `tfsdk:"source"`
-}
-
 // convertYAMLToJSONCompatible converts YAML types (map[any]any) to JSON-compatible types (map[string]any)
 func convertYAMLToJSONCompatible(o any) any {
 	switch x := o.(type) {
