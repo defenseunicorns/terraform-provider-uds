@@ -919,19 +919,37 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	//revive:disable-next-line:empty-block
 	if err != nil {
 		// Ignore error and continue. TODO(erickson): Log warning message? Need to test this more thoroughly
-	} else if _, exists := findDeployedPackage(deployedPackages, packageName, plan.Namespace.ValueString()); exists {
-		if plan.Reconcile.ValueBool() {
-			tflog.Info(ctx, "Package already exists, reconciling to desired state",
-				map[string]interface{}{
-					"name":      packageName,
-					"namespace": plan.Namespace.ValueString(),
-				})
-			return r.upsert(ctx, plan)
+	} else if deployedPkg, exists := findDeployedPackage(deployedPackages, packageName, plan.Namespace.ValueString()); exists {
+		if !plan.Reconcile.ValueBool() {
+			return plan, fmt.Errorf(
+				"package with namespace '%s' and name '%s' already exists. "+
+					"Set reconcile = true to reconcile existing packages to the desired state",
+				plan.Namespace.ValueString(), packageName)
 		}
-		return plan, fmt.Errorf(
-			"package with namespace '%s' and name '%s' already exists. "+
-				"Set reconcile = true to reconcile existing packages to the desired state",
-			plan.Namespace.ValueString(), packageName)
+
+		health := inspectPackageHealth(deployedPkg)
+		logFields := map[string]interface{}{
+			"name":                packageName,
+			"namespace":           plan.Namespace.ValueString(),
+			"healthy":             health.Healthy,
+			"total_components":    health.TotalComponents,
+			"healthy_components":  health.HealthyComponents,
+			"total_charts":       health.TotalCharts,
+			"healthy_charts":     health.HealthyCharts,
+			"failed_components":  health.FailedComponents,
+			"failed_charts":      health.FailedCharts,
+		}
+
+		if health.Healthy {
+			tflog.Info(ctx, "Package already exists and is healthy, reconciling to converge desired state", logFields)
+		} else {
+			if len(health.DeployingComponents) > 0 {
+				logFields["deploying_components"] = health.DeployingComponents
+			}
+			tflog.Warn(ctx, "Package already exists but is unhealthy, reconciling to recover", logFields)
+		}
+
+		return r.upsert(ctx, plan)
 	}
 
 	return r.upsert(ctx, plan)
@@ -1311,6 +1329,65 @@ func findDeployedPackage(deployedPackages []zarfState.DeployedPackage, name stri
 		}
 	}
 	return zarfState.DeployedPackage{}, false // Not found
+}
+
+// packageHealthStatus describes the health state of a deployed package.
+type packageHealthStatus struct {
+	Healthy             bool
+	TotalComponents     int
+	HealthyComponents   int
+	FailedComponents    []string
+	DeployingComponents []string
+	TotalCharts         int
+	HealthyCharts       int
+	FailedCharts        []string
+}
+
+// inspectPackageHealth examines the deployed package's component and chart statuses
+// to determine overall health.
+func inspectPackageHealth(pkg zarfState.DeployedPackage) packageHealthStatus {
+	status := packageHealthStatus{
+		Healthy: true,
+	}
+
+	for _, comp := range pkg.DeployedComponents {
+		status.TotalComponents++
+		switch comp.Status {
+		case zarfState.ComponentStatusSucceeded:
+			status.HealthyComponents++
+		case zarfState.ComponentStatusFailed:
+			status.Healthy = false
+			status.FailedComponents = append(status.FailedComponents, comp.Name)
+		case zarfState.ComponentStatusDeploying, zarfState.ComponentStatusRemoving:
+			status.Healthy = false
+			status.DeployingComponents = append(status.DeployingComponents, comp.Name)
+		default:
+			// Unknown status — treat as unhealthy
+			status.Healthy = false
+			status.FailedComponents = append(status.FailedComponents, comp.Name)
+		}
+
+		for _, chart := range comp.InstalledCharts {
+			status.TotalCharts++
+			switch chart.Status {
+			case zarfState.ChartStatusSucceeded:
+				status.HealthyCharts++
+			case zarfState.ChartStatusFailed:
+				status.Healthy = false
+				status.FailedCharts = append(status.FailedCharts, fmt.Sprintf("%s/%s", comp.Name, chart.ChartName))
+			default:
+				status.Healthy = false
+				status.FailedCharts = append(status.FailedCharts, fmt.Sprintf("%s/%s", comp.Name, chart.ChartName))
+			}
+		}
+	}
+
+	// A package with no deployed components is unhealthy (partial deploy that didn't get far)
+	if status.TotalComponents == 0 {
+		status.Healthy = false
+	}
+
+	return status
 }
 
 func computePackageID(namespace string, pkgName string) string {

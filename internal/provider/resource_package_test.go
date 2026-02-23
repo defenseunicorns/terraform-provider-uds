@@ -3568,3 +3568,227 @@ func TestPackageResource_ReconcileAttribute(t *testing.T) {
 		mockPackager.AssertExpectations(t)
 	})
 }
+
+func TestInspectPackageHealth(t *testing.T) {
+	tests := []struct {
+		name                        string
+		pkg                         zarfState.DeployedPackage
+		expectedHealthy             bool
+		expectedTotalComponents     int
+		expectedHealthyComponents   int
+		expectedFailedComponents    []string
+		expectedDeployingComponents []string
+		expectedTotalCharts         int
+		expectedHealthyCharts       int
+		expectedFailedCharts        []string
+	}{
+		{
+			name: "all components and charts succeeded",
+			pkg: zarfState.DeployedPackage{
+				Name: "test-package",
+				DeployedComponents: []zarfState.DeployedComponent{
+					{
+						Name:   "uds-crds",
+						Status: zarfState.ComponentStatusSucceeded,
+						InstalledCharts: []zarfState.InstalledChart{
+							{ChartName: "uds-crds", Namespace: "uds", Status: zarfState.ChartStatusSucceeded},
+						},
+					},
+					{
+						Name:   "istio-controlplane",
+						Status: zarfState.ComponentStatusSucceeded,
+						InstalledCharts: []zarfState.InstalledChart{
+							{ChartName: "uds-istio-config", Namespace: "istio-system", Status: zarfState.ChartStatusSucceeded},
+							{ChartName: "istiod", Namespace: "istio-system", Status: zarfState.ChartStatusSucceeded},
+						},
+					},
+				},
+			},
+			expectedHealthy:           true,
+			expectedTotalComponents:   2,
+			expectedHealthyComponents: 2,
+			expectedTotalCharts:       3,
+			expectedHealthyCharts:     3,
+		},
+		{
+			name: "component failed with failed chart",
+			pkg: zarfState.DeployedPackage{
+				Name: "test-package",
+				DeployedComponents: []zarfState.DeployedComponent{
+					{
+						Name:   "uds-crds",
+						Status: zarfState.ComponentStatusSucceeded,
+						InstalledCharts: []zarfState.InstalledChart{
+							{ChartName: "uds-crds", Namespace: "uds", Status: zarfState.ChartStatusSucceeded},
+						},
+					},
+					{
+						Name:   "pepr-uds-core",
+						Status: zarfState.ComponentStatusFailed,
+						InstalledCharts: []zarfState.InstalledChart{
+							{ChartName: "pepr-uds-core", Namespace: "pepr-system", Status: zarfState.ChartStatusFailed},
+						},
+					},
+				},
+			},
+			expectedHealthy:           false,
+			expectedTotalComponents:   2,
+			expectedHealthyComponents: 1,
+			expectedFailedComponents:  []string{"pepr-uds-core"},
+			expectedTotalCharts:       2,
+			expectedHealthyCharts:     1,
+			expectedFailedCharts:      []string{"pepr-uds-core/pepr-uds-core"},
+		},
+		{
+			name: "component stuck deploying",
+			pkg: zarfState.DeployedPackage{
+				Name: "test-package",
+				DeployedComponents: []zarfState.DeployedComponent{
+					{
+						Name:   "istio-controlplane",
+						Status: zarfState.ComponentStatusDeploying,
+						InstalledCharts: []zarfState.InstalledChart{
+							{ChartName: "istiod", Namespace: "istio-system", Status: zarfState.ChartStatusSucceeded},
+						},
+					},
+				},
+			},
+			expectedHealthy:             false,
+			expectedTotalComponents:     1,
+			expectedHealthyComponents:   0,
+			expectedDeployingComponents: []string{"istio-controlplane"},
+			expectedTotalCharts:         1,
+			expectedHealthyCharts:       1,
+		},
+		{
+			name: "component removing",
+			pkg: zarfState.DeployedPackage{
+				Name: "test-package",
+				DeployedComponents: []zarfState.DeployedComponent{
+					{
+						Name:   "gateway",
+						Status: zarfState.ComponentStatusRemoving,
+						InstalledCharts: []zarfState.InstalledChart{
+							{ChartName: "gateway", Namespace: "istio-system", Status: zarfState.ChartStatusSucceeded},
+						},
+					},
+				},
+			},
+			expectedHealthy:             false,
+			expectedTotalComponents:     1,
+			expectedHealthyComponents:   0,
+			expectedDeployingComponents: []string{"gateway"},
+			expectedTotalCharts:         1,
+			expectedHealthyCharts:       1,
+		},
+		{
+			name: "no deployed components — partial deploy that never started",
+			pkg: zarfState.DeployedPackage{
+				Name:               "test-package",
+				DeployedComponents: []zarfState.DeployedComponent{},
+			},
+			expectedHealthy:           false,
+			expectedTotalComponents:   0,
+			expectedHealthyComponents: 0,
+			expectedTotalCharts:       0,
+			expectedHealthyCharts:     0,
+		},
+		{
+			name: "mixed — some healthy some failed",
+			pkg: zarfState.DeployedPackage{
+				Name: "core-base",
+				DeployedComponents: []zarfState.DeployedComponent{
+					{
+						Name:   "uds-crds",
+						Status: zarfState.ComponentStatusSucceeded,
+						InstalledCharts: []zarfState.InstalledChart{
+							{ChartName: "uds-crds", Namespace: "uds", Status: zarfState.ChartStatusSucceeded},
+						},
+					},
+					{
+						Name:   "pepr-uds-core",
+						Status: zarfState.ComponentStatusSucceeded,
+						InstalledCharts: []zarfState.InstalledChart{
+							{ChartName: "pepr-uds-core", Namespace: "pepr-system", Status: zarfState.ChartStatusSucceeded},
+						},
+					},
+					{
+						Name:   "istio-controlplane",
+						Status: zarfState.ComponentStatusFailed,
+						InstalledCharts: []zarfState.InstalledChart{
+							{ChartName: "uds-istio-config", Namespace: "istio-system", Status: zarfState.ChartStatusSucceeded},
+							{ChartName: "istiod", Namespace: "istio-system", Status: zarfState.ChartStatusFailed},
+						},
+					},
+					{
+						Name:   "istio-admin-gateway",
+						Status: zarfState.ComponentStatusDeploying,
+						InstalledCharts: []zarfState.InstalledChart{
+							{ChartName: "admin-gateway", Namespace: "istio-admin-gateway", Status: zarfState.ChartStatusSucceeded},
+						},
+					},
+				},
+			},
+			expectedHealthy:             false,
+			expectedTotalComponents:     4,
+			expectedHealthyComponents:   2,
+			expectedFailedComponents:    []string{"istio-controlplane"},
+			expectedDeployingComponents: []string{"istio-admin-gateway"},
+			expectedTotalCharts:         5,
+			expectedHealthyCharts:       4,
+			expectedFailedCharts:        []string{"istio-controlplane/istiod"},
+		},
+		{
+			name: "component succeeded but chart failed",
+			pkg: zarfState.DeployedPackage{
+				Name: "test-package",
+				DeployedComponents: []zarfState.DeployedComponent{
+					{
+						Name:   "monitoring",
+						Status: zarfState.ComponentStatusSucceeded,
+						InstalledCharts: []zarfState.InstalledChart{
+							{ChartName: "uds-monitoring-config", Namespace: "monitoring", Status: zarfState.ChartStatusSucceeded},
+							{ChartName: "kube-prometheus-stack", Namespace: "monitoring", Status: zarfState.ChartStatusFailed},
+						},
+					},
+				},
+			},
+			expectedHealthy:           false,
+			expectedTotalComponents:   1,
+			expectedHealthyComponents: 1,
+			expectedTotalCharts:       2,
+			expectedHealthyCharts:     1,
+			expectedFailedCharts:      []string{"monitoring/kube-prometheus-stack"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			health := inspectPackageHealth(tc.pkg)
+
+			assert.Equal(t, tc.expectedHealthy, health.Healthy, "healthy mismatch")
+			assert.Equal(t, tc.expectedTotalComponents, health.TotalComponents, "total components mismatch")
+			assert.Equal(t, tc.expectedHealthyComponents, health.HealthyComponents, "healthy components mismatch")
+			assert.Equal(t, tc.expectedTotalCharts, health.TotalCharts, "total charts mismatch")
+			assert.Equal(t, tc.expectedHealthyCharts, health.HealthyCharts, "healthy charts mismatch")
+
+			if tc.expectedFailedComponents != nil {
+				assert.Equal(t, tc.expectedFailedComponents, health.FailedComponents, "failed components mismatch")
+			} else {
+				assert.Nil(t, health.FailedComponents, "expected no failed components")
+			}
+
+			if tc.expectedDeployingComponents != nil {
+				assert.Equal(t, tc.expectedDeployingComponents, health.DeployingComponents, "deploying components mismatch")
+			} else {
+				assert.Nil(t, health.DeployingComponents, "expected no deploying components")
+			}
+
+			if tc.expectedFailedCharts != nil {
+				assert.Equal(t, tc.expectedFailedCharts, health.FailedCharts, "failed charts mismatch")
+			} else {
+				assert.Nil(t, health.FailedCharts, "expected no failed charts")
+			}
+		})
+	}
+}
