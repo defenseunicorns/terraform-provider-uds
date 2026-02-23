@@ -87,6 +87,7 @@ type PackageResourceModel struct {
 	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
 	VerifySignature         types.Bool   `tfsdk:"verify_signature"`
 	Namespace               types.String `tfsdk:"namespace"`
+	Reconcile               types.Bool   `tfsdk:"reconcile"`
 
 	Components    types.Set `tfsdk:"component"`      // Set of ComponentModel objects
 	Vars          types.Set `tfsdk:"vars"`           // Set of VariableModel objects
@@ -263,6 +264,14 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
+			},
+			"reconcile": schema.BoolAttribute{
+				MarkdownDescription: "When true, if a package with the same name and namespace already exists on the cluster during creation, " +
+					"reconcile to the desired state instead of failing. Useful for recovering from partial deployments " +
+					"where Terraform state was not updated. Defaults to false.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
 			},
 			"connect_strings": schema.SetNestedAttribute{
 				Computed:            true,
@@ -911,7 +920,18 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	if err != nil {
 		// Ignore error and continue. TODO(erickson): Log warning message? Need to test this more thoroughly
 	} else if _, exists := findDeployedPackage(deployedPackages, packageName, plan.Namespace.ValueString()); exists {
-		return plan, fmt.Errorf("package with namespace '%s' and name '%s' already exists", plan.Namespace.ValueString(), packageName)
+		if plan.Reconcile.ValueBool() {
+			tflog.Info(ctx, "Package already exists, reconciling to desired state",
+				map[string]interface{}{
+					"name":      packageName,
+					"namespace": plan.Namespace.ValueString(),
+				})
+			return r.upsert(ctx, plan)
+		}
+		return plan, fmt.Errorf(
+			"package with namespace '%s' and name '%s' already exists. "+
+				"Set reconcile = true to reconcile existing packages to the desired state",
+			plan.Namespace.ValueString(), packageName)
 	}
 
 	return r.upsert(ctx, plan)

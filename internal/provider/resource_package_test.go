@@ -136,6 +136,12 @@ func WithNamespace(namespace string) PackageResourceModelDataOption {
 	}
 }
 
+func WithReconcile(reconcile bool) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.Reconcile = types.BoolValue(reconcile)
+	}
+}
+
 func WithComponents(components []ComponentModel) PackageResourceModelDataOption {
 	return func(model *PackageResourceModel) {
 		model.Components = componentSliceToSet(components)
@@ -164,6 +170,7 @@ func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) Pack
 		VerifySignature:         types.BoolValue(true),
 		Timeout:                 types.StringValue("10m"),
 		Namespace:               types.StringValue(""),
+		Reconcile:               types.BoolValue(false),
 		Components:              componentSliceToSet([]ComponentModel{}),
 		Vars:                    variableSliceToSet([]VariableModel{}),
 		SensitiveVars:           variableSliceToSet([]VariableModel{}),
@@ -3511,4 +3518,53 @@ func TestPackageResource_GetEffectiveSignatureVerification(t *testing.T) {
 			assert.Equal(t, tc.expected, result)
 		})
 	}
+}
+
+func TestPackageResource_ReconcileAttribute(t *testing.T) {
+	t.Run("default reconcile is false", func(t *testing.T) {
+		model := NewTestPackageResourceModel()
+		assert.Equal(t, false, model.Reconcile.ValueBool())
+	})
+
+	t.Run("WithReconcile sets reconcile to true", func(t *testing.T) {
+		model := NewTestPackageResourceModel(WithReconcile(true))
+		assert.Equal(t, true, model.Reconcile.ValueBool())
+	})
+
+	t.Run("upsert succeeds with reconcile true", func(t *testing.T) {
+		// When reconcile=true and a package already exists, deployAsNew calls upsert.
+		// Verify that upsert works normally with reconcile=true set on the model.
+		packageLayout := layout.PackageLayout{
+			Pkg: v1alpha1.ZarfPackage{
+				Metadata: v1alpha1.ZarfMetadata{
+					Name:        "test-package",
+					Description: "Test package",
+					Version:     "0.0.1",
+				},
+				Components: []v1alpha1.ZarfComponent{
+					{
+						Name:     "test-required-component-0",
+						Required: helpers.BoolPtr(true),
+						Default:  false,
+					},
+				},
+			},
+		}
+
+		mockPackager := &MockPackager{}
+		mockPackageComponentFilter := &MockPackageComponentFilter{}
+		mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+			&packageLayout,
+			nil,
+		)
+		mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+		mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+		packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+		testModel := NewTestPackageResourceModel(WithReconcile(true))
+
+		_, err := packageResource.upsert(context.Background(), testModel)
+		assert.NoError(t, err)
+		mockPackager.AssertExpectations(t)
+	})
 }
