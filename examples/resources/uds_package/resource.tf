@@ -2,12 +2,14 @@ terraform {
   required_providers {
     uds = {
       source  = "defenseunicorns/uds"
-      version = "~> 0.1.0" # renovate: datasource=github-releases depName=defenseunicorns/terraform-provider-uds
+      version = "~> 0.1.7"
     }
   }
 }
 
-provider "uds" {}
+provider "uds" {
+  default_architecture = "arm64"
+}
 
 resource "uds_bundle_metadata" "example_bundle" {
   version      = "0.0.1"
@@ -17,9 +19,7 @@ resource "uds_bundle_metadata" "example_bundle" {
 }
 
 resource "uds_package" "init" {
-  # renovate: datasource=github-tags depName=zarf-dev/zarf
-  source       = "oci://ghcr.io/zarf-dev/packages/init:v0.63.0"
-  architecture = uds_bundle_metadata.example_bundle.architecture
+  source = "oci://ghcr.io/zarf-dev/packages/init:v0.73.0"
 
   # Install optional git-server
   component {
@@ -28,9 +28,8 @@ resource "uds_package" "init" {
 }
 
 resource "uds_package" "podinfo" {
-  source       = "oci://ghcr.io/defenseunicorns/uds-cli/podinfo:0.0.2"
-  architecture = uds_package.init.architecture
-  depends_on   = [uds_package.init]
+  depends_on = [uds_package.init]
+  source     = "oci://ghcr.io/defenseunicorns/uds-cli/podinfo:0.0.2"
   vars = [
     {
       name  = "this_is_a_variable"
@@ -67,13 +66,12 @@ resource "uds_package" "podinfo" {
 }
 
 resource "uds_package" "dos_games" {
-  source       = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
-  architecture = uds_package.init.architecture
-  namespace    = "demo"
-  depends_on   = [uds_package.init]
+  depends_on = [uds_package.init]
+  source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
+  namespace  = "demo"
 
-  # Skip signature validation if public key is not available. Otherwise set to false (or remove this attribute) and provide public key.
-  skip_signature_validation = true
+  # Do not verify package signature if public key is not available. Otherwise set to true (or remove this attribute) and provide public key.
+  verify_signature = false
 
   # public_key can be set explicitly to the key value, or use file function to reference local file:
   #    curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub

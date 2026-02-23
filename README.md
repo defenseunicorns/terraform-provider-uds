@@ -57,6 +57,7 @@ Currently, released/stable versions and nightly builds of the UDS provider are d
 > [OpenTofu Public Registry](https://opentofu.org/registry) for typical consumption.
 
 ### Configure OpenTofu Client OCI Mirror
+
 The OpenTofu client must be configured to pull the `defenseunicorns/uds` provider from the desired private registry by configuring an OCI mirror.
 To temporarily apply this configuration, create a local CLI config file and set the `TF_CLI_CONFIG_FILE` environment variable to its path:
 
@@ -77,6 +78,7 @@ EOF
 # Set the environment variable to have OpenTofu CLI use this config
 export TF_CLI_CONFIG_FILE="$(pwd)/$UDS_TOFU_CLI_CONFIG_FILE"
 ```
+
 Alternatively, for a permanent configuration, copy the content to the [default OpenTofu  CLI configuration file](https://opentofu.org/docs/cli/config/config-file/).
 
 ### Initialize and Apply Configuration
@@ -128,6 +130,14 @@ Apply to create the resources:
 ```bash
 tofu apply
 ```
+
+### Importing Resources to OpenTofu State
+
+Existing resources can be imported into OpenTofu state using their resource IDs.
+
+The `tofu import` command imports a single resource at a time. Alternatively, `import` blocks with `tofu apply` allow multiple resources to be imported in a single operation. After importing, it is recommended to run `tofu plan` and/or `tofu apply` to completely synchronizing the OpenTofu state with the resources' specified configuration.
+
+Refer to the [uds_package import examples](./docs/resources/package.md#import) for the `uds_package` resource.
 
 ## Documentation
 

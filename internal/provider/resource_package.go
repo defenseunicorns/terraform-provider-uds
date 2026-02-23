@@ -51,8 +51,8 @@ var (
 )
 
 const (
-	clusterTimeoutMinutes      = 5
-	getDeployedPackagesRetries = 2
+	clusterTimeoutMinutes = 5
+	defaultPackageTimeout = "15m"
 )
 
 // NewPackageResource creates a new instance of the package resource.
@@ -185,7 +185,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				MarkdownDescription: "Timeout for the deploy operation.",
 				Optional:            true,
 				Computed:            true,
-				Default:             stringdefault.StaticString("15m"),
+				Default:             stringdefault.StaticString(defaultPackageTimeout),
 				Validators: []validator.String{
 					udsValidator.DurationGreaterThanValidator(0),
 				},
@@ -448,18 +448,23 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	timeoutCtx, cancel := withClusterTimeout(ctx)
 	defer cancel()
 
-	deployedPackages, err := r.getDeployedPackages(timeoutCtx)
+	packageNamespace, packageName, err := parsePackageID(data.ID.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError(
-			"Error getting deployed packages",
-			"Failed to get deployed packages: "+err.Error(),
+			"Error parsing package ID",
+			"Failed to parse package ID: "+err.Error(),
 		)
 		return
 	}
 
-	packageName := data.Name.ValueString()
-	packageNamespace := data.Namespace.ValueString()
-	deployedPackage, found := findDeployedPackage(deployedPackages, packageName, packageNamespace)
+	deployedPackage, found, err := r.getDeployedPackage(timeoutCtx, packageName, packageNamespace)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error getting deployed package",
+			"Failed to get deployed package: "+err.Error(),
+		)
+		return
+	}
 	if !found {
 		resp.Diagnostics.AddWarning(
 			"Deployed package not found",
@@ -470,11 +475,16 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	}
 
 	// Populate/set resource computed values from deployed package info so that they can be saved to state
-	data.ID = types.StringValue(computePackageID(deployedPackage.NamespaceOverride, deployedPackage.Name))
 	data.Name = types.StringValue(deployedPackage.Name)
 	data.Version = types.StringValue(deployedPackage.Data.Metadata.Version)
 	data.Kind = types.StringValue(string(deployedPackage.Data.Kind))
 	data.Architecture = types.StringValue(deployedPackage.Data.Metadata.Architecture)
+	if deployedPackage.NamespaceOverride != "" {
+		data.Namespace = types.StringValue(deployedPackage.NamespaceOverride)
+	}
+	if data.Timeout.IsNull() {
+		data.Timeout = types.StringValue(defaultPackageTimeout)
+	}
 
 	// populate the package metadata type.
 	// TODO(clint): this is ugly and I got it from https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/custom
@@ -864,29 +874,32 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	}
 }
 
-func (r *PackageResource) getDeployedPackages(ctx context.Context) ([]zarfState.DeployedPackage, error) {
+func (r *PackageResource) getDeployedPackage(ctx context.Context, name string, namespace string) (zarfState.DeployedPackage, bool, error) {
 	c, err := r.cluster.NewWithWait(ctx)
 	if err != nil {
-		return []zarfState.DeployedPackage{}, fmt.Errorf("error connecting to cluster: %w", err)
+		return zarfState.DeployedPackage{}, false, fmt.Errorf("error connecting to cluster: %w", err)
 	}
 
-	// TODO: (clint) sometimes we deploy successfully but this returns empty,
-	// retry might be appropriate or there may be a better way to detect this
-	numRetries := getDeployedPackagesRetries
-	retrySleepDuration := time.Second * 2
-	var deployedZarfPackages []zarfState.DeployedPackage
-	for range numRetries {
-		deployedZarfPackages, err = c.GetDeployedZarfPackages(ctx)
-		if err != nil {
-			return []zarfState.DeployedPackage{}, err
-		}
-		if len(deployedZarfPackages) > 0 {
-			break
-		}
-		time.Sleep(retrySleepDuration)
+	var options []zarfState.DeployedPackageOptions
+	if namespace != "" {
+		options = append(options, zarfState.WithPackageNamespaceOverride(namespace))
 	}
 
-	return deployedZarfPackages, nil
+	pkg, err := c.GetDeployedPackage(ctx, name, options...)
+	if err != nil {
+		// "secrets <name> not found" means the package simply doesn't exist
+		if strings.HasPrefix(err.Error(), "secrets ") && strings.HasSuffix(err.Error(), " not found") {
+			return zarfState.DeployedPackage{}, false, nil
+		}
+		return zarfState.DeployedPackage{}, false, err
+	}
+
+	// Check if package was actually found (GetDeployedPackage returns a pointer)
+	if pkg == nil {
+		return zarfState.DeployedPackage{}, false, nil
+	}
+
+	return *pkg, true, nil
 }
 
 func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
@@ -900,17 +913,18 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 		err = errors.Join(err, pkgLayout.Cleanup())
 	}()
 
+	packageNamespace := plan.Namespace.ValueString()
 	packageName := pkgLayout.Pkg.Metadata.Name
 
 	// Ensure a package with the same name and namespace is not already deployed
 	clusterTimeoutCtx, cancel := withClusterTimeout(ctx)
 	defer cancel()
 
-	deployedPackages, err := r.getDeployedPackages(clusterTimeoutCtx)
-	//revive:disable-next-line:empty-block
+	_, found, err := r.getDeployedPackage(clusterTimeoutCtx, packageName, packageNamespace)
 	if err != nil {
-		// Ignore error and continue. TODO(erickson): Log warning message? Need to test this more thoroughly
-	} else if _, exists := findDeployedPackage(deployedPackages, packageName, plan.Namespace.ValueString()); exists {
+		return plan, err
+	}
+	if found {
 		return plan, fmt.Errorf("package with namespace '%s' and name '%s' already exists", plan.Namespace.ValueString(), packageName)
 	}
 
@@ -1200,31 +1214,6 @@ func insertNestedValue(root map[string]any, path string, value any) {
 	}
 }
 
-// Deletes a nested value based on the dot-separated path
-func deleteNestedValue(root map[string]any, path string) {
-	parts := strings.Split(path, ".")
-	current := root
-
-	for i, part := range parts {
-		if i == len(parts)-1 {
-			delete(current, part)
-			return
-		}
-
-		next, exists := current[part]
-		if !exists {
-			return // Path doesn't exist, nothing to delete
-		}
-
-		// Ensure type safety
-		nestedMap, ok := next.(map[string]any)
-		if !ok {
-			return // Invalid structure, cannot proceed
-		}
-		current = nestedMap
-	}
-}
-
 func getArchitecture(pkg PackageResourceModel, providerConfig udsProviderConfig) string {
 	if !pkg.Architecture.IsNull() && !pkg.Architecture.IsUnknown() {
 		return pkg.Architecture.ValueString()
@@ -1284,20 +1273,28 @@ func findPackageComponent(components []v1alpha1.ZarfComponent, name string) (v1a
 	return v1alpha1.ZarfComponent{}, false // Not found
 }
 
-func findDeployedPackage(deployedPackages []zarfState.DeployedPackage, name string, namespaceOverride string) (zarfState.DeployedPackage, bool) {
-	for _, p := range deployedPackages {
-		if p.Name == name && p.NamespaceOverride == namespaceOverride {
-			return p, true
-		}
-	}
-	return zarfState.DeployedPackage{}, false // Not found
-}
-
 func computePackageID(namespace string, pkgName string) string {
 	if namespace == "" {
 		return pkgName
 	}
 	return fmt.Sprintf("%s:%s", namespace, pkgName)
+}
+
+func parsePackageID(id string) (namespace, pkgName string, err error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", "", fmt.Errorf("package ID cannot be empty")
+	}
+
+	parts := strings.Split(id, ":")
+	switch len(parts) {
+	case 1:
+		return "", parts[0], nil
+	case 2:
+		return parts[0], parts[1], nil
+	default:
+		return "", "", fmt.Errorf("invalid package ID %q: expected 'name' or 'namespace:name'", id)
+	}
 }
 
 // validate that the 'vars' and 'sensitive_vars' all have unique names
