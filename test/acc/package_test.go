@@ -5,6 +5,7 @@ package acc
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -77,7 +78,7 @@ func TestNamespacedPackage(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Create and Read testing
 			{
-				Config: testAccNamespacedPackageResourceConfig,
+				Config: testAccNamespacedPackageResourceConfig(t),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("uds_package.dos_games", "namespace", "demo"),
 				),
@@ -87,7 +88,15 @@ func TestNamespacedPackage(t *testing.T) {
 	})
 }
 
-var testAccNamespacedPackageResourceConfig = fmt.Sprintf(`
+func testAccNamespacedPackageResourceConfig(t *testing.T) string {
+	t.Helper()
+	// terraform-plugin-testing runs Terraform from a temp directory, so file() requires
+	// an absolute path. We resolve it here relative to the test package directory.
+	pubKeyPath, err := filepath.Abs("dosgames.pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf(`
 resource "uds_package" "init" {
   source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
   architecture = "%s"
@@ -99,6 +108,7 @@ resource "uds_package" "dos_games" {
   namespace    = "demo"
   depends_on   = [uds_package.init]
 
-  verify_signature = false
+  public_key = file("%s")
 }
-`, initPackageVersion, runtime.GOARCH)
+`, initPackageVersion, runtime.GOARCH, pubKeyPath)
+}
