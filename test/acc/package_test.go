@@ -5,6 +5,7 @@ package acc
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -69,3 +70,45 @@ resource "uds_package" "init" {
   architecture = "%s"
 }
 `, initPackageVersion, runtime.GOARCH)
+
+func TestNamespacedPackage(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Create and Read testing
+			{
+				Config: testAccNamespacedPackageResourceConfig(t),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("uds_package.dos_games", "namespace", "demo"),
+				),
+			},
+			// Delete testing automatically occurs in TestCase
+		},
+	})
+}
+
+func testAccNamespacedPackageResourceConfig(t *testing.T) string {
+	t.Helper()
+	// terraform-plugin-testing runs Terraform from a temp directory, so file() requires
+	// an absolute path. We resolve it here relative to the test package directory.
+	pubKeyPath, err := filepath.Abs("dosgames.pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf(`
+resource "uds_package" "init" {
+  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
+  architecture = "%s"
+}
+
+resource "uds_package" "dos_games" {
+  source       = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
+  architecture = uds_package.init.architecture
+  namespace    = "demo"
+  depends_on   = [uds_package.init]
+
+  public_key = file("%s")
+}
+`, initPackageVersion, runtime.GOARCH, pubKeyPath)
+}
