@@ -98,6 +98,11 @@ type PackageResourceModel struct {
 	Version        types.String `tfsdk:"version"`
 	Metadata       types.Object `tfsdk:"metadata"`
 	ConnectStrings types.Set    `tfsdk:"connect_strings"` // Set of ConnectString objects
+	// export_vars is a list of variable names to export from the package deploy
+	ExportVars types.List `tfsdk:"export_vars"`
+
+	// exported_vars is a read-only map of exported variable names to values
+	ExportedVars types.Map `tfsdk:"exported_vars"`
 }
 
 // ComponentModel represents a UDS package component configuration.
@@ -279,6 +284,17 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						},
 					},
 				},
+			},
+			"export_vars": schema.ListAttribute{
+				MarkdownDescription: "List of variable names to export from the package deploy.",
+				Optional:            true,
+				ElementType:         types.StringType,
+			},
+			"exported_vars": schema.MapAttribute{
+				MarkdownDescription: "Read-only map of exported variable names to values.",
+				Computed:            true,
+				ElementType:         types.StringType,
+				Sensitive:           true,
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -1005,6 +1021,58 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, err
 	}
 	tflog.Debug(ctx, "ending deploy")
+
+	// If the plan asked for exported variables, build the exported_vars map from the deploy result.
+	if !plan.ExportVars.IsNull() && !plan.ExportVars.IsUnknown() {
+		var exportNames []string
+		if diags := plan.ExportVars.ElementsAs(ctx, &exportNames, false); diags.HasError() {
+			// Could not parse export names; set empty map
+			plan.ExportedVars, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		} else {
+			exportedMap := make(map[string]attr.Value)
+			for _, name := range exportNames {
+				found := false
+				// try set variables from VariableConfig
+				if deployResult.VariableConfig != nil {
+					if sv, ok := deployResult.VariableConfig.GetSetVariable(name); ok {
+						exportedMap[name] = types.StringValue(sv.Value)
+						found = true
+					} else if sv2, ok2 := deployResult.VariableConfig.GetSetVariable(strings.ToUpper(name)); ok2 {
+						exportedMap[name] = types.StringValue(sv2.Value)
+						found = true
+					}
+				}
+
+				// try deploy values (may be structured); marshal non-strings to YAML
+				if !found && deployResult.Values != nil {
+					if v, ok := deployResult.Values[name]; ok {
+						switch t := v.(type) {
+						case string:
+							exportedMap[name] = types.StringValue(t)
+						default:
+							b, _ := yaml.Marshal(t)
+							exportedMap[name] = types.StringValue(strings.TrimSpace(string(b)))
+						}
+						found = true
+					} else if v, ok := deployResult.Values[strings.ToUpper(name)]; ok {
+						switch t := v.(type) {
+						case string:
+							exportedMap[name] = types.StringValue(t)
+						default:
+							b, _ := yaml.Marshal(t)
+							exportedMap[name] = types.StringValue(strings.TrimSpace(string(b)))
+						}
+						found = true
+					}
+				}
+			}
+
+			plan.ExportedVars, _ = types.MapValue(types.StringType, exportedMap)
+		}
+	} else {
+		// ensure exported_vars is an empty map when not requested
+		plan.ExportedVars, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	}
 
 	// Populate connect strings from deploy result
 	connectStrings, err := getConnectStringsFromDeployResult(deployResult)

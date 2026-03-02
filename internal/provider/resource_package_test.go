@@ -27,6 +27,7 @@ import (
 	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
+	"github.com/zarf-dev/zarf/src/pkg/variables"
 
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 )
@@ -151,6 +152,20 @@ func WithVars(vars []VariableModel) PackageResourceModelDataOption {
 func WithSensitiveVars(sensitiveVars []VariableModel) PackageResourceModelDataOption {
 	return func(model *PackageResourceModel) {
 		model.SensitiveVars = variableSliceToSet(sensitiveVars)
+	}
+}
+
+func WithExportVars(exportVars []string) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		if len(exportVars) == 0 {
+			model.ExportVars = types.ListNull(types.StringType)
+			return
+		}
+		elements := make([]attr.Value, len(exportVars))
+		for i, v := range exportVars {
+			elements[i] = types.StringValue(v)
+		}
+		model.ExportVars = types.ListValueMust(types.StringType, elements)
 	}
 }
 
@@ -388,6 +403,66 @@ func TestPackageResource_Upsert_VariableModels(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPackageResource_Upsert_ExportedVars(t *testing.T) {
+	packageLayout := layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Metadata: v1alpha1.ZarfMetadata{
+				Name:        "test-package",
+				Description: "Test package",
+				Version:     "0.0.1",
+			},
+			Components: []v1alpha1.ZarfComponent{
+				{
+					Name:     "test-required-component-0",
+					Required: helpers.BoolPtr(true),
+					Default:  false,
+				},
+			},
+		},
+	}
+
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+
+	// Build a VariableConfig with a set variable
+	vc := variables.New("", nil, nil)
+	vc.SetVariable("OUTPUT", "outval", false, false, v1alpha1.RawVariableType)
+
+	// Build deploy result with variable config only (can't import internal value type here)
+	deployRes := packager.DeployResult{
+		VariableConfig: vc,
+	}
+
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployRes, nil)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+	testModel := NewTestPackageResourceModel(
+		WithExportVars([]string{"OUTPUT", "other", "complex"}),
+	)
+
+	plan, err := packageResource.upsert(context.Background(), testModel)
+	assert.NoError(t, err)
+
+	// Extract exported vars into a map[string]string for assertions
+	exported := map[string]string{}
+	if !plan.ExportedVars.IsNull() && !plan.ExportedVars.IsUnknown() {
+		diags := plan.ExportedVars.ElementsAs(context.Background(), &exported, false)
+		assert.False(t, diags.HasError(), "failed to read exported_vars: %v", diags)
+	}
+
+	// Check value from VariableConfig is present and other requested keys are absent
+	assert.Equal(t, "outval", exported["OUTPUT"])
+	_, ok := exported["other"]
+	assert.False(t, ok)
+
+	mockPackager.AssertExpectations(t)
+	mockPackageComponentFilter.AssertExpectations(t)
 }
 
 func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
