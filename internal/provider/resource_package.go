@@ -110,6 +110,13 @@ type PackageResourceModel struct {
 	// potentially-secret runtime values in plan/state output. Callers should
 	// reference this map via module outputs (e.g. `module.foo.exported_vars["NAME"]`).
 	ExportedVars types.Map `tfsdk:"exported_vars"`
+
+	// When true, the provider will tolerate a missing deployed package during
+	// refresh/read operations and will keep the Terraform state instead of
+	// removing the resource. This is useful for packages that only execute
+	// actions (no persistent cluster objects) and therefore may not have a
+	// persisted deployed-package record in Zarf. Default: false
+	TolerateMissingDeployed types.Bool `tfsdk:"tolerate_missing_deployed"`
 }
 
 // ComponentModel represents a UDS package component configuration.
@@ -303,6 +310,10 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				ElementType:         types.StringType,
 				Sensitive:           true,
 			},
+			"tolerate_missing_deployed": schema.BoolAttribute{
+				MarkdownDescription: "When true, keep the Terraform state if the deployed package record is not found instead of removing the resource.",
+				Optional:            true,
+			},
 		},
 		Blocks: map[string]schema.Block{
 			"component": schema.SetNestedBlock{
@@ -396,6 +407,8 @@ type PackageResource struct {
 	packager       udsPackager.Packager
 	cluster        udsCluster.Cluster
 	packageFilter  udsPackager.PackageComponentFilter
+	// Hook used in tests to override deployed package lookup behavior.
+	getDeployedPackageFunc func(ctx context.Context, name string, namespace string) (zarfState.DeployedPackage, bool, error)
 }
 
 // ValidateConfig ensures validation between interdependant fields within a PackageResourceModel.
@@ -480,7 +493,13 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	deployedPackage, found, err := r.getDeployedPackage(timeoutCtx, packageName, packageNamespace)
+	var deployedPackage zarfState.DeployedPackage
+	var found bool
+	if r.getDeployedPackageFunc != nil {
+		deployedPackage, found, err = r.getDeployedPackageFunc(timeoutCtx, packageName, packageNamespace)
+	} else {
+		deployedPackage, found, err = r.getDeployedPackage(timeoutCtx, packageName, packageNamespace)
+	}
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error getting deployed package",
@@ -489,6 +508,18 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 	if !found {
+		// If the resource is configured to tolerate missing deployed records,
+		// keep the Terraform state and emit a warning. This is useful for
+		// packages that only perform actions and do not create persistent
+		// deployed-package records in Zarf.
+		if !data.TolerateMissingDeployed.IsNull() && data.TolerateMissingDeployed.ValueBool() {
+			resp.Diagnostics.AddWarning(
+				"Deployed package not found (tolerated)",
+				"Could not find deployed package with name "+packageName+"; keeping Terraform state because `tolerate_missing_deployed` is set",
+			)
+			return
+		}
+
 		resp.Diagnostics.AddWarning(
 			"Deployed package not found",
 			"Could not find deployed package with namespace "+packageNamespace+" and name "+packageName+" - removing resource",

@@ -17,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -677,6 +678,94 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 				fmt.Sprintf("Optional components selected for deploy do not match: expected: %v, actual: %v", tc.expectedOptionalComponentsForDeployFilter, actualOptionalComponents))
 		})
 	}
+}
+
+// Test Read behavior when deployed package is missing and `tolerate_missing_deployed` is set.
+func TestPackageResource_Read_TolerateMissingDeployed(t *testing.T) {
+	// Create a PackageResource and inject a fake getDeployedPackage function that returns not-found.
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+	packageResource.getDeployedPackageFunc = func(ctx context.Context, name string, namespace string) (zarfState.DeployedPackage, bool, error) {
+		return zarfState.DeployedPackage{}, false, nil
+	}
+
+	// Prepare prior state with tolerate_missing_deployed = true
+	stateModel := NewTestPackageResourceModel()
+	stateModel.ID = types.StringValue("core-secrets")
+	stateModel.TolerateMissingDeployed = types.BoolValue(true)
+	// Provide a null metadata object matching the resource schema to satisfy State.Set
+	metadataTypes := map[string]attr.Type{"name": types.StringType, "description": types.StringType, "version": types.StringType}
+	stateModel.Metadata = types.ObjectNull(metadataTypes)
+	// Ensure exported_vars and export_vars are null values matching schema
+	stateModel.ExportedVars = types.MapNull(types.StringType)
+	stateModel.ExportVars = types.SetNull(types.StringType)
+	stateModel.ConnectStrings = types.SetNull(types.ObjectType{AttrTypes: map[string]attr.Type{"name": types.StringType, "description": types.StringType}})
+
+	var req resource.ReadRequest
+	req.State = tfsdk.State{}
+	// Populate state schema from the resource so Set/Get work correctly
+	var schemaResp resource.SchemaResponse
+	packageResource.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+	req.State.Schema = schemaResp.Schema
+	diags := req.State.Set(context.Background(), &stateModel)
+	assert.False(t, diags.HasError(), "failed to set request state: %v", diags)
+
+	var resp resource.ReadResponse
+	// Pre-populate response state as the framework would do
+	resp.State = req.State
+	packageResource.Read(context.Background(), req, &resp)
+
+	// Expect a warning but the state should be preserved (no error reading state)
+	assert.False(t, resp.Diagnostics.HasError(), "read produced an error: %v", resp.Diagnostics)
+
+	var out PackageResourceModel
+	diags2 := resp.State.Get(context.Background(), &out)
+	assert.False(t, diags2.HasError(), "failed to get state after read: %v", diags2)
+	assert.Equal(t, "core-secrets", out.ID.ValueString())
+}
+
+// Test Read default behavior (tolerate_missing_deployed = false) removes missing deployed resource from state.
+func TestPackageResource_Read_RemoveMissingDeployedByDefault(t *testing.T) {
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+	packageResource.getDeployedPackageFunc = func(ctx context.Context, name string, namespace string) (zarfState.DeployedPackage, bool, error) {
+		return zarfState.DeployedPackage{}, false, nil
+	}
+
+	// Prepare prior state with tolerate_missing_deployed = false (default)
+	stateModel := NewTestPackageResourceModel()
+	stateModel.ID = types.StringValue("core-secrets")
+	// leave TolerateMissingDeployed null/false
+	metadataTypes := map[string]attr.Type{"name": types.StringType, "description": types.StringType, "version": types.StringType}
+	stateModel.Metadata = types.ObjectNull(metadataTypes)
+	stateModel.ExportedVars = types.MapNull(types.StringType)
+	stateModel.ExportVars = types.SetNull(types.StringType)
+	stateModel.ConnectStrings = types.SetNull(types.ObjectType{AttrTypes: map[string]attr.Type{"name": types.StringType, "description": types.StringType}})
+
+	var req resource.ReadRequest
+	req.State = tfsdk.State{}
+	var schemaResp resource.SchemaResponse
+	packageResource.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+	req.State.Schema = schemaResp.Schema
+	diags := req.State.Set(context.Background(), &stateModel)
+	assert.False(t, diags.HasError(), "failed to set request state: %v", diags)
+
+	var resp resource.ReadResponse
+	// Pre-populate response state as the framework would do
+	resp.State = req.State
+	packageResource.Read(context.Background(), req, &resp)
+
+	// Expect a warning but no error; the provider should have removed the resource from state.
+	assert.False(t, resp.Diagnostics.HasError(), "read produced an error: %v", resp.Diagnostics)
+
+	var out PackageResourceModel
+	diags2 := resp.State.Get(context.Background(), &out)
+	// Getting the removed resource should produce an error (state is empty)
+	assert.True(t, diags2.HasError(), "expected error getting state for removed resource, got none")
 }
 
 func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
