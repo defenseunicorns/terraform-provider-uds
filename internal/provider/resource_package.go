@@ -98,10 +98,17 @@ type PackageResourceModel struct {
 	Version        types.String `tfsdk:"version"`
 	Metadata       types.Object `tfsdk:"metadata"`
 	ConnectStrings types.Set    `tfsdk:"connect_strings"` // Set of ConnectString objects
-	// export_vars is a list of variable names to export from the package deploy
-	ExportVars types.List `tfsdk:"export_vars"`
+	// export_vars is a user-provided set of variable names that should be exported
+	// from the package during deploy. These names instruct the provider to look up
+	// values that were set during action transforms or by the package runtime and
+	// make them available to other packages.
+	ExportVars types.Set `tfsdk:"export_vars"`
 
-	// exported_vars is a read-only map of exported variable names to values
+	// exported_vars is a computed, read-only map containing the values of variables
+	// requested via `export_vars`. The provider populates this map after a
+	// successful deploy. It is intentionally marked sensitive to avoid leaking
+	// potentially-secret runtime values in plan/state output. Callers should
+	// reference this map via module outputs (e.g. `module.foo.exported_vars["NAME"]`).
 	ExportedVars types.Map `tfsdk:"exported_vars"`
 }
 
@@ -285,8 +292,8 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					},
 				},
 			},
-			"export_vars": schema.ListAttribute{
-				MarkdownDescription: "List of variable names to export from the package deploy.",
+			"export_vars": schema.SetAttribute{
+				MarkdownDescription: "Set of variable names to export from the package deploy.",
 				Optional:            true,
 				ElementType:         types.StringType,
 			},

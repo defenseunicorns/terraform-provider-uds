@@ -158,14 +158,14 @@ func WithSensitiveVars(sensitiveVars []VariableModel) PackageResourceModelDataOp
 func WithExportVars(exportVars []string) PackageResourceModelDataOption {
 	return func(model *PackageResourceModel) {
 		if len(exportVars) == 0 {
-			model.ExportVars = types.ListNull(types.StringType)
+			model.ExportVars = types.SetNull(types.StringType)
 			return
 		}
 		elements := make([]attr.Value, len(exportVars))
 		for i, v := range exportVars {
 			elements[i] = types.StringValue(v)
 		}
-		model.ExportVars = types.ListValueMust(types.StringType, elements)
+		model.ExportVars = types.SetValueMust(types.StringType, elements)
 	}
 }
 
@@ -460,6 +460,107 @@ func TestPackageResource_Upsert_ExportedVars(t *testing.T) {
 	assert.Equal(t, "outval", exported["OUTPUT"])
 	_, ok := exported["other"]
 	assert.False(t, ok)
+
+	mockPackager.AssertExpectations(t)
+	mockPackageComponentFilter.AssertExpectations(t)
+}
+
+// Ensure export_vars lookup is case-insensitive: user may request "output" while
+// VariableConfig contains "OUTPUT". The provider should return the exported
+// variable keyed by the original export_vars entry (preserve user-provided name).
+func TestPackageResource_Upsert_ExportedVars_CaseInsensitive(t *testing.T) {
+	packageLayout := layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Metadata: v1alpha1.ZarfMetadata{
+				Name:        "test-package",
+				Description: "Test package",
+				Version:     "0.0.1",
+			},
+			Components: []v1alpha1.ZarfComponent{
+				{
+					Name:     "test-required-component-0",
+					Required: helpers.BoolPtr(true),
+					Default:  false,
+				},
+			},
+		},
+	}
+
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+
+	// VariableConfig contains uppercase variable name
+	vc := variables.New("", nil, nil)
+	vc.SetVariable("OUTPUT", "outval", false, false, v1alpha1.RawVariableType)
+
+	deployRes := packager.DeployResult{VariableConfig: vc}
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployRes, nil)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+	// User requested lower-case name; provider should still find the uppercase set variable.
+	testModel := NewTestPackageResourceModel(
+		WithExportVars([]string{"output"}),
+	)
+
+	plan, err := packageResource.upsert(context.Background(), testModel)
+	assert.NoError(t, err)
+
+	exported := map[string]string{}
+	if !plan.ExportedVars.IsNull() && !plan.ExportedVars.IsUnknown() {
+		diags := plan.ExportedVars.ElementsAs(context.Background(), &exported, false)
+		assert.False(t, diags.HasError(), "failed to read exported_vars: %v", diags)
+	}
+
+	// Key should be the original requested name
+	assert.Equal(t, "outval", exported["output"])
+
+	mockPackager.AssertExpectations(t)
+	mockPackageComponentFilter.AssertExpectations(t)
+}
+
+// When export_vars is not provided (null) or provided as an empty list,
+// the provider should return an empty `exported_vars` map (not null) so
+// callers can safely index into it.
+func TestPackageResource_Upsert_ExportedVars_EmptyAndNull(t *testing.T) {
+	packageLayout := layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Metadata:   v1alpha1.ZarfMetadata{Name: "test-package"},
+			Components: []v1alpha1.ZarfComponent{{Name: "test-required-component-0", Required: helpers.BoolPtr(true)}},
+		},
+	}
+
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+	// Deploy returns an empty result (no VariableConfig)
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+	// Case A: ExportVars explicitly null
+	testModelNull := NewTestPackageResourceModel()
+	testModelNull.ExportVars = types.SetNull(types.StringType)
+	planNull, err := packageResource.upsert(context.Background(), testModelNull)
+	assert.NoError(t, err)
+	exportedNull := map[string]string{}
+	diags := planNull.ExportedVars.ElementsAs(context.Background(), &exportedNull, false)
+	assert.False(t, diags.HasError())
+	assert.Len(t, exportedNull, 0)
+
+	// Case B: ExportVars empty list
+	testModelEmpty := NewTestPackageResourceModel(WithExportVars([]string{}))
+	planEmpty, err := packageResource.upsert(context.Background(), testModelEmpty)
+	assert.NoError(t, err)
+	exportedEmpty := map[string]string{}
+	diags2 := planEmpty.ExportedVars.ElementsAs(context.Background(), &exportedEmpty, false)
+	assert.False(t, diags2.HasError())
+	assert.Len(t, exportedEmpty, 0)
 
 	mockPackager.AssertExpectations(t)
 	mockPackageComponentFilter.AssertExpectations(t)
