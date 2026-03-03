@@ -687,7 +687,7 @@ func TestPackageResource_Read_TolerateMissingDeployed(t *testing.T) {
 	mockPackageComponentFilter := &MockPackageComponentFilter{}
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
-	packageResource.getDeployedPackageFunc = func(ctx context.Context, name string, namespace string) (zarfState.DeployedPackage, bool, error) {
+	packageResource.getDeployedPackageFunc = func(_ context.Context, _ string, _ string) (zarfState.DeployedPackage, bool, error) {
 		return zarfState.DeployedPackage{}, false, nil
 	}
 
@@ -732,7 +732,7 @@ func TestPackageResource_Read_RemoveMissingDeployedByDefault(t *testing.T) {
 	mockPackageComponentFilter := &MockPackageComponentFilter{}
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
-	packageResource.getDeployedPackageFunc = func(ctx context.Context, name string, namespace string) (zarfState.DeployedPackage, bool, error) {
+	packageResource.getDeployedPackageFunc = func(_ context.Context, _ string, _ string) (zarfState.DeployedPackage, bool, error) {
 		return zarfState.DeployedPackage{}, false, nil
 	}
 
