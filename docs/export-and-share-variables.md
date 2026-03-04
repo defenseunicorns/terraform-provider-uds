@@ -22,12 +22,12 @@ module "app" {
   source = "./modules/uds-package"
   pkg = {
     source = "oci://ghcr.io/example/app:1.0.0"
-    vars = [
-      {
-        name  = "db_password"
-        value = module.core_secrets.exported_vars["DB_PASSWORD"]
+    overrides = {
+      appComponent = {
+        appChart = [
+          { path = "app.dbpass", value =  module.core_secrets.exported_vars["DB_PASSWORD"] },
+        ]
       }
-    ]
   }
 }
 ```
