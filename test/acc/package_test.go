@@ -13,7 +13,7 @@ import (
 )
 
 // renovate: datasource=github-tags depName=zarf-dev/zarf
-const initPackageVersion = "v0.73.0"
+const initPackageVersion = "v0.73.1"
 
 func TestAccPackageResource(t *testing.T) {
 	resource.Test(t, resource.TestCase{
