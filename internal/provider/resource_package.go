@@ -1067,68 +1067,67 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	tflog.Debug(ctx, "ending deploy")
 
 	// If the plan asked for exported variables, build the exported_vars map from the deploy result.
-	if !plan.ExportVars.IsNull() {
-		if plan.ExportVars.IsUnknown() {
-			// Preserve unknown when export_vars is unknown so downstream references remain unknown.
-			plan.ExportedVars = types.MapUnknown(types.StringType)
-		} else {
-			var exportNames []string
-			if diags := plan.ExportVars.ElementsAs(ctx, &exportNames, false); diags.HasError() {
-				// Could not parse export names; surface an error so the operation
-				// fails rather than silently writing an empty map into state.
-				return plan, fmt.Errorf("failed to read export_vars: %v", diags)
-			} else {
-				exportedMap := make(map[string]attr.Value)
-				for _, name := range exportNames {
-					found := false
-					// try set variables from VariableConfig (case-insensitive)
-					if deployResult.VariableConfig != nil {
-						if sv, ok := deployResult.VariableConfig.GetSetVariable(name); ok {
+	if plan.ExportVars.IsNull() {
+		// ensure exported_vars is an empty map when not requested
+		plan.ExportedVars, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	} else if plan.ExportVars.IsUnknown() {
+		// Preserve unknown when export_vars is unknown so downstream references remain unknown.
+		plan.ExportedVars = types.MapUnknown(types.StringType)
+	} else {
+		var exportNames []string
+		if diags := plan.ExportVars.ElementsAs(ctx, &exportNames, false); diags.HasError() {
+			// Could not parse export names; surface an error so the operation
+			// fails rather than silently writing an empty map into state.
+			return plan, fmt.Errorf("failed to read export_vars: %v", diags)
+		}
+
+		exportedMap := make(map[string]attr.Value)
+		for _, name := range exportNames {
+			found := false
+
+			// try set variables from VariableConfig (case-insensitive)
+			if deployResult.VariableConfig != nil {
+				if sv, ok := deployResult.VariableConfig.GetSetVariable(name); ok {
+					exportedMap[name] = types.StringValue(sv.Value)
+					found = true
+				} else {
+					// Fallback: iterate the map and perform case-insensitive match
+					for k, sv := range deployResult.VariableConfig.GetSetVariableMap() {
+						if strings.EqualFold(k, name) {
 							exportedMap[name] = types.StringValue(sv.Value)
 							found = true
-						} else {
-							// Fallback: iterate the map and perform case-insensitive match
-							for k, sv := range deployResult.VariableConfig.GetSetVariableMap() {
-								if strings.EqualFold(k, name) {
-									exportedMap[name] = types.StringValue(sv.Value)
-									found = true
-									break
-								}
-							}
-						}
-					}
-
-					// try deploy values (may be structured); perform case-insensitive key match and marshal non-strings to YAML
-					if !found && deployResult.Values != nil {
-						for k, v := range deployResult.Values {
-							if strings.EqualFold(k, name) {
-								switch t := v.(type) {
-								case string:
-									exportedMap[name] = types.StringValue(t)
-								default:
-									b, err := yaml.Marshal(t)
-									if err != nil {
-										return plan, fmt.Errorf("failed to marshal exported var %q: %w", name, err)
-									}
-									exportedMap[name] = types.StringValue(strings.TrimSpace(string(b)))
-								}
-								found = true
-								break
-							}
+							break
 						}
 					}
 				}
+			}
 
-				var mapDiags diag.Diagnostics
-				plan.ExportedVars, mapDiags = types.MapValue(types.StringType, exportedMap)
-				if mapDiags.HasError() {
-					return plan, fmt.Errorf("failed to construct exported_vars map: %v", mapDiags)
+			// try deploy values (may be structured); perform case-insensitive key match and marshal non-strings to YAML
+			if !found && deployResult.Values != nil {
+				for k, v := range deployResult.Values {
+					if strings.EqualFold(k, name) {
+						switch t := v.(type) {
+						case string:
+							exportedMap[name] = types.StringValue(t)
+						default:
+							b, err := yaml.Marshal(t)
+							if err != nil {
+								return plan, fmt.Errorf("failed to marshal exported var %q: %w", name, err)
+							}
+							exportedMap[name] = types.StringValue(strings.TrimSpace(string(b)))
+						}
+						found = true
+						break
+					}
 				}
 			}
 		}
-	} else {
-		// ensure exported_vars is an empty map when not requested
-		plan.ExportedVars, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+
+		var mapDiags diag.Diagnostics
+		plan.ExportedVars, mapDiags = types.MapValue(types.StringType, exportedMap)
+		if mapDiags.HasError() {
+			return plan, fmt.Errorf("failed to construct exported_vars map: %v", mapDiags)
+		}
 	}
 
 	// Populate connect strings from deploy result
