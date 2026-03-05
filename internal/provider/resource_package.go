@@ -516,7 +516,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		if !data.TolerateMissingDeployed.IsNull() && data.TolerateMissingDeployed.ValueBool() {
 			resp.Diagnostics.AddWarning(
 				"Deployed package not found (tolerated)",
-				"Could not find deployed package with name "+packageName+"; keeping Terraform state because `tolerate_missing_deployed` is set",
+				"Could not find deployed package with namespace "+packageNamespace+" and name "+packageName+"; keeping Terraform state because `tolerate_missing_deployed` is set to true",
 			)
 			// Explicitly restore prior state to guarantee state is preserved.
 			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)

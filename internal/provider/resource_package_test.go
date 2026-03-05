@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v2"
+
 	"github.com/defenseunicorns/pkg/helpers/v2"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -520,6 +522,81 @@ func TestPackageResource_Upsert_ExportedVars_CaseInsensitive(t *testing.T) {
 
 	// Key should be the original requested name
 	assert.Equal(t, "outval", exported["output"])
+
+	mockPackager.AssertExpectations(t)
+	mockPackageComponentFilter.AssertExpectations(t)
+}
+
+// Ensure provider can export values coming from deployResult.Values
+// including structured values which should be YAML-encoded in the exported map.
+func TestPackageResource_Upsert_ExportedVars_FromDeployValues(t *testing.T) {
+	packageLayout := layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Metadata: v1alpha1.ZarfMetadata{
+				Name:        "test-package",
+				Description: "Test package",
+				Version:     "0.0.1",
+			},
+			Components: []v1alpha1.ZarfComponent{{Name: "test-required-component-0", Required: helpers.BoolPtr(true)}},
+		},
+	}
+
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+
+	// Build deploy result with Values containing a plain string and a structured value
+	structured := map[string]any{"a": 1, "b": "x"}
+	deployRes := packager.DeployResult{
+		Values: map[string]any{
+			"plain":   "strval",
+			"complex": structured,
+		},
+	}
+
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployRes, nil)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+	testModel := NewTestPackageResourceModel(
+		WithExportVars([]string{"plain", "complex", "missing"}),
+	)
+
+	plan, err := packageResource.upsert(context.Background(), testModel)
+	assert.NoError(t, err)
+
+	exported := map[string]string{}
+	if !plan.ExportedVars.IsNull() && !plan.ExportedVars.IsUnknown() {
+		diags := plan.ExportedVars.ElementsAs(context.Background(), &exported, false)
+		assert.False(t, diags.HasError(), "failed to read exported_vars: %v", diags)
+	}
+
+	// plain string preserved
+	assert.Equal(t, "strval", exported["plain"])
+
+	// missing key not present
+	_, ok := exported["missing"]
+	assert.False(t, ok)
+
+	// complex should be YAML encoded; unmarshal to verify contents
+	complexYAML, ok := exported["complex"]
+	assert.True(t, ok)
+	var decoded map[string]any
+	err = yaml.Unmarshal([]byte(complexYAML), &decoded)
+	assert.NoError(t, err)
+	// YAML unmarshals numbers as int or float64 depending; assert presence/values
+	assert.Equal(t, "x", decoded["b"])
+	// numeric 1 may be float64 after unmarshal; compare as float64 or int
+	switch v := decoded["a"].(type) {
+	case int:
+		assert.Equal(t, 1, v)
+	case float64:
+		assert.Equal(t, 1.0, v)
+	default:
+		t.Fatalf("unexpected type for decoded['a']: %T", v)
+	}
 
 	mockPackager.AssertExpectations(t)
 	mockPackageComponentFilter.AssertExpectations(t)
