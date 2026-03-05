@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.2](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.2.1...v0.2.2) (2026-03-05)
+
+
+### Bug Fixes
+
+* regression that blocks non-k8s packages from deploying ([#179](https://github.com/defenseunicorns/terraform-provider-uds/issues/179)) ([b3bbeaa](https://github.com/defenseunicorns/terraform-provider-uds/commit/b3bbeaad69f2a84772132549e1331dc44311cfd0))
+
+
+### Miscellaneous
+
+* **deps:** update github actions to 88cf7cc ([#178](https://github.com/defenseunicorns/terraform-provider-uds/issues/178)) ([2913eb7](https://github.com/defenseunicorns/terraform-provider-uds/commit/2913eb7f0a54a549c3c78b45d7b4e2a28c04a5a9))
+
 ## [0.2.1](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.2.0...v0.2.1) (2026-03-04)
 
 
