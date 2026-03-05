@@ -159,7 +159,9 @@ func WithSensitiveVars(sensitiveVars []VariableModel) PackageResourceModelDataOp
 func WithExportVars(exportVars []string) PackageResourceModelDataOption {
 	return func(model *PackageResourceModel) {
 		if len(exportVars) == 0 {
-			model.ExportVars = types.SetNull(types.StringType)
+			// Use an explicit empty set (not null) for the empty-list case so
+			// tests can distinguish between "null" and "empty but known".
+			model.ExportVars = types.SetValueMust(types.StringType, []attr.Value{})
 			return
 		}
 		elements := make([]attr.Value, len(exportVars))

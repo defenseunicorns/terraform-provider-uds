@@ -25,9 +25,10 @@ module "app" {
     overrides = {
       appComponent = {
         appChart = [
-          { path = "app.dbpass", value =  module.core_secrets.exported_vars["DB_PASSWORD"] },
+          { path = "app.dbpass", value = module.core_secrets.exported_vars["DB_PASSWORD"] },
         ]
       }
+    }
   }
 }
 ```
