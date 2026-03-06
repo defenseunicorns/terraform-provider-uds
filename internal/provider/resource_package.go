@@ -980,7 +980,7 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 
 	_, found, err := r.getDeployedPackage(clusterTimeoutCtx, packageName, packageNamespace)
 	if err != nil {
-		return plan, err
+		tflog.Warn(ctx, "could not check for existing package, proceeding with deploy", map[string]interface{}{"error": err.Error()})
 	}
 	if found {
 		return plan, fmt.Errorf("package with namespace '%s' and name '%s' already exists", plan.Namespace.ValueString(), packageName)
