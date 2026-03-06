@@ -111,12 +111,12 @@ resource "uds_package" "dos_games" {
 - `sensitive_vars` (Attributes Set) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))
 - `skip_signature_validation` (Boolean, Deprecated) Skip validating the signature of a signed UDS package.
 - `timeout` (String) Timeout for the deploy operation.
-- `tolerate_missing_deployed` (Boolean) When true, keep the Terraform state if the deployed package record is not found instead of removing the resource.
 - `vars` (Attributes Set) UDS package variables to set. (see [below for nested schema](#nestedatt--vars))
 - `verify_signature` (Boolean) Verify the signature of a UDS package. When enabled, a signed package with an invalid or missing signature will fail to deploy. When disabled, the package will continue to deploy with signature verification issues logged as warnings.
 
 ### Read-Only
 
+- `action_only` (Boolean) Computed flag indicating the package performed actions only (no persistent deployed components).
 - `connect_strings` (Attributes Set) Connect strings for connecting to services deployed by the package. (see [below for nested schema](#nestedatt--connect_strings))
 - `exported_vars` (Map of String, Sensitive) Read-only map of exported variable names to values.
 - `id` (String) Identifier for the deployed UDS package.

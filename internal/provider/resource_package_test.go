@@ -759,8 +759,8 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 	}
 }
 
-// Test Read behavior when deployed package is missing and `tolerate_missing_deployed` is set.
-func TestPackageResource_Read_TolerateMissingDeployed(t *testing.T) {
+// Test Read behavior when deployed package is missing and prior state indicates action-only.
+func TestPackageResource_Read_ActionOnlyPreservesState(t *testing.T) {
 	// Create a PackageResource and inject a fake getDeployedPackage function that returns not-found.
 	mockPackager := &MockPackager{}
 	mockPackageComponentFilter := &MockPackageComponentFilter{}
@@ -770,10 +770,10 @@ func TestPackageResource_Read_TolerateMissingDeployed(t *testing.T) {
 		return zarfState.DeployedPackage{}, false, nil
 	}
 
-	// Prepare prior state with tolerate_missing_deployed = true
+	// Prepare prior state with action_only = true
 	stateModel := NewTestPackageResourceModel()
 	stateModel.ID = types.StringValue("core-secrets")
-	stateModel.TolerateMissingDeployed = types.BoolValue(true)
+	stateModel.ActionOnly = types.BoolValue(true)
 	// Provide a null metadata object matching the resource schema to satisfy State.Set
 	metadataTypes := map[string]attr.Type{"name": types.StringType, "description": types.StringType, "version": types.StringType}
 	stateModel.Metadata = types.ObjectNull(metadataTypes)
@@ -805,7 +805,7 @@ func TestPackageResource_Read_TolerateMissingDeployed(t *testing.T) {
 	assert.Equal(t, "core-secrets", out.ID.ValueString())
 }
 
-// Test Read default behavior (tolerate_missing_deployed = false) removes missing deployed resource from state.
+// Test Read default behavior (action_only not set) removes missing deployed resource from state.
 func TestPackageResource_Read_RemoveMissingDeployedByDefault(t *testing.T) {
 	mockPackager := &MockPackager{}
 	mockPackageComponentFilter := &MockPackageComponentFilter{}
@@ -815,10 +815,10 @@ func TestPackageResource_Read_RemoveMissingDeployedByDefault(t *testing.T) {
 		return zarfState.DeployedPackage{}, false, nil
 	}
 
-	// Prepare prior state with tolerate_missing_deployed = false (default)
+	// Prepare prior state with action_only unset/false (default)
 	stateModel := NewTestPackageResourceModel()
 	stateModel.ID = types.StringValue("core-secrets")
-	// leave TolerateMissingDeployed null/false
+	// leave ActionOnly null/false
 	metadataTypes := map[string]attr.Type{"name": types.StringType, "description": types.StringType, "version": types.StringType}
 	stateModel.Metadata = types.ObjectNull(metadataTypes)
 	stateModel.ExportedVars = types.MapNull(types.StringType)

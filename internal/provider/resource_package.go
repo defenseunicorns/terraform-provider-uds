@@ -112,12 +112,11 @@ type PackageResourceModel struct {
 	// reference this map via module outputs (e.g. `module.foo.exported_vars["NAME"]`).
 	ExportedVars types.Map `tfsdk:"exported_vars"`
 
-	// When true, the provider will tolerate a missing deployed package during
-	// refresh/read operations and will keep the Terraform state instead of
-	// removing the resource. This is useful for packages that only execute
-	// actions (no persistent cluster objects) and therefore may not have a
-	// persisted deployed-package record in Zarf. Default: false
-	TolerateMissingDeployed types.Bool `tfsdk:"tolerate_missing_deployed"`
+	// action_only is a computed boolean that indicates the package did not
+	// create any persistent deployed components during deploy (only ran
+	// actions). When true, the provider will preserve Terraform state if the
+	// deployed-package record is missing during refresh.
+	ActionOnly types.Bool `tfsdk:"action_only"`
 }
 
 // ComponentModel represents a UDS package component configuration.
@@ -311,9 +310,9 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				ElementType:         types.StringType,
 				Sensitive:           true,
 			},
-			"tolerate_missing_deployed": schema.BoolAttribute{
-				MarkdownDescription: "When true, keep the Terraform state if the deployed package record is not found instead of removing the resource.",
-				Optional:            true,
+			"action_only": schema.BoolAttribute{
+				MarkdownDescription: "Computed flag indicating the package performed actions only (no persistent deployed components).",
+				Computed:            true,
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -509,14 +508,13 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 	if !found {
-		// If the resource is configured to tolerate missing deployed records,
-		// keep the Terraform state and emit a warning. This is useful for
-		// packages that only perform actions and do not create persistent
-		// deployed-package records in Zarf.
-		if !data.TolerateMissingDeployed.IsNull() && data.TolerateMissingDeployed.ValueBool() {
+		// If this package is known to be action-only (computed), keep the
+		// Terraform state and emit a warning. Action-only packages may not
+		// have persisted deployed-package records in Zarf.
+		if !data.ActionOnly.IsNull() && data.ActionOnly.ValueBool() {
 			resp.Diagnostics.AddWarning(
-				"Deployed package not found (tolerated)",
-				"Could not find deployed package with namespace "+packageNamespace+" and name "+packageName+"; keeping Terraform state because `tolerate_missing_deployed` is set to true",
+				"Deployed package not found (action-only)",
+				"Could not find deployed package with namespace "+packageNamespace+" and name "+packageName+"; keeping Terraform state because the package was identified as action-only",
 			)
 			// Explicitly restore prior state to guarantee state is preserved.
 			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -1129,6 +1127,23 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 			return plan, fmt.Errorf("failed to construct exported_vars map: %v", mapDiags)
 		}
 	}
+
+	// Mark action-only packages: if there are no deployed components recorded
+	// with installed charts (i.e., nothing persisted to the cluster), treat
+	// this as an action-only package. Zarf returns DeployedComponents for
+	// each component, but when components don't require a cluster the
+	// InstalledCharts slice will be empty and no deployed-package secret is
+	// recorded.
+	actionOnly := true
+	if deployResult.DeployedComponents != nil && len(deployResult.DeployedComponents) > 0 {
+		for _, dc := range deployResult.DeployedComponents {
+			if len(dc.InstalledCharts) > 0 {
+				actionOnly = false
+				break
+			}
+		}
+	}
+	plan.ActionOnly = types.BoolValue(actionOnly)
 
 	// Populate connect strings from deploy result
 	connectStrings, err := getConnectStringsFromDeployResult(deployResult)
