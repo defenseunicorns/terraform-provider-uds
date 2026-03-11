@@ -956,3 +956,93 @@ func TestDurationGreaterThanValidator_NullAndUnknown(t *testing.T) {
 		})
 	}
 }
+
+func TestOCIReferenceValidator(t *testing.T) {
+	t.Parallel()
+
+	invalidOCIReferenceErrorSummary := "Invalid OCI Reference"
+	v := OCIReferenceValidator()
+
+	tests := []struct {
+		name                 string
+		value                types.String
+		hasError             bool
+		expectedErrorSummary string
+	}{
+		{
+			name:     "valid OCI reference with version tag",
+			value:    types.StringValue(ociReferenceWithVersionTag),
+			hasError: false,
+		},
+		{
+			name:     "valid OCI reference with latest tag",
+			value:    types.StringValue(ociReferenceWithLatestTag),
+			hasError: false,
+		},
+		{
+			name:     "valid OCI reference with digest",
+			value:    types.StringValue(ociReferenceWithDigest),
+			hasError: false,
+		},
+		{
+			name:     "valid OCI reference with port",
+			value:    types.StringValue(ociReferenceWithPort),
+			hasError: false,
+		},
+		{
+			name:     "valid OCI reference with localhost",
+			value:    types.StringValue(ociReferenceWithLocalhost),
+			hasError: false,
+		},
+		{
+			name:                 "OCI reference without scheme is invalid",
+			value:                types.StringValue(ociReferenceWithoutScheme),
+			hasError:             true,
+			expectedErrorSummary: invalidOCIReferenceErrorSummary,
+		},
+		{
+			name:                 "empty string is invalid",
+			value:                types.StringValue(""),
+			hasError:             true,
+			expectedErrorSummary: invalidOCIReferenceErrorSummary,
+		},
+		{
+			name:                 "OCI reference with only scheme is invalid",
+			value:                types.StringValue(ociReferenceWithOnlyScheme),
+			hasError:             true,
+			expectedErrorSummary: invalidOCIReferenceErrorSummary,
+		},
+		{
+			name:     "null value is valid (skipped)",
+			value:    types.StringNull(),
+			hasError: false,
+		},
+		{
+			name:     "unknown value is valid (skipped)",
+			value:    types.StringUnknown(),
+			hasError: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := tfvalidator.StringRequest{
+				Path:           path.Root("reference"),
+				PathExpression: path.MatchRoot("reference"),
+				ConfigValue:    tc.value,
+			}
+			resp := &tfvalidator.StringResponse{
+				Diagnostics: diag.Diagnostics{},
+			}
+
+			v.ValidateString(context.Background(), req, resp)
+			if tc.hasError {
+				assert.True(t, resp.Diagnostics.HasError(), "Expected error for value %q, but got none", tc.value)
+				assertValidatorResponseDiagnosticsContainsErrorSummary(t, resp.Diagnostics, tc.expectedErrorSummary)
+			} else {
+				assert.False(t, resp.Diagnostics.HasError(), "Expected no error for value %q, but got: %v", tc.value, resp.Diagnostics)
+			}
+		})
+	}
+}

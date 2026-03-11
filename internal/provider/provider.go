@@ -294,7 +294,9 @@ func (p *udsProvider) Resources(context.Context) []func() resource.Resource {
 }
 
 func (p *udsProvider) DataSources(context.Context) []func() datasource.DataSource {
-	return []func() datasource.DataSource{}
+	return []func() datasource.DataSource{
+		NewOCIArtifactDataSource,
+	}
 }
 
 func (p *udsProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {

@@ -87,6 +87,7 @@ type PackageResourceModel struct {
 	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
 	VerifySignature         types.Bool   `tfsdk:"verify_signature"`
 	Namespace               types.String `tfsdk:"namespace"`
+	ZarfConfig              types.String `tfsdk:"zarf_config"`
 
 	Components    types.Set `tfsdk:"component"`      // Set of ComponentModel objects
 	Vars          types.Set `tfsdk:"vars"`           // Set of VariableModel objects
@@ -256,6 +257,11 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						return v
 					}(),
 				},
+			},
+			"zarf_config": schema.StringAttribute{
+				MarkdownDescription: "Inline YAML content of a zarf-config.yaml file. Variables defined in `package.deploy.set` are merged as defaults; explicit `vars` and `sensitive_vars` attributes take precedence.",
+				Optional:            true,
+				Sensitive:           true,
 			},
 			"namespace": schema.StringAttribute{
 				MarkdownDescription: "[Alpha] Namespace in which to deploy the UDS package.",
@@ -976,10 +982,24 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, err
 	}
 
+	// Merge zarf config set variables as defaults (resource-level vars take precedence)
+	setVariables := buildSetVariableMap(plan)
+	if !plan.ZarfConfig.IsNull() && !plan.ZarfConfig.IsUnknown() {
+		zarfConfigVars, err := parseZarfConfigSetVariables(plan.ZarfConfig.ValueString())
+		if err != nil {
+			return plan, fmt.Errorf("failed to parse zarf_config: %w", err)
+		}
+		for k, v := range zarfConfigVars {
+			if _, exists := setVariables[k]; !exists {
+				setVariables[k] = v
+			}
+		}
+	}
+
 	// TODO(erickson): Add support for Retries, OCIConcurrency?
 	deployOpts := zarfPackager.DeployOptions{
 		AdoptExistingResources: false,
-		SetVariables:           buildSetVariableMap(plan),
+		SetVariables:           setVariables,
 		ValuesOverridesMap:     valuesOverridesMap,
 		RemoteOptions:          r.getRemoteOptions(),
 		NamespaceOverride:      plan.Namespace.ValueString(),

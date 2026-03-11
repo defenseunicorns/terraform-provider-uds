@@ -200,6 +200,34 @@ func ValidateOCIReferencePackageSource(value string) error {
 	return nil
 }
 
+type ociReferenceValidator struct{}
+
+func (v ociReferenceValidator) Description(_ context.Context) string {
+	return "value must be a valid OCI distribution reference (including oci:// scheme)"
+}
+
+func (v ociReferenceValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v ociReferenceValidator) ValidateString(_ context.Context, request validator.StringRequest, response *validator.StringResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+	if err := ValidateOCIReferencePackageSource(request.ConfigValue.ValueString()); err != nil {
+		response.Diagnostics.AddAttributeError(
+			request.Path,
+			"Invalid OCI Reference",
+			fmt.Sprintf("The provided value %q is not a valid OCI reference: %s", request.ConfigValue.ValueString(), err.Error()),
+		)
+	}
+}
+
+// OCIReferenceValidator creates a validator that ensures a string is a valid OCI reference.
+func OCIReferenceValidator() validator.String {
+	return ociReferenceValidator{}
+}
+
 // DurationGreaterThanValidator creates a validator that ensures a duration is greater than a minimum value.
 func DurationGreaterThanValidator(minDuration time.Duration) validator.String {
 	return durationGreaterThanValidator{

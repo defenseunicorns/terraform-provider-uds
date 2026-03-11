@@ -112,6 +112,7 @@ resource "uds_package" "dos_games" {
 - `timeout` (String) Timeout for the deploy operation.
 - `vars` (Attributes Set) UDS package variables to set. (see [below for nested schema](#nestedatt--vars))
 - `verify_signature` (Boolean) Verify the signature of a UDS package. When enabled, a signed package with an invalid or missing signature will fail to deploy. When disabled, the package will continue to deploy with signature verification issues logged as warnings.
+- `zarf_config` (String, Sensitive) Inline YAML content of a zarf-config.yaml file. Variables defined in `package.deploy.set` are merged as defaults; explicit `vars` and `sensitive_vars` attributes take precedence.
 
 ### Read-Only
 
