@@ -99,18 +99,12 @@ type PackageResourceModel struct {
 	Version        types.String `tfsdk:"version"`
 	Metadata       types.Object `tfsdk:"metadata"`
 	ConnectStrings types.Set    `tfsdk:"connect_strings"` // Set of ConnectString objects
-	// export_vars is a user-provided set of variable names that should be exported
-	// from the package during deploy. These names instruct the provider to look up
-	// values that were set during action transforms or by the package runtime and
-	// make them available to other packages.
-	ExportVars types.Set `tfsdk:"export_vars"`
 
-	// exported_vars is a computed, read-only map containing the values of variables
-	// requested via `export_vars`. The provider populates this map after a
-	// successful deploy. It is intentionally marked sensitive to avoid leaking
-	// potentially-secret runtime values in plan/state output. Callers should
-	// reference this map via module outputs (e.g. `module.foo.exported_vars["NAME"]`).
-	ExportedVars types.Map `tfsdk:"exported_vars"`
+	// runtime SetVariables (from Zarf package actions) are written
+	// automatically into the computed `set_variables` and
+	// `sensitive_set_variables` maps so other packages can reference them.
+	SetVariables          types.Map `tfsdk:"set_variables"`
+	SensitiveSetVariables types.Map `tfsdk:"sensitive_set_variables"`
 
 	// action_only is a computed boolean that indicates the package did not
 	// create any persistent deployed components during deploy (only ran
@@ -299,13 +293,15 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					},
 				},
 			},
-			"export_vars": schema.SetAttribute{
-				MarkdownDescription: "Set of variable names to export from the package deploy.",
-				Optional:            true,
+			// Runtime setVariables from zarf actions are written to the following
+			// computed maps so other packages can reference them.
+			"set_variables": schema.MapAttribute{
+				MarkdownDescription: "Computed map of variables set for this package (non-sensitive).",
+				Computed:            true,
 				ElementType:         types.StringType,
 			},
-			"exported_vars": schema.MapAttribute{
-				MarkdownDescription: "Read-only map of exported variable names to values.",
+			"sensitive_set_variables": schema.MapAttribute{
+				MarkdownDescription: "Computed map of sensitive variables set for this package.",
 				Computed:            true,
 				ElementType:         types.StringType,
 				Sensitive:           true,
@@ -1064,68 +1060,36 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 	tflog.Debug(ctx, "ending deploy")
 
-	// If the plan asked for exported variables, build the exported_vars map from the deploy result.
-	if plan.ExportVars.IsNull() {
-		// ensure exported_vars is an empty map when not requested
-		plan.ExportedVars, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-	} else if plan.ExportVars.IsUnknown() {
-		// Preserve unknown when export_vars is unknown so downstream references remain unknown.
-		plan.ExportedVars = types.MapUnknown(types.StringType)
-	} else {
-		var exportNames []string
-		if diags := plan.ExportVars.ElementsAs(ctx, &exportNames, false); diags.HasError() {
-			// Could not parse export names; surface an error so the operation
-			// fails rather than silently writing an empty map into state.
-			return plan, fmt.Errorf("failed to read export_vars: %v", diags)
-		}
+	// Populate computed set_variables and sensitive_set_variables only from
+	// runtime SetVariables produced by the package deploy (actions). Inputs
+	// provided in `vars`/`sensitive_vars` are used for the deploy operation
+	// (see buildSetVariableMap) but are intentionally NOT persisted to the
+	// computed tfstate maps — only runtime SetVariables are written.
+	nonSens := make(map[string]attr.Value)
+	sens := make(map[string]attr.Value)
 
-		exportedMap := make(map[string]attr.Value)
-		for _, name := range exportNames {
-			found := false
-
-			// try set variables from VariableConfig (case-insensitive)
-			if deployResult.VariableConfig != nil {
-				if sv, ok := deployResult.VariableConfig.GetSetVariable(name); ok {
-					exportedMap[name] = types.StringValue(sv.Value)
-					found = true
-				} else {
-					// Fallback: iterate the map and perform case-insensitive match
-					for k, sv := range deployResult.VariableConfig.GetSetVariableMap() {
-						if strings.EqualFold(k, name) {
-							exportedMap[name] = types.StringValue(sv.Value)
-							found = true
-							break
-						}
-					}
-				}
+	if deployResult.VariableConfig != nil {
+		for name, sv := range deployResult.VariableConfig.GetSetVariableMap() {
+			if sv == nil {
+				continue
 			}
-
-			// try deploy values (may be structured); perform case-insensitive key match and marshal non-strings to YAML
-			if !found && deployResult.Values != nil {
-				for k, v := range deployResult.Values {
-					if strings.EqualFold(k, name) {
-						switch t := v.(type) {
-						case string:
-							exportedMap[name] = types.StringValue(t)
-						default:
-							b, err := yaml.Marshal(t)
-							if err != nil {
-								return plan, fmt.Errorf("failed to marshal exported var %q: %w", name, err)
-							}
-							exportedMap[name] = types.StringValue(strings.TrimSpace(string(b)))
-						}
-						found = true
-						break
-					}
-				}
+			if sv.Sensitive {
+				sens[name] = types.StringValue(sv.Value)
+			} else {
+				nonSens[name] = types.StringValue(sv.Value)
 			}
 		}
+	}
 
-		var mapDiags diag.Diagnostics
-		plan.ExportedVars, mapDiags = types.MapValue(types.StringType, exportedMap)
-		if mapDiags.HasError() {
-			return plan, fmt.Errorf("failed to construct exported_vars map: %v", mapDiags)
-		}
+	var d1 diag.Diagnostics
+	plan.SetVariables, d1 = types.MapValue(types.StringType, nonSens)
+	if d1.HasError() {
+		return plan, fmt.Errorf("failed to construct set_variables map: %v", d1)
+	}
+	var d2 diag.Diagnostics
+	plan.SensitiveSetVariables, d2 = types.MapValue(types.StringType, sens)
+	if d2.HasError() {
+		return plan, fmt.Errorf("failed to construct sensitive_set_variables map: %v", d2)
 	}
 
 	// Mark action-only packages: if there are no deployed components recorded

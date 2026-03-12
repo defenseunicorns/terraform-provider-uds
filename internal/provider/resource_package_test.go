@@ -13,8 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v2"
-
 	"github.com/defenseunicorns/pkg/helpers/v2"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -155,22 +153,6 @@ func WithVars(vars []VariableModel) PackageResourceModelDataOption {
 func WithSensitiveVars(sensitiveVars []VariableModel) PackageResourceModelDataOption {
 	return func(model *PackageResourceModel) {
 		model.SensitiveVars = variableSliceToSet(sensitiveVars)
-	}
-}
-
-func WithExportVars(exportVars []string) PackageResourceModelDataOption {
-	return func(model *PackageResourceModel) {
-		if len(exportVars) == 0 {
-			// Use an explicit empty set (not null) for the empty-list case so
-			// tests can distinguish between "null" and "empty but known".
-			model.ExportVars = types.SetValueMust(types.StringType, []attr.Value{})
-			return
-		}
-		elements := make([]attr.Value, len(exportVars))
-		for i, v := range exportVars {
-			elements[i] = types.StringValue(v)
-		}
-		model.ExportVars = types.SetValueMust(types.StringType, elements)
 	}
 }
 
@@ -410,126 +392,82 @@ func TestPackageResource_Upsert_VariableModels(t *testing.T) {
 	}
 }
 
-func TestPackageResource_Upsert_ExportedVars(t *testing.T) {
-	packageLayout := layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{
-			Metadata: v1alpha1.ZarfMetadata{
-				Name:        "test-package",
-				Description: "Test package",
-				Version:     "0.0.1",
+func TestPackageResource_Upsert_SetVariables(t *testing.T) {
+	cases := []struct {
+		name    string
+		buildVC func() *variables.VariableConfig
+	}{
+		{
+			name: "default",
+			buildVC: func() *variables.VariableConfig {
+				vc := variables.New("", nil, nil)
+				vc.SetVariable("OUTPUT", "outval", false, false, v1alpha1.RawVariableType)
+				return vc
 			},
-			Components: []v1alpha1.ZarfComponent{
-				{
-					Name:     "test-required-component-0",
-					Required: helpers.BoolPtr(true),
-					Default:  false,
-				},
+		},
+		{
+			name: "case-insensitive",
+			buildVC: func() *variables.VariableConfig {
+				vc := variables.New("", nil, nil)
+				// Uppercase name to exercise case handling
+				vc.SetVariable("OUTPUT", "outval", false, false, v1alpha1.RawVariableType)
+				return vc
 			},
 		},
 	}
 
-	mockPackager := &MockPackager{}
-	mockPackageComponentFilter := &MockPackageComponentFilter{}
-
-	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
-
-	// Build a VariableConfig with a set variable
-	vc := variables.New("", nil, nil)
-	vc.SetVariable("OUTPUT", "outval", false, false, v1alpha1.RawVariableType)
-
-	// Build deploy result with variable config only (can't import internal value type here)
-	deployRes := packager.DeployResult{
-		VariableConfig: vc,
-	}
-
-	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployRes, nil)
-	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
-
-	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
-
-	testModel := NewTestPackageResourceModel(
-		WithExportVars([]string{"OUTPUT", "other", "complex"}),
-	)
-
-	plan, err := packageResource.upsert(context.Background(), testModel)
-	assert.NoError(t, err)
-
-	// Extract exported vars into a map[string]string for assertions
-	exported := map[string]string{}
-	if !plan.ExportedVars.IsNull() && !plan.ExportedVars.IsUnknown() {
-		diags := plan.ExportedVars.ElementsAs(context.Background(), &exported, false)
-		assert.False(t, diags.HasError(), "failed to read exported_vars: %v", diags)
-	}
-
-	// Check value from VariableConfig is present and other requested keys are absent
-	assert.Equal(t, "outval", exported["OUTPUT"])
-	_, ok := exported["other"]
-	assert.False(t, ok)
-
-	mockPackager.AssertExpectations(t)
-	mockPackageComponentFilter.AssertExpectations(t)
-}
-
-// Ensure export_vars lookup is case-insensitive: user may request "output" while
-// VariableConfig contains "OUTPUT". The provider should return the exported
-// variable keyed by the original export_vars entry (preserve user-provided name).
-func TestPackageResource_Upsert_ExportedVars_CaseInsensitive(t *testing.T) {
-	packageLayout := layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{
-			Metadata: v1alpha1.ZarfMetadata{
-				Name:        "test-package",
-				Description: "Test package",
-				Version:     "0.0.1",
-			},
-			Components: []v1alpha1.ZarfComponent{
-				{
-					Name:     "test-required-component-0",
-					Required: helpers.BoolPtr(true),
-					Default:  false,
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			packageLayout := layout.PackageLayout{
+				Pkg: v1alpha1.ZarfPackage{
+					Metadata: v1alpha1.ZarfMetadata{
+						Name:        "test-package",
+						Description: "Test package",
+						Version:     "0.0.1",
+					},
+					Components: []v1alpha1.ZarfComponent{
+						{
+							Name:     "test-required-component-0",
+							Required: helpers.BoolPtr(true),
+							Default:  false,
+						},
+					},
 				},
-			},
-		},
+			}
+
+			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+
+			deployRes := packager.DeployResult{VariableConfig: tc.buildVC()}
+			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployRes, nil)
+			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+			testModel := NewTestPackageResourceModel()
+
+			plan, err := packageResource.upsert(context.Background(), testModel)
+			assert.NoError(t, err)
+
+			setVars := map[string]string{}
+			if !plan.SetVariables.IsNull() && !plan.SetVariables.IsUnknown() {
+				diags := plan.SetVariables.ElementsAs(context.Background(), &setVars, false)
+				assert.False(t, diags.HasError(), "failed to read set_variables: %v", diags)
+			}
+
+			assert.Equal(t, "outval", setVars["OUTPUT"])
+
+			mockPackager.AssertExpectations(t)
+			mockPackageComponentFilter.AssertExpectations(t)
+		})
 	}
-
-	mockPackager := &MockPackager{}
-	mockPackageComponentFilter := &MockPackageComponentFilter{}
-
-	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
-
-	// VariableConfig contains uppercase variable name
-	vc := variables.New("", nil, nil)
-	vc.SetVariable("OUTPUT", "outval", false, false, v1alpha1.RawVariableType)
-
-	deployRes := packager.DeployResult{VariableConfig: vc}
-	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployRes, nil)
-	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
-
-	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
-
-	// User requested lower-case name; provider should still find the uppercase set variable.
-	testModel := NewTestPackageResourceModel(
-		WithExportVars([]string{"output"}),
-	)
-
-	plan, err := packageResource.upsert(context.Background(), testModel)
-	assert.NoError(t, err)
-
-	exported := map[string]string{}
-	if !plan.ExportedVars.IsNull() && !plan.ExportedVars.IsUnknown() {
-		diags := plan.ExportedVars.ElementsAs(context.Background(), &exported, false)
-		assert.False(t, diags.HasError(), "failed to read exported_vars: %v", diags)
-	}
-
-	// Key should be the original requested name
-	assert.Equal(t, "outval", exported["output"])
-
-	mockPackager.AssertExpectations(t)
-	mockPackageComponentFilter.AssertExpectations(t)
 }
 
 // Ensure provider can export values coming from deployResult.Values
 // including structured values which should be YAML-encoded in the exported map.
-func TestPackageResource_Upsert_ExportedVars_FromDeployValues(t *testing.T) {
+func TestPackageResource_Upsert_DeployValues_NotPersisted(t *testing.T) {
 	packageLayout := layout.PackageLayout{
 		Pkg: v1alpha1.ZarfPackage{
 			Metadata: v1alpha1.ZarfMetadata{
@@ -560,52 +498,31 @@ func TestPackageResource_Upsert_ExportedVars_FromDeployValues(t *testing.T) {
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 
-	testModel := NewTestPackageResourceModel(
-		WithExportVars([]string{"plain", "complex", "missing"}),
-	)
+	testModel := NewTestPackageResourceModel()
 
 	plan, err := packageResource.upsert(context.Background(), testModel)
 	assert.NoError(t, err)
 
-	exported := map[string]string{}
-	if !plan.ExportedVars.IsNull() && !plan.ExportedVars.IsUnknown() {
-		diags := plan.ExportedVars.ElementsAs(context.Background(), &exported, false)
-		assert.False(t, diags.HasError(), "failed to read exported_vars: %v", diags)
+	// Ensure deployResult.Values are not included in set_variables (only SetVariables are persisted)
+	setVars := map[string]string{}
+	if !plan.SetVariables.IsNull() && !plan.SetVariables.IsUnknown() {
+		diags := plan.SetVariables.ElementsAs(context.Background(), &setVars, false)
+		assert.False(t, diags.HasError(), "failed to read set_variables: %v", diags)
 	}
 
-	// plain string preserved
-	assert.Equal(t, "strval", exported["plain"])
-
-	// missing key not present
-	_, ok := exported["missing"]
-	assert.False(t, ok)
-
-	// complex should be YAML encoded; unmarshal to verify contents
-	complexYAML, ok := exported["complex"]
-	assert.True(t, ok)
-	var decoded map[string]any
-	err = yaml.Unmarshal([]byte(complexYAML), &decoded)
-	assert.NoError(t, err)
-	// YAML unmarshals numbers as int or float64 depending; assert presence/values
-	assert.Equal(t, "x", decoded["b"])
-	// numeric 1 may be float64 after unmarshal; compare as float64 or int
-	switch v := decoded["a"].(type) {
-	case int:
-		assert.Equal(t, 1, v)
-	case float64:
-		assert.Equal(t, 1.0, v)
-	default:
-		t.Fatalf("unexpected type for decoded['a']: %T", v)
-	}
+	// plain and complex should not be present in set_variables
+	_, okPlain := setVars["plain"]
+	_, okComplex := setVars["complex"]
+	assert.False(t, okPlain)
+	assert.False(t, okComplex)
 
 	mockPackager.AssertExpectations(t)
 	mockPackageComponentFilter.AssertExpectations(t)
 }
 
-// When export_vars is not provided (null) or provided as an empty list,
-// the provider should return an empty `exported_vars` map (not null) so
-// callers can safely index into it.
-func TestPackageResource_Upsert_ExportedVars_EmptyAndNull(t *testing.T) {
+// When no runtime SetVariables are produced, the provider should return an
+// empty `set_variables` map (not null) so callers can safely index into it.
+func TestPackageResource_Upsert_SetVariables_EmptyAndNull(t *testing.T) {
 	packageLayout := layout.PackageLayout{
 		Pkg: v1alpha1.ZarfPackage{
 			Metadata:   v1alpha1.ZarfMetadata{Name: "test-package"},
@@ -623,22 +540,21 @@ func TestPackageResource_Upsert_ExportedVars_EmptyAndNull(t *testing.T) {
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 
-	// Case A: ExportVars explicitly null
+	// Case A: No set variables configured and no deploy results
 	testModelNull := NewTestPackageResourceModel()
-	testModelNull.ExportVars = types.SetNull(types.StringType)
 	planNull, err := packageResource.upsert(context.Background(), testModelNull)
 	assert.NoError(t, err)
 	exportedNull := map[string]string{}
-	diags := planNull.ExportedVars.ElementsAs(context.Background(), &exportedNull, false)
+	diags := planNull.SetVariables.ElementsAs(context.Background(), &exportedNull, false)
 	assert.False(t, diags.HasError())
 	assert.Len(t, exportedNull, 0)
 
-	// Case B: ExportVars empty list
-	testModelEmpty := NewTestPackageResourceModel(WithExportVars([]string{}))
+	// Case B: no runtime set variables (legacy export flag removed)
+	testModelEmpty := NewTestPackageResourceModel()
 	planEmpty, err := packageResource.upsert(context.Background(), testModelEmpty)
 	assert.NoError(t, err)
 	exportedEmpty := map[string]string{}
-	diags2 := planEmpty.ExportedVars.ElementsAs(context.Background(), &exportedEmpty, false)
+	diags2 := planEmpty.SetVariables.ElementsAs(context.Background(), &exportedEmpty, false)
 	assert.False(t, diags2.HasError())
 	assert.Len(t, exportedEmpty, 0)
 
@@ -778,8 +694,8 @@ func TestPackageResource_Read_ActionOnlyPreservesState(t *testing.T) {
 	metadataTypes := map[string]attr.Type{"name": types.StringType, "description": types.StringType, "version": types.StringType}
 	stateModel.Metadata = types.ObjectNull(metadataTypes)
 	// Ensure exported_vars and export_vars are null values matching schema
-	stateModel.ExportedVars = types.MapNull(types.StringType)
-	stateModel.ExportVars = types.SetNull(types.StringType)
+	stateModel.SetVariables = types.MapNull(types.StringType)
+	stateModel.SensitiveSetVariables = types.MapNull(types.StringType)
 	stateModel.ConnectStrings = types.SetNull(types.ObjectType{AttrTypes: map[string]attr.Type{"name": types.StringType, "description": types.StringType}})
 
 	var req resource.ReadRequest
@@ -821,8 +737,8 @@ func TestPackageResource_Read_RemoveMissingDeployedByDefault(t *testing.T) {
 	// leave ActionOnly null/false
 	metadataTypes := map[string]attr.Type{"name": types.StringType, "description": types.StringType, "version": types.StringType}
 	stateModel.Metadata = types.ObjectNull(metadataTypes)
-	stateModel.ExportedVars = types.MapNull(types.StringType)
-	stateModel.ExportVars = types.SetNull(types.StringType)
+	stateModel.SetVariables = types.MapNull(types.StringType)
+	stateModel.SensitiveSetVariables = types.MapNull(types.StringType)
 	stateModel.ConnectStrings = types.SetNull(types.ObjectType{AttrTypes: map[string]attr.Type{"name": types.StringType, "description": types.StringType}})
 
 	var req resource.ReadRequest

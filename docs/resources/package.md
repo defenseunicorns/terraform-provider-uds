@@ -105,7 +105,6 @@ resource "uds_package" "dos_games" {
 
 - `architecture` (String) System architecture of the target cluster. Defaults to the provider default architecture.
 - `component` (Block Set) Component configuration to include/exclude in the UDS package deployment. (see [below for nested schema](#nestedblock--component))
-- `export_vars` (Set of String) Set of variable names to export from the package deploy.
 - `namespace` (String) [Alpha] Namespace in which to deploy the UDS package.
 - `public_key` (String) Raw public key value to validate against a signed UDS package.
 - `sensitive_vars` (Attributes Set) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))
@@ -118,11 +117,12 @@ resource "uds_package" "dos_games" {
 
 - `action_only` (Boolean) Computed flag indicating the package performed actions only (no persistent deployed components).
 - `connect_strings` (Attributes Set) Connect strings for connecting to services deployed by the package. (see [below for nested schema](#nestedatt--connect_strings))
-- `exported_vars` (Map of String, Sensitive) Read-only map of exported variable names to values.
 - `id` (String) Identifier for the deployed UDS package.
 - `kind` (String) Kind of UDS package; ZarfInitConfig or ZarfPackageConfig.
 - `metadata` (Attributes) Metadata retrieved from the UDS package (zarf.yaml). (see [below for nested schema](#nestedatt--metadata))
 - `name` (String) Name of the UDS Package.
+- `sensitive_set_variables` (Map of String, Sensitive) Computed map of sensitive zarf action set variables set for this package.
+- `set_variables` (Map of String) Computed map of zarf action set variables set for this package (non-sensitive).
 - `version` (String) Version of the deployed UDS package.
 
 <a id="nestedblock--component"></a>
