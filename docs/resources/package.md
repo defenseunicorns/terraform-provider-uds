@@ -115,7 +115,6 @@ resource "uds_package" "dos_games" {
 
 ### Read-Only
 
-- `action_only` (Boolean) Computed flag indicating the package performed actions only (no persistent deployed components).
 - `connect_strings` (Attributes Set) Connect strings for connecting to services deployed by the package. (see [below for nested schema](#nestedatt--connect_strings))
 - `id` (String) Identifier for the deployed UDS package.
 - `kind` (String) Kind of UDS package; ZarfInitConfig or ZarfPackageConfig.

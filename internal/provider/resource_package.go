@@ -105,12 +105,6 @@ type PackageResourceModel struct {
 	// `sensitive_set_variables` maps so other packages can reference them.
 	SetVariables          types.Map `tfsdk:"set_variables"`
 	SensitiveSetVariables types.Map `tfsdk:"sensitive_set_variables"`
-
-	// action_only is a computed boolean that indicates the package did not
-	// create any persistent deployed components during deploy (only ran
-	// actions). When true, the provider will preserve Terraform state if the
-	// deployed-package record is missing during refresh.
-	ActionOnly types.Bool `tfsdk:"action_only"`
 }
 
 // ComponentModel represents a UDS package component configuration.
@@ -296,19 +290,15 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			// Runtime setVariables from zarf actions are written to the following
 			// computed maps so other packages can reference them.
 			"set_variables": schema.MapAttribute{
-				MarkdownDescription: "Computed map of variables set for this package (non-sensitive).",
+				MarkdownDescription: "Computed map of zarf action set variables set for this package (non-sensitive).",
 				Computed:            true,
 				ElementType:         types.StringType,
 			},
 			"sensitive_set_variables": schema.MapAttribute{
-				MarkdownDescription: "Computed map of sensitive variables set for this package.",
+				MarkdownDescription: "Computed map of sensitive zarf action set variables set for this package.",
 				Computed:            true,
 				ElementType:         types.StringType,
 				Sensitive:           true,
-			},
-			"action_only": schema.BoolAttribute{
-				MarkdownDescription: "Computed flag indicating the package performed actions only (no persistent deployed components).",
-				Computed:            true,
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -504,22 +494,6 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 	if !found {
-		// If this package is known to be action-only (computed), keep the
-		// Terraform state and emit a warning. Action-only packages may not
-		// have persisted deployed-package records in Zarf.
-		if !data.ActionOnly.IsNull() && data.ActionOnly.ValueBool() {
-			resp.Diagnostics.AddWarning(
-				"Deployed package not found (action-only)",
-				"Could not find deployed package with namespace "+packageNamespace+" and name "+packageName+"; keeping Terraform state because the package was identified as action-only",
-			)
-			// Explicitly restore prior state to guarantee state is preserved.
-			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-			if resp.Diagnostics.HasError() {
-				return
-			}
-			return
-		}
-
 		resp.Diagnostics.AddWarning(
 			"Deployed package not found",
 			"Could not find deployed package with namespace "+packageNamespace+" and name "+packageName+" - removing resource",
@@ -1091,23 +1065,6 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if d2.HasError() {
 		return plan, fmt.Errorf("failed to construct sensitive_set_variables map: %v", d2)
 	}
-
-	// Mark action-only packages: if there are no deployed components recorded
-	// with installed charts (i.e., nothing persisted to the cluster), treat
-	// this as an action-only package. Zarf returns DeployedComponents for
-	// each component, but when components don't require a cluster the
-	// InstalledCharts slice will be empty and no deployed-package secret is
-	// recorded.
-	actionOnly := true
-	if deployResult.DeployedComponents != nil && len(deployResult.DeployedComponents) > 0 {
-		for _, dc := range deployResult.DeployedComponents {
-			if len(dc.InstalledCharts) > 0 {
-				actionOnly = false
-				break
-			}
-		}
-	}
-	plan.ActionOnly = types.BoolValue(actionOnly)
 
 	// Populate connect strings from deploy result
 	connectStrings, err := getConnectStringsFromDeployResult(deployResult)

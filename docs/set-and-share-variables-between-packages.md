@@ -39,6 +39,24 @@ module "app" {
 Producer implementation notes:
 
 - Your package's deploy actions should populate the package deploy result's VariableConfig with values via the Zarf SDK (for example, `vc.SetVariable("OUTPUT", "outval", false, ...)`). The provider will read those runtime SetVariables and persist them into `set_variables` / `sensitive_set_variables`.
+```yaml
+kind: ZarfPackageConfig
+metadata:
+  name: example-zarf-package
+  description: "setVariables exampole"
+  version: 0.1.0
+
+components:
+  - name: example
+    required: true
+    actions:
+      onDeploy:
+        before:
+          - cmd: echo "5"
+            setVariables:
+              - name: EXAMPLE_ACTION_SET_VAR
+                sensitive: false
+```
 
 Consumer notes:
 
@@ -47,7 +65,4 @@ Consumer notes:
 
 Examples and patterns:
 
-- If your producer sets structured values, the provider will expose them as YAML-encoded strings; consumers must parse them if needed.
 - Keys are exposed using the runtime names set by the package; the provider's lookup is case-insensitive when validating uniqueness, but the stored keys preserve the names as provided by the package at runtime.
-
-If you'd like, I can add a small `uds-tofu` example package (zarf.yaml + action script) under `uds-tofu/` demonstrating a producer that calls `setVariable` and a consumer that references it.
