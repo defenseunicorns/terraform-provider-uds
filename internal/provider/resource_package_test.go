@@ -520,6 +520,109 @@ func TestPackageResource_Upsert_DeployValues_NotPersisted(t *testing.T) {
 	mockPackageComponentFilter.AssertExpectations(t)
 }
 
+// Ensure sensitive runtime SetVariables are persisted to `sensitive_set_variables`
+func TestPackageResource_Upsert_SensitiveSetVariables(t *testing.T) {
+	packageLayout := layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Metadata: v1alpha1.ZarfMetadata{
+				Name:        "test-package",
+				Description: "Test package",
+				Version:     "0.0.1",
+			},
+			Components: []v1alpha1.ZarfComponent{{Name: "test-required-component-0", Required: helpers.BoolPtr(true)}},
+		},
+	}
+
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+
+	// Build a VariableConfig with a sensitive set variable
+	vc := variables.New("", nil, nil)
+	vc.SetVariable("API_KEY", "s3cr3t", true, false, v1alpha1.RawVariableType)
+
+	deployRes := packager.DeployResult{VariableConfig: vc}
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployRes, nil)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+	testModel := NewTestPackageResourceModel()
+
+	plan, err := packageResource.upsert(context.Background(), testModel)
+	assert.NoError(t, err)
+
+	// non-sensitive map should not contain the sensitive key
+	nonSens := map[string]string{}
+	if !plan.SetVariables.IsNull() && !plan.SetVariables.IsUnknown() {
+		diags := plan.SetVariables.ElementsAs(context.Background(), &nonSens, false)
+		assert.False(t, diags.HasError(), "failed to read set_variables: %v", diags)
+	}
+	_, ok := nonSens["API_KEY"]
+	assert.False(t, ok)
+
+	// sensitive map should contain the key
+	sens := map[string]string{}
+	if !plan.SensitiveSetVariables.IsNull() && !plan.SensitiveSetVariables.IsUnknown() {
+		diags := plan.SensitiveSetVariables.ElementsAs(context.Background(), &sens, false)
+		assert.False(t, diags.HasError(), "failed to read sensitive_set_variables: %v", diags)
+	}
+	assert.Equal(t, "s3cr3t", sens["API_KEY"])
+
+	mockPackager.AssertExpectations(t)
+	mockPackageComponentFilter.AssertExpectations(t)
+}
+
+// Ensure input-provided vars / sensitive_vars are NOT persisted into computed maps
+func TestPackageResource_Upsert_InputVars_NotPersisted(t *testing.T) {
+	packageLayout := layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Metadata:   v1alpha1.ZarfMetadata{Name: "test-package"},
+			Components: []v1alpha1.ZarfComponent{{Name: "test-required-component-0", Required: helpers.BoolPtr(true)}},
+		},
+	}
+
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+	// Deploy returns empty result (no runtime set variables)
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+	// Provide vars and sensitive_vars in the model inputs
+	testModel := NewTestPackageResourceModel(
+		WithVars([]VariableModel{{Name: types.StringValue("INP1"), Value: types.StringValue("val1")}}),
+		WithSensitiveVars([]VariableModel{{Name: types.StringValue("INP_SECRET"), Value: types.StringValue("val-secret")}}),
+	)
+
+	plan, err := packageResource.upsert(context.Background(), testModel)
+	assert.NoError(t, err)
+
+	setVars := map[string]string{}
+	if !plan.SetVariables.IsNull() && !plan.SetVariables.IsUnknown() {
+		diags := plan.SetVariables.ElementsAs(context.Background(), &setVars, false)
+		assert.False(t, diags.HasError(), "failed to read set_variables: %v", diags)
+	}
+	// input var names should NOT be present in the computed maps
+	_, ok1 := setVars["INP1"]
+	assert.False(t, ok1)
+
+	sensVars := map[string]string{}
+	if !plan.SensitiveSetVariables.IsNull() && !plan.SensitiveSetVariables.IsUnknown() {
+		diags := plan.SensitiveSetVariables.ElementsAs(context.Background(), &sensVars, false)
+		assert.False(t, diags.HasError(), "failed to read sensitive_set_variables: %v", diags)
+	}
+	_, ok2 := sensVars["INP_SECRET"]
+	assert.False(t, ok2)
+
+	mockPackager.AssertExpectations(t)
+	mockPackageComponentFilter.AssertExpectations(t)
+}
+
 // When no runtime SetVariables are produced, the provider should return an
 // empty `set_variables` map (not null) so callers can safely index into it.
 func TestPackageResource_Upsert_SetVariables_EmptyAndNull(t *testing.T) {
