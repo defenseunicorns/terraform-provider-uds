@@ -52,10 +52,10 @@ components:
     actions:
       onDeploy:
         before:
-          - cmd: echo "5"
+          - cmd: echo "this-will-be-the-value-of-KEY"
             setVariables:
-              - name: EXAMPLE_ACTION_SET_VAR
-                sensitive: false
+              - name: KEY
+                sensitive: false # set true if sensitive
 ```
 
 Consumer notes:
