@@ -393,8 +393,6 @@ type PackageResource struct {
 	packager       udsPackager.Packager
 	cluster        udsCluster.Cluster
 	packageFilter  udsPackager.PackageComponentFilter
-	// Hook used in tests to override deployed package lookup behavior.
-	getDeployedPackageFunc func(ctx context.Context, name string, namespace string) (zarfState.DeployedPackage, bool, error)
 }
 
 // ValidateConfig ensures validation between interdependant fields within a PackageResourceModel.
@@ -481,11 +479,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 
 	var deployedPackage zarfState.DeployedPackage
 	var found bool
-	if r.getDeployedPackageFunc != nil {
-		deployedPackage, found, err = r.getDeployedPackageFunc(timeoutCtx, packageName, packageNamespace)
-	} else {
-		deployedPackage, found, err = r.getDeployedPackage(timeoutCtx, packageName, packageNamespace)
-	}
+	deployedPackage, found, err = r.getDeployedPackage(timeoutCtx, packageName, packageNamespace)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error getting deployed package",

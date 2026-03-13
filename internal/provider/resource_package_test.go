@@ -218,6 +218,71 @@ func NewTestComponentModel(name string, options ...ComponentModelDataOption) Com
 	return model
 }
 
+// SetVarEntry is a small helper for defining expected runtime set variables
+// in a compact, tabular form for tests.
+type SetVarEntry struct {
+	Name      string
+	Value     string
+	Sensitive bool
+}
+
+// buildVCFromEntries constructs a *variables.VariableConfig from a slice of SetVarEntry.
+func buildVCFromEntries(entries []SetVarEntry) *variables.VariableConfig {
+	vc := variables.New("", nil, nil)
+	for _, e := range entries {
+		vc.SetVariable(e.Name, e.Value, e.Sensitive, false, v1alpha1.RawVariableType)
+	}
+	return vc
+}
+
+// buildVCFromMaps constructs a *variables.VariableConfig from two maps:
+// non-sensitive and sensitive set variables. Keys are provided as they
+// come from deploy results (may be mixed case); production code will
+// normalize names to lowercase when exporting.
+func buildVCFromMaps(nonSensitive map[string]string, sensitive map[string]string) *variables.VariableConfig {
+	vc := variables.New("", nil, nil)
+	for k, v := range nonSensitive {
+		vc.SetVariable(k, v, false, false, v1alpha1.RawVariableType)
+	}
+	for k, v := range sensitive {
+		vc.SetVariable(k, v, true, false, v1alpha1.RawVariableType)
+	}
+	return vc
+}
+
+// DeployedVar is a compact representation of a deployed set variable with its
+// value and whether it is sensitive.
+type DeployedVar struct {
+	Value     string
+	Sensitive bool
+}
+
+// buildVCFromCondensedMap constructs a *variables.VariableConfig from a
+// condensed map of deployed variables where the value includes whether it is
+// sensitive. This mirrors the reviewer-suggested table format.
+func buildVCFromCondensedMap(in map[string]DeployedVar) *variables.VariableConfig {
+	vc := variables.New("", nil, nil)
+	for k, v := range in {
+		vc.SetVariable(k, v.Value, v.Sensitive, false, v1alpha1.RawVariableType)
+	}
+	return vc
+}
+
+// readStringMap extracts a map[string]string from a Terraform types.Map value.
+// It returns an empty map (not nil) when the input is null/unknown/empty to make
+// assertions simpler in tests.
+func readStringMap(ctx context.Context, m types.Map) (map[string]string, error) {
+	out := map[string]string{}
+	if m.IsNull() || m.IsUnknown() {
+		return out, nil
+	}
+	diags := m.ElementsAs(ctx, &out, false)
+	if diags.HasError() {
+		return nil, fmt.Errorf("failed to read types.Map: %v", diags)
+	}
+	return out, nil
+}
+
 // NewTestComponentChartValuesModel creates a ComponentChartValuesModel with default values and applies data options
 func NewTestComponentChartValuesModel(chartName string, options ...ComponentChartValuesModelDataOption) ComponentChartValuesModel {
 	model := ComponentChartValuesModel{
@@ -393,25 +458,66 @@ func TestPackageResource_Upsert_VariableModels(t *testing.T) {
 
 func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 	cases := []struct {
-		name    string
-		buildVC func() *variables.VariableConfig
+		name                          string
+		deployedPackageSetVariables   map[string]DeployedVar
+		expectedSetVariables          map[string]string
+		expectedSensitiveSetVariables map[string]string
 	}{
 		{
-			name: "default",
-			buildVC: func() *variables.VariableConfig {
-				vc := variables.New("", nil, nil)
-				vc.SetVariable("OUTPUT", "outval", false, false, v1alpha1.RawVariableType)
-				return vc
+			name:                          "no deployed package set variables returns empty maps",
+			deployedPackageSetVariables:   map[string]DeployedVar{},
+			expectedSetVariables:          map[string]string{},
+			expectedSensitiveSetVariables: map[string]string{},
+		},
+		{
+			name: "single non-sensitive set variable returned in set_variables map only",
+			deployedPackageSetVariables: map[string]DeployedVar{
+				"OUTPUT": {Value: "output-val", Sensitive: false},
+			},
+			expectedSetVariables:          map[string]string{"output": "output-val"},
+			expectedSensitiveSetVariables: map[string]string{},
+		},
+		{
+			name: "single sensitive set variable returned in sensitive_set_variables map only",
+			deployedPackageSetVariables: map[string]DeployedVar{
+				"API_KEY": {Value: "s3cr3t", Sensitive: true},
+			},
+			expectedSetVariables:          map[string]string{},
+			expectedSensitiveSetVariables: map[string]string{"api_key": "s3cr3t"},
+		},
+		{
+			name: "variable names normalized to lowercase",
+			deployedPackageSetVariables: map[string]DeployedVar{
+				"OUTPUT": {Value: "output-val", Sensitive: false},
+			},
+			expectedSetVariables:          map[string]string{"output": "output-val"},
+			expectedSensitiveSetVariables: map[string]string{},
+		},
+		{
+			name: "multiple variables split between sensitive and non-sensitive",
+			deployedPackageSetVariables: map[string]DeployedVar{
+				"OUTPUT":      {Value: "output-val", Sensitive: false},
+				"API_KEY":     {Value: "s3cr3t", Sensitive: true},
+				"DB_NAME":     {Value: "mydb", Sensitive: false},
+				"DB_PASSWORD": {Value: "p@ssw0rd", Sensitive: true},
+			},
+			expectedSetVariables: map[string]string{
+				"output":  "output-val",
+				"db_name": "mydb",
+			},
+			expectedSensitiveSetVariables: map[string]string{
+				"api_key":     "s3cr3t",
+				"db_password": "p@ssw0rd",
 			},
 		},
 		{
-			name: "case-insensitive",
-			buildVC: func() *variables.VariableConfig {
-				vc := variables.New("", nil, nil)
-				// Uppercase name to exercise case handling
-				vc.SetVariable("OUTPUT", "outval", false, false, v1alpha1.RawVariableType)
-				return vc
+			name: "duplicate-case keys prefer lowercase variant deterministically",
+			deployedPackageSetVariables: map[string]DeployedVar{
+				"OUTPUT": {Value: "UPPER", Sensitive: false},
+				"output": {Value: "lower", Sensitive: false},
 			},
+			expectedSetVariables:          map[string]string{"output": "lower"},
+			expectedSensitiveSetVariables: map[string]string{},
 		},
 	}
 
@@ -439,7 +545,7 @@ func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 
 			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
 
-			deployRes := packager.DeployResult{VariableConfig: tc.buildVC()}
+			deployRes := packager.DeployResult{VariableConfig: buildVCFromCondensedMap(tc.deployedPackageSetVariables)}
 			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployRes, nil)
 			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
@@ -450,13 +556,13 @@ func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 			plan, err := packageResource.upsert(context.Background(), testModel)
 			assert.NoError(t, err)
 
-			setVars := map[string]string{}
-			if !plan.SetVariables.IsNull() && !plan.SetVariables.IsUnknown() {
-				diags := plan.SetVariables.ElementsAs(context.Background(), &setVars, false)
-				assert.False(t, diags.HasError(), "failed to read set_variables: %v", diags)
-			}
+			gotSetVars, err := readStringMap(context.Background(), plan.SetVariables)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expectedSetVariables, gotSetVars)
 
-			assert.Equal(t, "outval", setVars["output"])
+			gotSensVars, err := readStringMap(context.Background(), plan.SensitiveSetVariables)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expectedSensitiveSetVariables, gotSensVars)
 
 			mockPackager.AssertExpectations(t)
 			mockPackageComponentFilter.AssertExpectations(t)
@@ -537,11 +643,9 @@ func TestPackageResource_Upsert_SensitiveSetVariables(t *testing.T) {
 
 	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
 
-	// Build a VariableConfig with a sensitive set variable
-	vc := variables.New("", nil, nil)
-	vc.SetVariable("API_KEY", "s3cr3t", true, false, v1alpha1.RawVariableType)
-
-	deployRes := packager.DeployResult{VariableConfig: vc}
+	// Use helper to build VariableConfig from a small table describing runtime set variables
+	entries := []SetVarEntry{{Name: "API_KEY", Value: "s3cr3t", Sensitive: true}}
+	deployRes := packager.DeployResult{VariableConfig: buildVCFromEntries(entries)}
 	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployRes, nil)
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
@@ -553,20 +657,14 @@ func TestPackageResource_Upsert_SensitiveSetVariables(t *testing.T) {
 	assert.NoError(t, err)
 
 	// non-sensitive map should not contain the sensitive key
-	nonSens := map[string]string{}
-	if !plan.SetVariables.IsNull() && !plan.SetVariables.IsUnknown() {
-		diags := plan.SetVariables.ElementsAs(context.Background(), &nonSens, false)
-		assert.False(t, diags.HasError(), "failed to read set_variables: %v", diags)
-	}
+	nonSens, err := readStringMap(context.Background(), plan.SetVariables)
+	assert.NoError(t, err)
 	_, ok := nonSens["api_key"]
 	assert.False(t, ok)
 
-	// sensitive map should contain the key
-	sens := map[string]string{}
-	if !plan.SensitiveSetVariables.IsNull() && !plan.SensitiveSetVariables.IsUnknown() {
-		diags := plan.SensitiveSetVariables.ElementsAs(context.Background(), &sens, false)
-		assert.False(t, diags.HasError(), "failed to read sensitive_set_variables: %v", diags)
-	}
+	// sensitive map should contain the key (lowercased)
+	sens, err := readStringMap(context.Background(), plan.SensitiveSetVariables)
+	assert.NoError(t, err)
 	assert.Equal(t, "s3cr3t", sens["api_key"])
 
 	mockPackager.AssertExpectations(t)
