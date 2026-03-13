@@ -16,7 +16,7 @@ Simple example showing a producer package that sets a runtime variable and a con
 module "core_secrets" {
   source = "./modules/uds-package"
   pkg = {
-    # This package produces sensitive variables using zarf action setVariables sesitive: true
+    # This package produces sensitive variables using zarf action setVariables sensitive: true. The variable is DB_PASSWORD in this example
     source                   = "oci://ghcr.io/example/core-secrets:1.0.0"
   }
 }
@@ -28,7 +28,7 @@ module "app" {
     overrides = {
       appComponent = {
         appChart = [
-          { path = "app.dbpass", value = module.core_secrets.sensitive_set_vars["DB_PASSWORD"] },
+          { path = "app.dbpass", value = module.core_secrets.sensitive_set_vars.db_password },
         ]
       }
     }
@@ -38,7 +38,7 @@ module "app" {
 
 Producer implementation notes:
 
-- Your package's deploy actions should populate the package deploy result's VariableConfig with values via the Zarf SDK (for example, `vc.SetVariable("OUTPUT", "outval", false, ...)`). The provider will read those runtime SetVariables and persist them into `set_variables` / `sensitive_set_variables`.
+- Your package's deploy actions should populate the package deploy result's VariableConfig with values via the Zarf SDK (for example, `vc.SetVariable("OUTPUT", "outval", false, ...)`). The provider will read those runtime SetVariables and persist them into `set_variables` / `sensitive_set_variables` maps.
 ```yaml
 kind: ZarfPackageConfig
 metadata:
@@ -60,9 +60,5 @@ components:
 
 Consumer notes:
 
-- Reference runtime values via `uds_package.<name>.set_variables["KEY"]` for non-sensitive values and `uds_package.<name>.sensitive_set_variables["KEY"]` for sensitive values.
+- Reference runtime values via `uds_package.<name>.set_variables.key` for non-sensitive values and `uds_package.<name>.sensitive_set_variables.key` for sensitive values. Note that keys are stored using the runtime variable names set by the package, but are normalized to all lowercase before being persisted to the `set_variables` / `sensitive_set_variables` maps.
 - Because `sensitive_set_variables` is marked sensitive, Terraform will treat those values as sensitive in state and hide them from plan output.
-
-Examples and patterns:
-
-- Keys are exposed using the runtime names set by the package; the provider's lookup is case-insensitive when validating uniqueness, but the stored keys preserve the names as provided by the package at runtime.

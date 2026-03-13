@@ -1047,10 +1047,12 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 			if sv == nil {
 				continue
 			}
+			// normalize variable name keys to all lowercase
+			key := strings.ToLower(name)
 			if sv.Sensitive {
-				sens[name] = types.StringValue(sv.Value)
+				sens[key] = types.StringValue(sv.Value)
 			} else {
-				nonSens[name] = types.StringValue(sv.Value)
+				nonSens[key] = types.StringValue(sv.Value)
 			}
 		}
 	}

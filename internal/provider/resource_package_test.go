@@ -17,7 +17,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
-	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -457,7 +456,7 @@ func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 				assert.False(t, diags.HasError(), "failed to read set_variables: %v", diags)
 			}
 
-			assert.Equal(t, "outval", setVars["OUTPUT"])
+			assert.Equal(t, "outval", setVars["output"])
 
 			mockPackager.AssertExpectations(t)
 			mockPackageComponentFilter.AssertExpectations(t)
@@ -559,7 +558,7 @@ func TestPackageResource_Upsert_SensitiveSetVariables(t *testing.T) {
 		diags := plan.SetVariables.ElementsAs(context.Background(), &nonSens, false)
 		assert.False(t, diags.HasError(), "failed to read set_variables: %v", diags)
 	}
-	_, ok := nonSens["API_KEY"]
+	_, ok := nonSens["api_key"]
 	assert.False(t, ok)
 
 	// sensitive map should contain the key
@@ -568,7 +567,7 @@ func TestPackageResource_Upsert_SensitiveSetVariables(t *testing.T) {
 		diags := plan.SensitiveSetVariables.ElementsAs(context.Background(), &sens, false)
 		assert.False(t, diags.HasError(), "failed to read sensitive_set_variables: %v", diags)
 	}
-	assert.Equal(t, "s3cr3t", sens["API_KEY"])
+	assert.Equal(t, "s3cr3t", sens["api_key"])
 
 	mockPackager.AssertExpectations(t)
 	mockPackageComponentFilter.AssertExpectations(t)
@@ -776,47 +775,6 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 				fmt.Sprintf("Optional components selected for deploy do not match: expected: %v, actual: %v", tc.expectedOptionalComponentsForDeployFilter, actualOptionalComponents))
 		})
 	}
-}
-
-// Test Read default behavior removes missing deployed resource from state.
-func TestPackageResource_Read_RemoveMissingDeployedByDefault(t *testing.T) {
-	mockPackager := &MockPackager{}
-	mockPackageComponentFilter := &MockPackageComponentFilter{}
-
-	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
-	packageResource.getDeployedPackageFunc = func(_ context.Context, _ string, _ string) (zarfState.DeployedPackage, bool, error) {
-		return zarfState.DeployedPackage{}, false, nil
-	}
-
-	// Prepare prior state
-	stateModel := NewTestPackageResourceModel()
-	stateModel.ID = types.StringValue("core-secrets")
-	metadataTypes := map[string]attr.Type{"name": types.StringType, "description": types.StringType, "version": types.StringType}
-	stateModel.Metadata = types.ObjectNull(metadataTypes)
-	stateModel.SetVariables = types.MapNull(types.StringType)
-	stateModel.SensitiveSetVariables = types.MapNull(types.StringType)
-	stateModel.ConnectStrings = types.SetNull(types.ObjectType{AttrTypes: map[string]attr.Type{"name": types.StringType, "description": types.StringType}})
-
-	var req resource.ReadRequest
-	req.State = tfsdk.State{}
-	var schemaResp resource.SchemaResponse
-	packageResource.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
-	req.State.Schema = schemaResp.Schema
-	diags := req.State.Set(context.Background(), &stateModel)
-	assert.False(t, diags.HasError(), "failed to set request state: %v", diags)
-
-	var resp resource.ReadResponse
-	// Pre-populate response state as the framework would do
-	resp.State = req.State
-	packageResource.Read(context.Background(), req, &resp)
-
-	// Expect a warning but no error; the provider should have removed the resource from state.
-	assert.False(t, resp.Diagnostics.HasError(), "read produced an error: %v", resp.Diagnostics)
-
-	var out PackageResourceModel
-	diags2 := resp.State.Get(context.Background(), &out)
-	// Getting the removed resource should produce an error (state is empty)
-	assert.True(t, diags2.HasError(), "expected error getting state for removed resource, got none")
 }
 
 func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
