@@ -27,15 +27,65 @@ resource "uds_package" "init" {
   }
 }
 
-# The `uds_package` resource now automatically persists runtime set variables produced by a package deployment (via Zarf actions that call `setVariable`) into two computed maps on the resource:
-# - `set_variables` (Read-Only, Map(String)): non-sensitive runtime variables written by the package at deploy time.
-# - `sensitive_set_variables` (Read-Only, Map(String), Sensitive): sensitive runtime variables written by the package at deploy time.
+# This zarf package example produces sensitive variables using zarf action setVariables sensitive: true. 
+# The variable used in this example is AUTHSERVICE_REDIS_URI
 
-# This package example produces sensitive variables using zarf action setVariables sensitive: true. 
-# The variable is AUTHSERVICE_REDIS_URI in this example
+# zarf package example yaml for reference:
+
+# kind: ZarfPackageConfig
+# metadata:
+#   name: authservice-ha-deps
+#   version: 1.0.0
+#
+# variables:
+#   - name: AUTHSERVICE_REDIS_URI
+#     sensitive: true
+#
+# components:
+#   - name: valkey
+#     required: true
+#     charts:
+#       - name: uds-valkey-config
+#         namespace: valkey
+#         version: 0.1.0
+#         localPath: ../chart
+#       - name: valkey
+#         version: 4.0.2
+#         namespace: valkey
+#         url: oci://ghcr.io/defenseunicorns/bitferno/valkey
+#         valuesFiles:
+#           - ../values/values.yaml
+#     images:
+#       - bitnamilegacy/valkey:8.1.3-debian-12-r3
+#       - bitnamilegacy/redis-exporter:1.76.0-debian-12-r0
+#       - bitnamilegacy/valkey-sentinel:8.1.3-debian-12-r3
+#
+#   - name: core-secrets
+#     required: true
+#     actions:
+#       onDeploy:
+#         before:
+#           - cmd: |
+#               uds zarf tools kubectl get secret valkey-valkey \
+#                 -n valkey \
+#                 -o jsonpath='{.data.valkey-password}' \
+#                 | base64 -d
+#             mute: true
+#             setVariables:
+#               - name: VALKEY_PASSWORD
+#                 sensitive: true
+#
+#           - cmd: |
+#               echo "redis://:${ZARF_VAR_VALKEY_PASSWORD}@valkey-valkey-primary.valkey.svc.cluster.local:6379"
+#             mute: true
+#             setVariables:
+#               - name: AUTHSERVICE_REDIS_URI
+#                 sensitive: true
+
+# resource for the built authservice-ha-deps zarf package example above
 resource "uds_package" "authservice-ha-deps" {
   depends_on = [uds_package.init]
-  source     = "../build/authservice-ha-deps/*.zst"
+  source     = "zarf-package-authservice-ha-deps-arm64-1.0.0.tar.zst"
 }
 
 # This package example consumes the sensitive variable produced by the authservice-ha-deps package. 

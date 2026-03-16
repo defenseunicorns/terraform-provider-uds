@@ -477,9 +477,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	var deployedPackage zarfState.DeployedPackage
-	var found bool
-	deployedPackage, found, err = r.getDeployedPackage(timeoutCtx, packageName, packageNamespace)
+	deployedPackage, found, err := r.getDeployedPackage(timeoutCtx, packageName, packageNamespace)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error getting deployed package",
