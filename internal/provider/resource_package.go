@@ -16,6 +16,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -98,6 +99,12 @@ type PackageResourceModel struct {
 	Version        types.String `tfsdk:"version"`
 	Metadata       types.Object `tfsdk:"metadata"`
 	ConnectStrings types.Set    `tfsdk:"connect_strings"` // Set of ConnectString objects
+
+	// runtime SetVariables (from Zarf package actions) are written
+	// automatically into the computed `set_variables` and
+	// `sensitive_set_variables` maps so other packages can reference them.
+	SetVariables          types.Map `tfsdk:"set_variables"`
+	SensitiveSetVariables types.Map `tfsdk:"sensitive_set_variables"`
 }
 
 // ComponentModel represents a UDS package component configuration.
@@ -279,6 +286,19 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 						},
 					},
 				},
+			},
+			// Runtime setVariables from zarf actions are written to the following
+			// computed maps so other packages can reference them.
+			"set_variables": schema.MapAttribute{
+				MarkdownDescription: "Computed map of zarf action set variables set for this package (non-sensitive).",
+				Computed:            true,
+				ElementType:         types.StringType,
+			},
+			"sensitive_set_variables": schema.MapAttribute{
+				MarkdownDescription: "Computed map of sensitive zarf action set variables set for this package.",
+				Computed:            true,
+				ElementType:         types.StringType,
+				Sensitive:           true,
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -1005,6 +1025,40 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, err
 	}
 	tflog.Debug(ctx, "ending deploy")
+
+	// Populate computed set_variables and sensitive_set_variables only from
+	// runtime SetVariables produced by the package deploy (actions). Inputs
+	// provided in `vars`/`sensitive_vars` are used for the deploy operation
+	// (see buildSetVariableMap) but are intentionally NOT persisted to the
+	// computed tfstate maps — only runtime SetVariables are written.
+	nonSens := make(map[string]attr.Value)
+	sens := make(map[string]attr.Value)
+
+	if deployResult.VariableConfig != nil {
+		for name, sv := range deployResult.VariableConfig.GetSetVariableMap() {
+			if sv == nil {
+				continue
+			}
+			// normalize variable name keys to all lowercase
+			key := strings.ToLower(name)
+			if sv.Sensitive {
+				sens[key] = types.StringValue(sv.Value)
+			} else {
+				nonSens[key] = types.StringValue(sv.Value)
+			}
+		}
+	}
+
+	var d1 diag.Diagnostics
+	plan.SetVariables, d1 = types.MapValue(types.StringType, nonSens)
+	if d1.HasError() {
+		return plan, fmt.Errorf("failed to construct set_variables map: %v", d1)
+	}
+	var d2 diag.Diagnostics
+	plan.SensitiveSetVariables, d2 = types.MapValue(types.StringType, sens)
+	if d2.HasError() {
+		return plan, fmt.Errorf("failed to construct sensitive_set_variables map: %v", d2)
+	}
 
 	// Populate connect strings from deploy result
 	connectStrings, err := getConnectStringsFromDeployResult(deployResult)

@@ -27,6 +27,7 @@ import (
 	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
+	"github.com/zarf-dev/zarf/src/pkg/variables"
 
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 )
@@ -217,6 +218,71 @@ func NewTestComponentModel(name string, options ...ComponentModelDataOption) Com
 	return model
 }
 
+// SetVarEntry is a small helper for defining expected runtime set variables
+// in a compact, tabular form for tests.
+type SetVarEntry struct {
+	Name      string
+	Value     string
+	Sensitive bool
+}
+
+// buildVCFromEntries constructs a *variables.VariableConfig from a slice of SetVarEntry.
+func buildVCFromEntries(entries []SetVarEntry) *variables.VariableConfig {
+	vc := variables.New("", nil, nil)
+	for _, e := range entries {
+		vc.SetVariable(e.Name, e.Value, e.Sensitive, false, v1alpha1.RawVariableType)
+	}
+	return vc
+}
+
+// buildVCFromMaps constructs a *variables.VariableConfig from two maps:
+// non-sensitive and sensitive set variables. Keys are provided as they
+// come from deploy results (may be mixed case); production code will
+// normalize names to lowercase when exporting.
+func buildVCFromMaps(nonSensitive map[string]string, sensitive map[string]string) *variables.VariableConfig {
+	vc := variables.New("", nil, nil)
+	for k, v := range nonSensitive {
+		vc.SetVariable(k, v, false, false, v1alpha1.RawVariableType)
+	}
+	for k, v := range sensitive {
+		vc.SetVariable(k, v, true, false, v1alpha1.RawVariableType)
+	}
+	return vc
+}
+
+// DeployedVar is a compact representation of a deployed set variable with its
+// value and whether it is sensitive.
+type DeployedVar struct {
+	Value     string
+	Sensitive bool
+}
+
+// buildVCFromCondensedMap constructs a *variables.VariableConfig from a
+// condensed map of deployed variables where the value includes whether it is
+// sensitive. This mirrors the reviewer-suggested table format.
+func buildVCFromCondensedMap(in map[string]DeployedVar) *variables.VariableConfig {
+	vc := variables.New("", nil, nil)
+	for k, v := range in {
+		vc.SetVariable(k, v.Value, v.Sensitive, false, v1alpha1.RawVariableType)
+	}
+	return vc
+}
+
+// readStringMap extracts a map[string]string from a Terraform types.Map value.
+// It returns an empty map (not nil) when the input is null/unknown/empty to make
+// assertions simpler in tests.
+func readStringMap(ctx context.Context, m types.Map) (map[string]string, error) {
+	out := map[string]string{}
+	if m.IsNull() || m.IsUnknown() {
+		return out, nil
+	}
+	diags := m.ElementsAs(ctx, &out, false)
+	if diags.HasError() {
+		return nil, fmt.Errorf("failed to read types.Map: %v", diags)
+	}
+	return out, nil
+}
+
 // NewTestComponentChartValuesModel creates a ComponentChartValuesModel with default values and applies data options
 func NewTestComponentChartValuesModel(chartName string, options ...ComponentChartValuesModelDataOption) ComponentChartValuesModel {
 	model := ComponentChartValuesModel{
@@ -388,6 +454,312 @@ func TestPackageResource_Upsert_VariableModels(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPackageResource_Upsert_SetVariables(t *testing.T) {
+	cases := []struct {
+		name                          string
+		deployedPackageSetVariables   map[string]DeployedVar
+		expectedSetVariables          map[string]string
+		expectedSensitiveSetVariables map[string]string
+	}{
+		{
+			name:                          "no deployed package set variables returns empty maps",
+			deployedPackageSetVariables:   map[string]DeployedVar{},
+			expectedSetVariables:          map[string]string{},
+			expectedSensitiveSetVariables: map[string]string{},
+		},
+		{
+			name: "single non-sensitive set variable returned in set_variables map only",
+			deployedPackageSetVariables: map[string]DeployedVar{
+				"OUTPUT": {Value: "output-val", Sensitive: false},
+			},
+			expectedSetVariables:          map[string]string{"output": "output-val"},
+			expectedSensitiveSetVariables: map[string]string{},
+		},
+		{
+			name: "single sensitive set variable returned in sensitive_set_variables map only",
+			deployedPackageSetVariables: map[string]DeployedVar{
+				"API_KEY": {Value: "s3cr3t", Sensitive: true},
+			},
+			expectedSetVariables:          map[string]string{},
+			expectedSensitiveSetVariables: map[string]string{"api_key": "s3cr3t"},
+		},
+		{
+			name: "variable names normalized to lowercase",
+			deployedPackageSetVariables: map[string]DeployedVar{
+				"OUTPUT": {Value: "output-val", Sensitive: false},
+			},
+			expectedSetVariables:          map[string]string{"output": "output-val"},
+			expectedSensitiveSetVariables: map[string]string{},
+		},
+		{
+			name: "multiple variables split between sensitive and non-sensitive",
+			deployedPackageSetVariables: map[string]DeployedVar{
+				"OUTPUT":      {Value: "output-val", Sensitive: false},
+				"API_KEY":     {Value: "s3cr3t", Sensitive: true},
+				"DB_NAME":     {Value: "mydb", Sensitive: false},
+				"DB_PASSWORD": {Value: "p@ssw0rd", Sensitive: true},
+			},
+			expectedSetVariables: map[string]string{
+				"output":  "output-val",
+				"db_name": "mydb",
+			},
+			expectedSensitiveSetVariables: map[string]string{
+				"api_key":     "s3cr3t",
+				"db_password": "p@ssw0rd",
+			},
+		},
+		{
+			name: "duplicate-case keys prefer lowercase variant deterministically",
+			deployedPackageSetVariables: map[string]DeployedVar{
+				"OUTPUT": {Value: "UPPER", Sensitive: false},
+				"output": {Value: "lower", Sensitive: false},
+			},
+			expectedSetVariables:          map[string]string{"output": "lower"},
+			expectedSensitiveSetVariables: map[string]string{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			packageLayout := layout.PackageLayout{
+				Pkg: v1alpha1.ZarfPackage{
+					Metadata: v1alpha1.ZarfMetadata{
+						Name:        "test-package",
+						Description: "Test package",
+						Version:     "0.0.1",
+					},
+					Components: []v1alpha1.ZarfComponent{
+						{
+							Name:     "test-required-component-0",
+							Required: helpers.BoolPtr(true),
+							Default:  false,
+						},
+					},
+				},
+			}
+
+			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+
+			deployRes := packager.DeployResult{VariableConfig: buildVCFromCondensedMap(tc.deployedPackageSetVariables)}
+			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployRes, nil)
+			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+			testModel := NewTestPackageResourceModel()
+
+			plan, err := packageResource.upsert(context.Background(), testModel)
+			assert.NoError(t, err)
+
+			gotSetVars, err := readStringMap(context.Background(), plan.SetVariables)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expectedSetVariables, gotSetVars)
+
+			gotSensVars, err := readStringMap(context.Background(), plan.SensitiveSetVariables)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expectedSensitiveSetVariables, gotSensVars)
+
+			mockPackager.AssertExpectations(t)
+			mockPackageComponentFilter.AssertExpectations(t)
+		})
+	}
+}
+
+// Ensure provider can export values coming from deployResult.Values
+// including structured values which should be YAML-encoded in the exported map.
+func TestPackageResource_Upsert_DeployValues_NotPersisted(t *testing.T) {
+	packageLayout := layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Metadata: v1alpha1.ZarfMetadata{
+				Name:        "test-package",
+				Description: "Test package",
+				Version:     "0.0.1",
+			},
+			Components: []v1alpha1.ZarfComponent{{Name: "test-required-component-0", Required: helpers.BoolPtr(true)}},
+		},
+	}
+
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+
+	// Build deploy result with Values containing a plain string and a structured value
+	structured := map[string]any{"a": 1, "b": "x"}
+	deployRes := packager.DeployResult{
+		Values: map[string]any{
+			"plain":   "strval",
+			"complex": structured,
+		},
+	}
+
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployRes, nil)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+	testModel := NewTestPackageResourceModel()
+
+	plan, err := packageResource.upsert(context.Background(), testModel)
+	assert.NoError(t, err)
+
+	// Ensure deployResult.Values are not included in set_variables (only SetVariables are persisted)
+	setVars := map[string]string{}
+	if !plan.SetVariables.IsNull() && !plan.SetVariables.IsUnknown() {
+		diags := plan.SetVariables.ElementsAs(context.Background(), &setVars, false)
+		assert.False(t, diags.HasError(), "failed to read set_variables: %v", diags)
+	}
+
+	// plain and complex should not be present in set_variables
+	_, okPlain := setVars["plain"]
+	_, okComplex := setVars["complex"]
+	assert.False(t, okPlain)
+	assert.False(t, okComplex)
+
+	mockPackager.AssertExpectations(t)
+	mockPackageComponentFilter.AssertExpectations(t)
+}
+
+// Ensure sensitive runtime SetVariables are persisted to `sensitive_set_variables`
+func TestPackageResource_Upsert_SensitiveSetVariables(t *testing.T) {
+	packageLayout := layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Metadata: v1alpha1.ZarfMetadata{
+				Name:        "test-package",
+				Description: "Test package",
+				Version:     "0.0.1",
+			},
+			Components: []v1alpha1.ZarfComponent{{Name: "test-required-component-0", Required: helpers.BoolPtr(true)}},
+		},
+	}
+
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+
+	// Use helper to build VariableConfig from a small table describing runtime set variables
+	entries := []SetVarEntry{{Name: "API_KEY", Value: "s3cr3t", Sensitive: true}}
+	deployRes := packager.DeployResult{VariableConfig: buildVCFromEntries(entries)}
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployRes, nil)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+	testModel := NewTestPackageResourceModel()
+
+	plan, err := packageResource.upsert(context.Background(), testModel)
+	assert.NoError(t, err)
+
+	// non-sensitive map should not contain the sensitive key
+	nonSens, err := readStringMap(context.Background(), plan.SetVariables)
+	assert.NoError(t, err)
+	_, ok := nonSens["api_key"]
+	assert.False(t, ok)
+
+	// sensitive map should contain the key (lowercased)
+	sens, err := readStringMap(context.Background(), plan.SensitiveSetVariables)
+	assert.NoError(t, err)
+	assert.Equal(t, "s3cr3t", sens["api_key"])
+
+	mockPackager.AssertExpectations(t)
+	mockPackageComponentFilter.AssertExpectations(t)
+}
+
+// Ensure input-provided vars / sensitive_vars are NOT persisted into computed maps
+func TestPackageResource_Upsert_InputVars_NotPersisted(t *testing.T) {
+	packageLayout := layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Metadata:   v1alpha1.ZarfMetadata{Name: "test-package"},
+			Components: []v1alpha1.ZarfComponent{{Name: "test-required-component-0", Required: helpers.BoolPtr(true)}},
+		},
+	}
+
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+	// Deploy returns empty result (no runtime set variables)
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+	// Provide vars and sensitive_vars in the model inputs
+	testModel := NewTestPackageResourceModel(
+		WithVars([]VariableModel{{Name: types.StringValue("INP1"), Value: types.StringValue("val1")}}),
+		WithSensitiveVars([]VariableModel{{Name: types.StringValue("INP_SECRET"), Value: types.StringValue("val-secret")}}),
+	)
+
+	plan, err := packageResource.upsert(context.Background(), testModel)
+	assert.NoError(t, err)
+
+	setVars := map[string]string{}
+	if !plan.SetVariables.IsNull() && !plan.SetVariables.IsUnknown() {
+		diags := plan.SetVariables.ElementsAs(context.Background(), &setVars, false)
+		assert.False(t, diags.HasError(), "failed to read set_variables: %v", diags)
+	}
+	// input var names should NOT be present in the computed maps
+	_, ok1 := setVars["INP1"]
+	assert.False(t, ok1)
+
+	sensVars := map[string]string{}
+	if !plan.SensitiveSetVariables.IsNull() && !plan.SensitiveSetVariables.IsUnknown() {
+		diags := plan.SensitiveSetVariables.ElementsAs(context.Background(), &sensVars, false)
+		assert.False(t, diags.HasError(), "failed to read sensitive_set_variables: %v", diags)
+	}
+	_, ok2 := sensVars["INP_SECRET"]
+	assert.False(t, ok2)
+
+	mockPackager.AssertExpectations(t)
+	mockPackageComponentFilter.AssertExpectations(t)
+}
+
+// When no runtime SetVariables are produced, the provider should return an
+// empty `set_variables` map (not null) so callers can safely index into it.
+func TestPackageResource_Upsert_SetVariables_EmptyAndNull(t *testing.T) {
+	packageLayout := layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Metadata:   v1alpha1.ZarfMetadata{Name: "test-package"},
+			Components: []v1alpha1.ZarfComponent{{Name: "test-required-component-0", Required: helpers.BoolPtr(true)}},
+		},
+	}
+
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
+	// Deploy returns an empty result (no VariableConfig)
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+	// Case A: No set variables configured and no deploy results
+	testModelNull := NewTestPackageResourceModel()
+	planNull, err := packageResource.upsert(context.Background(), testModelNull)
+	assert.NoError(t, err)
+	exportedNull := map[string]string{}
+	diags := planNull.SetVariables.ElementsAs(context.Background(), &exportedNull, false)
+	assert.False(t, diags.HasError())
+	assert.Len(t, exportedNull, 0)
+
+	// Case B: no runtime set variables (legacy export flag removed)
+	testModelEmpty := NewTestPackageResourceModel()
+	planEmpty, err := packageResource.upsert(context.Background(), testModelEmpty)
+	assert.NoError(t, err)
+	exportedEmpty := map[string]string{}
+	diags2 := planEmpty.SetVariables.ElementsAs(context.Background(), &exportedEmpty, false)
+	assert.False(t, diags2.HasError())
+	assert.Len(t, exportedEmpty, 0)
+
+	mockPackager.AssertExpectations(t)
+	mockPackageComponentFilter.AssertExpectations(t)
 }
 
 func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
