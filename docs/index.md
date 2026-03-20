@@ -30,6 +30,7 @@ provider "uds" {
 ### Optional
 
 - `default_architecture` (String) Default system architecture of the target cluster. Valid values are `amd64` or `arm64`. Defaults to the local system architecture. Can also be configured with the `UDS_DEFAULT_ARCHITECTURE` environment variable.
+- `force_helm_ssa_conflicts` (Boolean) Force Helm to take ownership of conflicting fields during Server-Side Apply operations during package deployment. Use when external tools (kubectl, HPAs, etc.) have modified resources. Defaults to `false`. Can also be configured with the `UDS_FORCE_HELM_SSA_CONFLICTS` environment variable.
 - `insecure_force_http` (Boolean) Force remote package fetching over HTTP instead of HTTPS. Defaults to `false`. Can also be configured with the `UDS_INSECURE_FORCE_HTTP` environment variable.
 - `insecure_skip_tls_verification` (Boolean) Skip TLS certificate verification when fetching remote packages over HTTPS. Defaults to `false`. Can also be configured with the `UDS_INSECURE_SKIP_TLS_VERIFICATION` environment variable.
 - `zarf_cache_path` (String) Filesystem path to the local Zarf cache directory. Defaults to `~/.zarf-cache`. Can also be configured with the `UDS_ZARF_CACHE_PATH` environment variable.
