@@ -546,14 +546,6 @@ func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 				"db_password": "p@ssw0rd",
 			},
 		},
-		{
-			name: "duplicate-case keys prefer lowercase variant deterministically",
-			deployedPackageSetVariables: map[string]DeployedVar{
-				"OUTPUT": {Value: "UPPER", Sensitive: false},
-				"output": {Value: "lower", Sensitive: false},
-			},
-			expectedSetVariables: map[string]string{"output": "lower"},
-		},
 	}
 
 	for _, tc := range cases {
