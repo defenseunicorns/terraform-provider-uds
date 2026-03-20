@@ -34,7 +34,7 @@ resource "uds_bundle_metadata" "example_bundle" {
 }
 
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.73.0"
+  source = "oci://ghcr.io/zarf-dev/packages/init:v0.74.0"
 
   # Install optional git-server
   component {
@@ -293,7 +293,7 @@ In Terraform v1.5.0 and later, the [`import` block](https://developer.hashicorp.
 # 1. Fetch public signing key for dos-games package:
 #    - curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub 
 # 2. Deploy podinfo and dos-games (with namespace) packages
-#    - zarf package deploy oci://ghcr.io/zarf-dev/packages/init:v0.73.0 --confirm
+#    - zarf package deploy oci://ghcr.io/zarf-dev/packages/init:v0.74.0 --confirm
 #    - zarf package deploy oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0 --key dosgames.pub --verify -n demo --confirm
 # package to import without namespace override
 # zarf package deploy oci://ghcr.io/defenseunicorns/uds-cli/podinfo:0.0.2 --confirm 
@@ -305,7 +305,7 @@ import {
 }
 
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.73.0"
+  source = "oci://ghcr.io/zarf-dev/packages/init:v0.74.0"
 }
 
 # import package deployed with a namespace override
