@@ -40,6 +40,7 @@ type udsProviderConfig struct {
 	InsecureForceHTTP           bool
 	InsecureSkipTLSVerification bool
 	ZarfCachePath               string
+	ForceHelmSSAConflicts       bool
 }
 
 type udsProviderModel struct {
@@ -47,6 +48,7 @@ type udsProviderModel struct {
 	InsecureForceHTTP     types.Bool   `tfsdk:"insecure_force_http"`
 	InsecureSkipTLSVerify types.Bool   `tfsdk:"insecure_skip_tls_verification"`
 	ZarfCachePath         types.String `tfsdk:"zarf_cache_path"`
+	ForceHelmSSAConflicts types.Bool   `tfsdk:"force_helm_ssa_conflicts"`
 }
 
 // New creates a new provider factory function that returns a provider instance.
@@ -85,6 +87,10 @@ func (p *udsProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *
 			"zarf_cache_path": schema.StringAttribute{
 				Optional:            true,
 				MarkdownDescription: "Filesystem path to the local Zarf cache directory. Defaults to `~/.zarf-cache`. Can also be configured with the `UDS_ZARF_CACHE_PATH` environment variable.",
+			},
+			"force_helm_ssa_conflicts": schema.BoolAttribute{
+				Optional:            true,
+				MarkdownDescription: "Force Helm to take ownership of conflicting fields during Server-Side Apply operations during package deployment. Use when external tools (kubectl, HPAs, etc.) have modified resources. Defaults to `false`. Can also be configured with the `UDS_FORCE_HELM_SSA_CONFLICTS` environment variable.",
 			},
 		},
 	}
@@ -130,6 +136,13 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 			"Unknown configuration value for the zarf cache path. Either target apply the source of the value first, set the value statically in the configuration, or use the UDS_ZARF_CACHE_PATH environment variable.",
 		)
 	}
+	if config.ForceHelmSSAConflicts.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("force_helm_ssa_conflicts"),
+			configErrorSummaryUnknownProviderConfigValue,
+			"Unknown configuration value for the force Helm SSA conflicts flag. Either target apply the source of the value first, set the value statically in the configuration, or use the UDS_FORCE_HELM_SSA_CONFLICTS environment variable.",
+		)
+	}
 
 	defaultArchitecture, _, err := resolveProviderStringConfig(ctx, config.DefaultArchitecture, "UDS_DEFAULT_ARCHITECTURE", runtime.GOARCH, "default_architecture",
 		strings.ToLower, // transformer
@@ -156,6 +169,13 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 	skipTLS, _, err := resolveProviderBoolConfig(ctx, config.InsecureSkipTLSVerify, "UDS_INSECURE_SKIP_TLS_VERIFICATION", false, "insecure_skip_tls_verification", nil)
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(path.Root("insecure_skip_tls_verification"), configErrorSummaryInvalidProviderConfigValue, err.Error())
+		return
+	}
+
+	// Resolve force_helm_ssa_conflicts
+	forceHelmSSAConflicts, _, err := resolveProviderBoolConfig(ctx, config.ForceHelmSSAConflicts, "UDS_FORCE_HELM_SSA_CONFLICTS", false, "force_helm_ssa_conflicts", nil)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("force_helm_ssa_conflicts"), configErrorSummaryInvalidProviderConfigValue, err.Error())
 		return
 	}
 
@@ -187,6 +207,7 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 		InsecureForceHTTP:           forceHTTP,
 		InsecureSkipTLSVerification: skipTLS,
 		ZarfCachePath:               zarfCachePath,
+		ForceHelmSSAConflicts:       forceHelmSSAConflicts,
 	}
 
 	tflog.Info(ctx, "Provider configured", map[string]interface{}{
@@ -194,6 +215,7 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 		"insecure_force_http":            forceHTTP,
 		"insecure_skip_tls_verification": skipTLS,
 		"zarf_cache_path":                zarfCachePath,
+		"force_helm_ssa_conflicts":       forceHelmSSAConflicts,
 	})
 
 	resp.DataSourceData = &providerCfg
