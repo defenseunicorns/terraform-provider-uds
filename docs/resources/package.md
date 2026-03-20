@@ -16,8 +16,8 @@ Deploys a UDS Package.
 terraform {
   required_providers {
     uds = {
-      source = "defenseunicorns/uds"
-      # version = "~> 0.1.7"
+      source  = "defenseunicorns/uds"
+      version = "~> 0.1.7"
     }
   }
 }
