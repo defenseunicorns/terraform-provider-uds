@@ -15,6 +15,7 @@ import (
 	zPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
+	"helm.sh/helm/v4/pkg/kube"
 )
 
 // Packager provides operations for managing Zarf packages.
@@ -58,6 +59,10 @@ func (p *zarfPackager) ensureZarfConfigured() {
 	if p.zarfConfigured {
 		return
 	}
+
+	// Set the Helm field manager name to match Zarf's so that resources deployed via this provider,
+	// uds, and/or Zarf are interchangeable without requiring force_helm_ssa_conflicts set to true.
+	kube.ManagedFieldsManager = cluster.FieldManagerName
 
 	// Set the prefix for `./zarf` actions since we have to vendor zarf. This only needs to be done once per instance.
 	zConfig.ActionsCommandZarfPrefix = "zarf"

@@ -19,7 +19,7 @@ resource "uds_bundle_metadata" "example_bundle" {
 }
 
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.73.0"
+  source = "oci://ghcr.io/zarf-dev/packages/init:v0.74.0"
 
   # Install optional git-server
   component {
