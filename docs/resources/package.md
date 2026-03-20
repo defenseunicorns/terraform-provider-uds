@@ -16,8 +16,8 @@ Deploys a UDS Package.
 terraform {
   required_providers {
     uds = {
-      source  = "defenseunicorns/uds"
-      version = "~> 0.1.7"
+      source = "defenseunicorns/uds"
+      # version = "~> 0.1.7"
     }
   }
 }
@@ -103,9 +103,9 @@ resource "uds_package" "authservice-ha-deps" {
   source     = "zarf-package-authservice-ha-deps-arm64-1.0.0.tar.zst"
 }
 
-# This package example consumes the sensitive variable produced by the authservice-ha-deps package. 
-# The variable is referenced using the syntax: <package_name>.<sensitive_set_vars>.<variable_name>, 
-# which in this example is: uds_package.authservice-ha-deps.sensitive_set_vars.authservice_redis_uri
+# This package example consumes the variable contained in the authservice-ha-deps package. 
+# The variable is referenced using the syntax: <package_name>.<set_variables>.<variable_name>,
+# which in this example is: uds_package.authservice-ha-deps.set_variables.authservice_redis_uri
 resource "uds_package" "core-identity-authorization" {
   depends_on = [uds_package.authservice-ha-deps]
   source     = "oci://ghcr.io/defenseunicorns/packages/uds/core-identity-authorization:${local.uds_version}"
@@ -116,7 +116,7 @@ resource "uds_package" "core-identity-authorization" {
     override {
       chart_name = "authservice"
       values = [
-        { path = "redis.uri", value = uds_package.authservice-ha-deps.sensitive_set_vars.authservice_redis_uri }
+        { path = "redis.uri", value = uds_package.authservice-ha-deps.set_variables.authservice_redis_uri }
       ]
     }
   }
@@ -200,8 +200,7 @@ resource "uds_package" "dos_games" {
 - `kind` (String) Kind of UDS package; ZarfInitConfig or ZarfPackageConfig.
 - `metadata` (Attributes) Metadata retrieved from the UDS package (zarf.yaml). (see [below for nested schema](#nestedatt--metadata))
 - `name` (String) Name of the UDS Package.
-- `sensitive_set_variables` (Map of String, Sensitive) Computed map of sensitive zarf action set variables set for this package.
-- `set_variables` (Map of String) Computed map of zarf action set variables set for this package (non-sensitive).
+- `set_variables` (Map of String, Sensitive) Computed map of zarf variables set for this package.
 - `version` (String) Version of the deployed UDS package.
 
 <a id="nestedblock--component"></a>

@@ -458,40 +458,35 @@ func TestPackageResource_Upsert_VariableModels(t *testing.T) {
 
 func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 	cases := []struct {
-		name                          string
-		deployedPackageSetVariables   map[string]DeployedVar
-		expectedSetVariables          map[string]string
-		expectedSensitiveSetVariables map[string]string
+		name                        string
+		deployedPackageSetVariables map[string]DeployedVar
+		expectedSetVariables        map[string]string
 	}{
 		{
-			name:                          "no deployed package set variables returns empty maps",
-			deployedPackageSetVariables:   map[string]DeployedVar{},
-			expectedSetVariables:          map[string]string{},
-			expectedSensitiveSetVariables: map[string]string{},
+			name:                        "no deployed package set variables returns empty maps",
+			deployedPackageSetVariables: map[string]DeployedVar{},
+			expectedSetVariables:        map[string]string{},
 		},
 		{
 			name: "single non-sensitive set variable returned in set_variables map only",
 			deployedPackageSetVariables: map[string]DeployedVar{
 				"OUTPUT": {Value: "output-val", Sensitive: false},
 			},
-			expectedSetVariables:          map[string]string{"output": "output-val"},
-			expectedSensitiveSetVariables: map[string]string{},
+			expectedSetVariables: map[string]string{"output": "output-val"},
 		},
 		{
-			name: "single sensitive set variable returned in sensitive_set_variables map only",
+			name: "single sensitive set variable is exported into set_variables map",
 			deployedPackageSetVariables: map[string]DeployedVar{
 				"API_KEY": {Value: "s3cr3t", Sensitive: true},
 			},
-			expectedSetVariables:          map[string]string{},
-			expectedSensitiveSetVariables: map[string]string{"api_key": "s3cr3t"},
+			expectedSetVariables: map[string]string{"api_key": "s3cr3t"},
 		},
 		{
 			name: "variable names normalized to lowercase",
 			deployedPackageSetVariables: map[string]DeployedVar{
 				"OUTPUT": {Value: "output-val", Sensitive: false},
 			},
-			expectedSetVariables:          map[string]string{"output": "output-val"},
-			expectedSensitiveSetVariables: map[string]string{},
+			expectedSetVariables: map[string]string{"output": "output-val"},
 		},
 		{
 			name: "multiple variables split between sensitive and non-sensitive",
@@ -502,11 +497,9 @@ func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 				"DB_PASSWORD": {Value: "p@ssw0rd", Sensitive: true},
 			},
 			expectedSetVariables: map[string]string{
-				"output":  "output-val",
-				"db_name": "mydb",
-			},
-			expectedSensitiveSetVariables: map[string]string{
+				"output":      "output-val",
 				"api_key":     "s3cr3t",
+				"db_name":     "mydb",
 				"db_password": "p@ssw0rd",
 			},
 		},
@@ -516,8 +509,7 @@ func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 				"OUTPUT": {Value: "UPPER", Sensitive: false},
 				"output": {Value: "lower", Sensitive: false},
 			},
-			expectedSetVariables:          map[string]string{"output": "lower"},
-			expectedSensitiveSetVariables: map[string]string{},
+			expectedSetVariables: map[string]string{"output": "lower"},
 		},
 	}
 
@@ -559,10 +551,6 @@ func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 			gotSetVars, err := readStringMap(context.Background(), plan.SetVariables)
 			assert.NoError(t, err)
 			assert.Equal(t, tc.expectedSetVariables, gotSetVars)
-
-			gotSensVars, err := readStringMap(context.Background(), plan.SensitiveSetVariables)
-			assert.NoError(t, err)
-			assert.Equal(t, tc.expectedSensitiveSetVariables, gotSensVars)
 
 			mockPackager.AssertExpectations(t)
 			mockPackageComponentFilter.AssertExpectations(t)
@@ -625,52 +613,6 @@ func TestPackageResource_Upsert_DeployValues_NotPersisted(t *testing.T) {
 	mockPackageComponentFilter.AssertExpectations(t)
 }
 
-// Ensure sensitive runtime SetVariables are persisted to `sensitive_set_variables`
-func TestPackageResource_Upsert_SensitiveSetVariables(t *testing.T) {
-	packageLayout := layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{
-			Metadata: v1alpha1.ZarfMetadata{
-				Name:        "test-package",
-				Description: "Test package",
-				Version:     "0.0.1",
-			},
-			Components: []v1alpha1.ZarfComponent{{Name: "test-required-component-0", Required: helpers.BoolPtr(true)}},
-		},
-	}
-
-	mockPackager := &MockPackager{}
-	mockPackageComponentFilter := &MockPackageComponentFilter{}
-
-	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&packageLayout, nil)
-
-	// Use helper to build VariableConfig from a small table describing runtime set variables
-	entries := []SetVarEntry{{Name: "API_KEY", Value: "s3cr3t", Sensitive: true}}
-	deployRes := packager.DeployResult{VariableConfig: buildVCFromEntries(entries)}
-	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployRes, nil)
-	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
-
-	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
-
-	testModel := NewTestPackageResourceModel()
-
-	plan, err := packageResource.upsert(context.Background(), testModel)
-	assert.NoError(t, err)
-
-	// non-sensitive map should not contain the sensitive key
-	nonSens, err := readStringMap(context.Background(), plan.SetVariables)
-	assert.NoError(t, err)
-	_, ok := nonSens["api_key"]
-	assert.False(t, ok)
-
-	// sensitive map should contain the key (lowercased)
-	sens, err := readStringMap(context.Background(), plan.SensitiveSetVariables)
-	assert.NoError(t, err)
-	assert.Equal(t, "s3cr3t", sens["api_key"])
-
-	mockPackager.AssertExpectations(t)
-	mockPackageComponentFilter.AssertExpectations(t)
-}
-
 // Ensure input-provided vars / sensitive_vars are NOT persisted into computed maps
 func TestPackageResource_Upsert_InputVars_NotPersisted(t *testing.T) {
 	packageLayout := layout.PackageLayout{
@@ -708,12 +650,12 @@ func TestPackageResource_Upsert_InputVars_NotPersisted(t *testing.T) {
 	_, ok1 := setVars["INP1"]
 	assert.False(t, ok1)
 
-	sensVars := map[string]string{}
-	if !plan.SensitiveSetVariables.IsNull() && !plan.SensitiveSetVariables.IsUnknown() {
-		diags := plan.SensitiveSetVariables.ElementsAs(context.Background(), &sensVars, false)
-		assert.False(t, diags.HasError(), "failed to read sensitive_set_variables: %v", diags)
+	setVars = map[string]string{}
+	if !plan.SetVariables.IsNull() && !plan.SetVariables.IsUnknown() {
+		diags := plan.SetVariables.ElementsAs(context.Background(), &setVars, false)
+		assert.False(t, diags.HasError(), "failed to read set_variables: %v", diags)
 	}
-	_, ok2 := sensVars["INP_SECRET"]
+	_, ok2 := setVars["INP_SECRET"]
 	assert.False(t, ok2)
 
 	mockPackager.AssertExpectations(t)
