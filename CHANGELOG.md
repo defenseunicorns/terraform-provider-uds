@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.2.2...v0.3.0) (2026-03-20)
+
+
+### Features
+
+* force helm ssa conflicts provider flag with zarf v0.74.0 ([#191](https://github.com/defenseunicorns/terraform-provider-uds/issues/191)) ([98b58cd](https://github.com/defenseunicorns/terraform-provider-uds/commit/98b58cd9ec632ffea9f92bd6f1da6f9cebe70953))
+* return all variables set during package deploy in `set_variables` attribute for uds_package ([#190](https://github.com/defenseunicorns/terraform-provider-uds/issues/190)) ([8c94a8d](https://github.com/defenseunicorns/terraform-provider-uds/commit/8c94a8d584acc0fd1982b3475468401a6df10795))
+* return variables set in package deploy actions for `uds_package` resource ([#175](https://github.com/defenseunicorns/terraform-provider-uds/issues/175)) ([d973bfc](https://github.com/defenseunicorns/terraform-provider-uds/commit/d973bfca43f6e4ae7e6a380938424f8c744afc04))
+
+
+### Miscellaneous
+
+* **deps:** update github-actions ([#181](https://github.com/defenseunicorns/terraform-provider-uds/issues/181)) ([44b06ac](https://github.com/defenseunicorns/terraform-provider-uds/commit/44b06ac0924893d26202f3b07db173424ab48b19))
+* remove invalid/flaky unit test for different-cased map keys in set variables returned from deploy ([#192](https://github.com/defenseunicorns/terraform-provider-uds/issues/192)) ([49873a6](https://github.com/defenseunicorns/terraform-provider-uds/commit/49873a68d68c09d68d0400db6a7411942b83ff4d))
+
 ## [0.2.2](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.2.1...v0.2.2) (2026-03-05)
 
 
