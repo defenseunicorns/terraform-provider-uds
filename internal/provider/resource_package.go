@@ -1003,7 +1003,8 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		RegistryInfo: zarfState.RegistryInfo{
 			PushUsername: zarfState.ZarfRegistryPushUser,
 		},
-		IsInteractive: false,
+		IsInteractive:  false,
+		ForceConflicts: r.providerConfig.ForceHelmSSAConflicts,
 	}
 
 	filter := r.packageFilter.ForDeploy(optionalComponents)

@@ -456,6 +456,49 @@ func TestPackageResource_Upsert_VariableModels(t *testing.T) {
 	}
 }
 
+func TestPackageResource_Upsert_ForceHelmSSAConflicts(t *testing.T) {
+	packageLayout := newValidLoadPackageResult().Layout
+
+	tests := []struct {
+		name                  string
+		forceHelmSSAConflicts bool
+	}{
+		{
+			name:                  "ForceConflicts is false when provider setting is false",
+			forceHelmSSAConflicts: false,
+		},
+		{
+			name:                  "ForceConflicts is true when provider setting is true",
+			forceHelmSSAConflicts: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil)
+			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+			providerCfg := &udsProviderConfig{
+				ForceHelmSSAConflicts: tc.forceHelmSSAConflicts,
+			}
+			packageResource := NewPackageResource(providerCfg, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+			_, err := packageResource.upsert(context.Background(), NewTestPackageResourceModel())
+			assert.NoError(t, err)
+
+			for _, call := range mockPackager.Calls {
+				if call.Method == "Deploy" {
+					deployOptions := call.Arguments[2].(zarfPackager.DeployOptions)
+					assert.Equal(t, tc.forceHelmSSAConflicts, deployOptions.ForceConflicts)
+				}
+			}
+		})
+	}
+}
+
 func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 	cases := []struct {
 		name                        string
