@@ -287,13 +287,6 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					},
 				},
 			},
-			// Variables exported by the Zarf package (as returned by the
-			// package deploy's VariableConfig) are written to the following
-			// computed map so other packages can reference them. Note: this
-			// includes all Zarf variables returned by the deploy result's
-			// VariableConfig. All persisted
-			// variables are stored in the single `set_variables` map and
-			// marked sensitive in Terraform state.
 			"set_variables": schema.MapAttribute{
 				MarkdownDescription: "Computed map of zarf variables set for this package.",
 				Computed:            true,
