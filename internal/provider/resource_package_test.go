@@ -235,8 +235,8 @@ func buildVCFromEntries(entries []SetVarEntry) *variables.VariableConfig {
 	return vc
 }
 
-// buildVCFromMaps constructs a *variables.VariableConfig from two maps:
-// non-sensitive and sensitive set variables. Keys are provided as they
+// buildVCFromMaps constructs a *variables.VariableConfig from two input maps:
+// one marked non-sensitive and one marked sensitive. Keys are provided as they
 // come from deploy results (may be mixed case); production code will
 // normalize names to lowercase when exporting.
 func buildVCFromMaps(nonSensitive map[string]string, sensitive map[string]string) *variables.VariableConfig {
@@ -463,19 +463,19 @@ func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 		expectedSetVariables        map[string]string
 	}{
 		{
-			name:                        "no deployed package set variables returns empty maps",
+			name:                        "no deployed package set variables returns empty set_variables map",
 			deployedPackageSetVariables: map[string]DeployedVar{},
 			expectedSetVariables:        map[string]string{},
 		},
 		{
-			name: "single non-sensitive set variable returned in set_variables map only",
+			name: "single non-sensitive set variable is exported into set_variables",
 			deployedPackageSetVariables: map[string]DeployedVar{
 				"OUTPUT": {Value: "output-val", Sensitive: false},
 			},
 			expectedSetVariables: map[string]string{"output": "output-val"},
 		},
 		{
-			name: "single sensitive set variable is exported into set_variables map",
+			name: "single sensitive set variable is exported into set_variables",
 			deployedPackageSetVariables: map[string]DeployedVar{
 				"API_KEY": {Value: "s3cr3t", Sensitive: true},
 			},
@@ -489,7 +489,7 @@ func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 			expectedSetVariables: map[string]string{"output": "output-val"},
 		},
 		{
-			name: "multiple variables split between sensitive and non-sensitive",
+			name: "multiple variables are all exported into set_variables",
 			deployedPackageSetVariables: map[string]DeployedVar{
 				"OUTPUT":      {Value: "output-val", Sensitive: false},
 				"API_KEY":     {Value: "s3cr3t", Sensitive: true},
@@ -647,7 +647,7 @@ func TestPackageResource_Upsert_InputVars_NotPersisted(t *testing.T) {
 		assert.False(t, diags.HasError(), "failed to read set_variables: %v", diags)
 	}
 	// input var names should NOT be present in the computed maps
-	_, ok1 := setVars["INP1"]
+	_, ok1 := setVars["inp1"]
 	assert.False(t, ok1)
 
 	setVars = map[string]string{}
@@ -655,7 +655,7 @@ func TestPackageResource_Upsert_InputVars_NotPersisted(t *testing.T) {
 		diags := plan.SetVariables.ElementsAs(context.Background(), &setVars, false)
 		assert.False(t, diags.HasError(), "failed to read set_variables: %v", diags)
 	}
-	_, ok2 := setVars["INP_SECRET"]
+	_, ok2 := setVars["inp_secret"]
 	assert.False(t, ok2)
 
 	mockPackager.AssertExpectations(t)

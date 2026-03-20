@@ -98,16 +98,16 @@ resource "uds_package" "init" {
 #                 sensitive: true
 
 # resource for the built authservice-ha-deps zarf package example above
-resource "uds_package" "authservice-ha-deps" {
+resource "uds_package" "authservice_ha_deps" {
   depends_on = [uds_package.init]
   source     = "zarf-package-authservice-ha-deps-arm64-1.0.0.tar.zst"
 }
 
 # This package example consumes the variable contained in the authservice-ha-deps package. 
 # The variable is referenced using the syntax: <package_name>.<set_variables>.<variable_name>,
-# which in this example is: uds_package.authservice-ha-deps.set_variables.authservice_redis_uri
-resource "uds_package" "core-identity-authorization" {
-  depends_on = [uds_package.authservice-ha-deps]
+# which in this example is: uds_package.authservice_ha_deps.set_variables.authservice_redis_uri
+resource "uds_package" "core_identity_authorization" {
+  depends_on = [uds_package.authservice_ha_deps]
   source     = "oci://ghcr.io/defenseunicorns/packages/uds/core-identity-authorization:${local.uds_version}"
 
   component {
@@ -116,7 +116,7 @@ resource "uds_package" "core-identity-authorization" {
     override {
       chart_name = "authservice"
       values = [
-        { path = "redis.uri", value = uds_package.authservice-ha-deps.set_variables.authservice_redis_uri }
+        { path = "redis.uri", value = uds_package.authservice_ha_deps.set_variables.authservice_redis_uri }
       ]
     }
   }
