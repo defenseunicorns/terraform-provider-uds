@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.1](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.3.0...v0.3.1) (2026-04-03)
+
+
+### Bug Fixes
+
+* **deps:** update go-dependencies ([#183](https://github.com/defenseunicorns/terraform-provider-uds/issues/183)) ([358d744](https://github.com/defenseunicorns/terraform-provider-uds/commit/358d74413afff97e6b24f0b20029ced8959bdc21))
+* **deps:** update zarf to v0.74.1 ([#194](https://github.com/defenseunicorns/terraform-provider-uds/issues/194)) ([0144b8b](https://github.com/defenseunicorns/terraform-provider-uds/commit/0144b8b14016eff391df452c7040a5230c4b1042))
+
+
+### Miscellaneous
+
+* **deps:** update dependency defenseunicorns/uds-cli to v0.30.1 ([#195](https://github.com/defenseunicorns/terraform-provider-uds/issues/195)) ([2fe5a03](https://github.com/defenseunicorns/terraform-provider-uds/commit/2fe5a0374565fc2bbca4323dd5f6acef4e1fe6d3))
+* **deps:** update github-actions ([#196](https://github.com/defenseunicorns/terraform-provider-uds/issues/196)) ([63aa247](https://github.com/defenseunicorns/terraform-provider-uds/commit/63aa247d7ca3df707165aeb1a24e00f020d2f1d3))
+
 ## [0.3.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.2.2...v0.3.0) (2026-03-20)
 
 
