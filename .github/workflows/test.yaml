@@ -58,8 +58,17 @@ jobs:
       - name: Setup golang
         uses: ./.github/actions/setup-golang
 
+      # Work around expired HashiCorp PGP signing key that breaks hc-install
+      # (used transitively by terraform-plugin-testing to fetch Terraform).
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
+        with:
+          terraform_wrapper: false
+
       - name: Run acceptance tests
-        run: uds run test-acc
+        run: |
+          export TF_ACC_TERRAFORM_PATH="$(command -v terraform)"
+          uds run test-acc
 
       - name: Save Logs
         uses: defenseunicorns/uds-core/.github/actions/save-logs@bd1f2e4acdb2945ac1887e81668227291f183018
