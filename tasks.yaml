@@ -49,4 +49,17 @@ tasks:
     description: "Run Acceptance Tests"
     actions:
       - task: create-k3d-cluster
-      - cmd: TF_ACC=1 go test -v -cover -timeout 10m ./test/acc/...
+      # Point terraform-plugin-testing at the local tofu CLI and resolve the
+      # in-process provider against registry.opentofu.org rather than the
+      # Terraform legacy address.
+      # See https://opentofu.org/docs/language/providers/#running-acceptance-tests-with-opentofu-cli
+      - cmd: |
+          TF_BIN="$(command -v tofu)" || {
+            echo "tofu not found in PATH; install OpenTofu (https://opentofu.org/docs/intro/install/)" >&2
+            exit 1
+          }
+          TF_ACC=1 \
+            TF_ACC_TERRAFORM_PATH="$TF_BIN" \
+            TF_ACC_PROVIDER_NAMESPACE=hashicorp \
+            TF_ACC_PROVIDER_HOST=registry.opentofu.org \
+            go test -v -cover -timeout 10m ./test/acc/...
