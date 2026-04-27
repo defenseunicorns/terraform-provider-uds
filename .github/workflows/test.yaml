@@ -58,6 +58,13 @@ jobs:
       - name: Setup golang
         uses: ./.github/actions/setup-golang
 
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@fc711fa910b93cba0f3fbecaafc9f42fd0c411cb # v2.0.0
+        with:
+          # renovate: datasource=github-tags depName=opentofu/opentofu versioning=semver
+          tofu_version: v1.11.6
+          tofu_wrapper: false
+
       - name: Run acceptance tests
         run: uds run test-acc
 

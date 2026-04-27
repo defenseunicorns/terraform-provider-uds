@@ -1,6 +1,6 @@
 module github.com/defenseunicorns/terraform-provider-uds
 
-go 1.26.1
+go 1.26.2
 
 tool (
 	github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs
@@ -639,7 +639,7 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 	modernc.org/sqlite v1.46.1 // indirect
-	oras.land/oras v1.3.1 // indirect
+	oras.land/oras v1.3.2 // indirect
 	sigs.k8s.io/cli-utils v0.37.2 // indirect
 	sigs.k8s.io/controller-runtime v0.23.3 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
