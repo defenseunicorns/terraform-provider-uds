@@ -6,20 +6,24 @@ package provider
 import (
 	"context"
 	"crypto/sha1"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/defenseunicorns/pkg/helpers/v2"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zarfCluster "github.com/zarf-dev/zarf/src/pkg/cluster"
 	"github.com/zarf-dev/zarf/src/pkg/packager"
@@ -3860,4 +3864,431 @@ func TestPackageResource_GetEffectiveSignatureVerification(t *testing.T) {
 			assert.Equal(t, tc.expected, result)
 		})
 	}
+}
+
+// CLI-173: provider-side timeout enforcement.
+// The tests below cover the helpers and ctx propagation through upsert
+// (the inner function that all of Create/Update flow through). End-to-end
+// timeout firing through the framework methods is covered by acceptance
+// tests in test/acc.
+
+func TestWithOperationTimeout(t *testing.T) {
+	tests := []struct {
+		name        string
+		timeoutStr  string
+		wantDiag    bool
+		wantSummary string
+	}{
+		{name: "valid 1m", timeoutStr: "1m", wantDiag: false},
+		{name: "valid 30s", timeoutStr: "30s", wantDiag: false},
+		{name: "valid 1h30m", timeoutStr: "1h30m", wantDiag: false},
+		{name: "valid 100ms", timeoutStr: "100ms", wantDiag: false},
+		{name: "garbage string", timeoutStr: "not-a-duration", wantDiag: true, wantSummary: "Invalid timeout"},
+		{name: "empty string", timeoutStr: "", wantDiag: true, wantSummary: "Invalid timeout"},
+		{name: "zero duration", timeoutStr: "0s", wantDiag: true, wantSummary: "Invalid timeout"},
+		{name: "negative duration", timeoutStr: "-1m", wantDiag: true, wantSummary: "Invalid timeout"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel, d := withOperationTimeout(context.Background(), tc.timeoutStr)
+			t.Cleanup(cancel)
+			if tc.wantDiag {
+				require.NotNil(t, d)
+				assert.Equal(t, tc.wantSummary, d.Summary())
+				_, hasDeadline := ctx.Deadline()
+				assert.False(t, hasDeadline, "input ctx should be returned unchanged on error")
+			} else {
+				assert.Nil(t, d)
+				deadline, hasDeadline := ctx.Deadline()
+				require.True(t, hasDeadline)
+				assert.True(t, time.Until(deadline) > 0, "deadline should be in the future")
+			}
+		})
+	}
+}
+
+func TestWithOperationTimeout_FiresAtDeadline(t *testing.T) {
+	ctx, cancel, d := withOperationTimeout(context.Background(), "50ms")
+	require.Nil(t, d)
+	defer cancel()
+
+	select {
+	case <-ctx.Done():
+		assert.True(t, errors.Is(ctx.Err(), context.DeadlineExceeded), "ctx.Err() should be DeadlineExceeded")
+	case <-time.After(2 * time.Second):
+		t.Fatal("ctx did not fire within 2s")
+	}
+}
+
+func TestWithOperationTimeout_RespectsParentCancel(t *testing.T) {
+	parent, parentCancel := context.WithCancel(context.Background())
+	ctx, cancel, d := withOperationTimeout(parent, "1h")
+	require.Nil(t, d)
+	defer cancel()
+
+	parentCancel()
+
+	select {
+	case <-ctx.Done():
+		assert.True(t, errors.Is(ctx.Err(), context.Canceled))
+	case <-time.After(2 * time.Second):
+		t.Fatal("ctx did not propagate parent cancel within 2s")
+	}
+}
+
+func TestOperationErrorDetail(t *testing.T) {
+	t.Run("deadline exceeded", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+		defer cancel()
+		<-ctx.Done()
+
+		got := operationErrorDetail(ctx, "5m", errors.New("zarf says no"))
+		assert.Contains(t, got, "exceeded the configured timeout of 5m")
+		assert.Contains(t, got, "zarf says no")
+	})
+
+	t.Run("canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		got := operationErrorDetail(ctx, "5m", errors.New("interrupted"))
+		assert.Contains(t, got, "operation was canceled")
+		assert.Contains(t, got, "interrupted")
+	})
+
+	t.Run("plain error", func(t *testing.T) {
+		got := operationErrorDetail(context.Background(), "5m", errors.New("boom"))
+		assert.Equal(t, "boom", got)
+	})
+}
+
+// blockOnCtx returns a testify mock Run callback that blocks until the
+// passed context is canceled. The mock's configured Return values are then
+// produced. This simulates a Zarf operation that respects ctx cancellation.
+func blockOnCtx() func(args mock.Arguments) {
+	return func(args mock.Arguments) {
+		ctx, ok := args.Get(0).(context.Context)
+		if !ok {
+			return
+		}
+		<-ctx.Done()
+	}
+}
+
+func TestPackageResource_Upsert_RespectsContextDeadline(t *testing.T) {
+	packageLayout := newValidLoadPackageResult().Layout
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).
+		Run(blockOnCtx()).
+		Return(packager.DeployResult{}, context.DeadlineExceeded)
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := packageResource.upsert(ctx, NewTestPackageResourceModel())
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded), "expected DeadlineExceeded, got %v", err)
+	assert.Less(t, elapsed, 2*time.Second, "upsert should return promptly after ctx fires (took %s)", elapsed)
+	mockPackager.AssertExpectations(t)
+}
+
+func TestPackageResource_Upsert_PropagatesParentCancellation(t *testing.T) {
+	packageLayout := newValidLoadPackageResult().Layout
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).
+		Run(blockOnCtx()).
+		Return(packager.DeployResult{}, context.Canceled)
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err := packageResource.upsert(ctx, NewTestPackageResourceModel())
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.Canceled), "expected Canceled, got %v", err)
+	assert.Less(t, elapsed, 2*time.Second)
+	mockPackager.AssertExpectations(t)
+}
+
+func TestPackageResource_Upsert_TimeoutForwardedToZarfDeploy(t *testing.T) {
+	cases := []struct {
+		name       string
+		timeoutStr string
+		expected   time.Duration
+	}{
+		{"5m", "5m", 5 * time.Minute},
+		{"30s", "30s", 30 * time.Second},
+		{"1h30m", "1h30m", 90 * time.Minute},
+		{"15m default", "15m", 15 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			packageLayout := newValidLoadPackageResult().Layout
+			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil)
+			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+			testModel := NewTestPackageResourceModel(WithTimeout(tc.timeoutStr))
+			_, err := packageResource.upsert(context.Background(), testModel)
+			require.NoError(t, err)
+
+			var got time.Duration
+			for _, call := range mockPackager.Calls {
+				if call.Method == "Deploy" {
+					got = call.Arguments[2].(zarfPackager.DeployOptions).Timeout
+				}
+			}
+			assert.Equal(t, tc.expected, got, "DeployOptions.Timeout (Zarf-side fallback) should match plan.timeout")
+		})
+	}
+}
+
+func TestPackageResource_Upsert_RejectsInvalidTimeout(t *testing.T) {
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+	testModel := NewTestPackageResourceModel(WithTimeout("not-a-duration"))
+	_, err := packageResource.upsert(context.Background(), testModel)
+	require.Error(t, err)
+	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// Verifies the duration parsed inside upsert is forwarded to RemoveOptions
+// (the Zarf second line of defense) for component removal during Update.
+func TestPackageResource_RemoveComponents_TimeoutForwardedToZarfRemove(t *testing.T) {
+	cases := []struct {
+		name       string
+		timeoutStr string
+		expected   time.Duration
+	}{
+		{"5m", "5m", 5 * time.Minute},
+		{"45s", "45s", 45 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+			mockPackageComponentFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
+
+			mockCluster := MockCluster{}
+			zCluster := zarfCluster.Cluster{}
+			mockCluster.On("NewWithWait", mock.Anything).Return(&zCluster, nil)
+
+			mockPackager := &MockPackager{}
+			zarfPkg := v1alpha1.ZarfPackage{}
+			mockPackager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(zarfPkg, nil)
+			mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+			resp := resource.UpdateResponse{}
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, &mockCluster).(*PackageResource)
+
+			plan := NewTestPackageResourceModel(WithTimeout(tc.timeoutStr))
+			packageResource.removeComponents(context.Background(), plan, []string{"comp-1"}, &resp)
+			require.False(t, resp.Diagnostics.HasError(), resp.Diagnostics.Errors())
+
+			var got time.Duration
+			for _, call := range mockPackager.Calls {
+				if call.Method == "Remove" {
+					got = call.Arguments[2].(zarfPackager.RemoveOptions).Timeout
+				}
+			}
+			assert.Equal(t, tc.expected, got, "RemoveOptions.Timeout (Zarf-side fallback) should match plan.timeout")
+		})
+	}
+}
+
+// stateFromModel constructs a real tfsdk.State populated from a
+// PackageResourceModel using the resource's actual schema. This exists so
+// tests can drive Delete (and other framework methods) directly without
+// going through the terraform-plugin-testing acceptance harness.
+func stateFromModel(t *testing.T, r *PackageResource, model PackageResourceModel) tfsdk.State {
+	t.Helper()
+	schemaResp := &resource.SchemaResponse{}
+	r.Schema(context.Background(), resource.SchemaRequest{}, schemaResp)
+	require.False(t, schemaResp.Diagnostics.HasError(), schemaResp.Diagnostics.Errors())
+
+	state := tfsdk.State{Schema: schemaResp.Schema}
+	diags := state.Set(context.Background(), &model)
+	require.False(t, diags.HasError(), diags.Errors())
+	return state
+}
+
+// fullyPopulatedDeleteModel returns a model with every computed attribute
+// populated to a non-unknown value so it is acceptable inside a tfsdk.State
+// (state values must be known).
+func fullyPopulatedDeleteModel(timeout string) PackageResourceModel {
+	m := NewTestPackageResourceModel(WithTimeout(timeout))
+	m.ID = types.StringValue("test-package")
+	m.Name = types.StringValue("test-package")
+	m.Version = types.StringValue("1.0.0")
+	m.Kind = types.StringValue("ZarfPackageConfig")
+	m.Metadata = types.ObjectNull(map[string]attr.Type{
+		"name":        types.StringType,
+		"description": types.StringType,
+		"version":     types.StringType,
+	})
+	m.ConnectStrings = types.SetNull(types.ObjectType{
+		AttrTypes: map[string]attr.Type{
+			"name":        types.StringType,
+			"description": types.StringType,
+		},
+	})
+	m.SetVariables = types.MapNull(types.StringType)
+	return m
+}
+
+// CLI-173: framework-level integration test for Delete. Constructs a real
+// DeleteRequest and verifies the configured timeout bounds the entire
+// operation; the cluster wait blocks until ctx fires and Delete surfaces a
+// timeout-flavored diagnostic. The terraform-plugin-testing harness cannot
+// cover Delete with a tight timeout because its auto-destroy uses the last
+// applied state, which we can't lower without first failing an Update step.
+func TestPackageResource_Delete_RespectsContextDeadline(t *testing.T) {
+	mockCluster := &MockCluster{}
+	mockCluster.On("NewWithWait", mock.Anything).
+		Run(blockOnCtx()).
+		Return((*zarfCluster.Cluster)(nil), context.DeadlineExceeded)
+
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
+	state := stateFromModel(t, packageResource, fullyPopulatedDeleteModel("100ms"))
+
+	req := resource.DeleteRequest{State: state}
+	resp := &resource.DeleteResponse{}
+
+	start := time.Now()
+	packageResource.Delete(context.Background(), req, resp)
+	elapsed := time.Since(start)
+
+	require.True(t, resp.Diagnostics.HasError(), "expected diagnostic error")
+	found := false
+	for _, e := range resp.Diagnostics.Errors() {
+		if strings.Contains(e.Summary(), "Could not connect to cluster") &&
+			strings.Contains(e.Detail(), "exceeded the configured timeout of 100ms") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected timeout error in diagnostics, got: %v", resp.Diagnostics.Errors())
+	assert.Less(t, elapsed, 2*time.Second, "Delete should return promptly after ctx fires (took %s)", elapsed)
+	mockPackager.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// CLI-173: framework-level test verifying Delete rejects an invalid timeout
+// string before it ever talks to the cluster.
+func TestPackageResource_Delete_RejectsInvalidTimeout(t *testing.T) {
+	mockCluster := &MockCluster{}
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
+	state := stateFromModel(t, packageResource, fullyPopulatedDeleteModel("not-a-duration"))
+
+	req := resource.DeleteRequest{State: state}
+	resp := &resource.DeleteResponse{}
+	packageResource.Delete(context.Background(), req, resp)
+
+	require.True(t, resp.Diagnostics.HasError())
+	mockCluster.AssertNotCalled(t, "NewWithWait", mock.Anything)
+	mockPackager.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// CLI-173: framework-level test verifying Delete forwards the parsed timeout
+// to Zarf RemoveOptions as the second line of defense.
+func TestPackageResource_Delete_TimeoutForwardedToZarfRemove(t *testing.T) {
+	cases := []struct {
+		name       string
+		timeoutStr string
+		expected   time.Duration
+	}{
+		{"5m", "5m", 5 * time.Minute},
+		{"45s", "45s", 45 * time.Second},
+		{"1h30m", "1h30m", 90 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockCluster := &MockCluster{}
+			mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, nil)
+
+			mockPackager := &MockPackager{}
+			mockPackager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+				Return(v1alpha1.ZarfPackage{}, nil)
+			mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+			mockPackageComponentFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
+
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
+			state := stateFromModel(t, packageResource, fullyPopulatedDeleteModel(tc.timeoutStr))
+
+			req := resource.DeleteRequest{State: state}
+			resp := &resource.DeleteResponse{}
+			packageResource.Delete(context.Background(), req, resp)
+
+			require.False(t, resp.Diagnostics.HasError(), "unexpected diagnostics: %v", resp.Diagnostics.Errors())
+
+			var got time.Duration
+			for _, call := range mockPackager.Calls {
+				if call.Method == "Remove" {
+					got = call.Arguments[2].(zarfPackager.RemoveOptions).Timeout
+				}
+			}
+			assert.Equal(t, tc.expected, got, "RemoveOptions.Timeout should equal state.timeout")
+		})
+	}
+}
+
+func TestPackageResource_RemoveComponents_RespectsContextDeadline(t *testing.T) {
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+	mockPackageComponentFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
+
+	mockCluster := MockCluster{}
+	zCluster := zarfCluster.Cluster{}
+	mockCluster.On("NewWithWait", mock.Anything).Return(&zCluster, nil)
+
+	mockPackager := &MockPackager{}
+	mockPackager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(v1alpha1.ZarfPackage{}, nil)
+	mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).
+		Run(blockOnCtx()).
+		Return(context.DeadlineExceeded)
+
+	resp := resource.UpdateResponse{}
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, &mockCluster).(*PackageResource)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	plan := NewTestPackageResourceModel()
+	start := time.Now()
+	packageResource.removeComponents(ctx, plan, []string{"comp-1"}, &resp)
+	elapsed := time.Since(start)
+
+	assert.True(t, resp.Diagnostics.HasError(), "expected diagnostic error after timeout")
+	assert.Less(t, elapsed, 2*time.Second, "removeComponents should return promptly after ctx fires (took %s)", elapsed)
 }

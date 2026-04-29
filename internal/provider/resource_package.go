@@ -431,12 +431,27 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-	var err error
-	plan, err = r.deployAsNew(ctx, plan)
+	// CLI-173: bound the entire Create operation (cluster wait, package
+	// load, Zarf deploy) by the configured timeout. The duration is also
+	// forwarded to Zarf's DeployOptions inside upsert as a second line of
+	// defense.
+	timeoutCtx, cancel, diag := withOperationTimeout(ctx, plan.Timeout.ValueString())
+	if diag != nil {
+		resp.Diagnostics.Append(diag)
+		return
+	}
+	defer cancel()
+
+	plan, err := r.deployAsNew(timeoutCtx, plan)
 	if err != nil {
+		// NOTE: a failure here (timeout or otherwise) returns before state is
+		// persisted, so Terraform marks the resource tainted for recreation.
+		// The package may have been partially installed in the cluster;
+		// reconciling that divergence is tracked by CLI-101 (drift detection)
+		// and CLI-130 (non-cluster Zarf packages).
 		resp.Diagnostics.AddError(
 			"Error creating package",
-			"Could not create resource, unexpected error: "+err.Error(),
+			operationErrorDetail(timeoutCtx, plan.Timeout.ValueString(), err),
 		)
 		return
 	}
@@ -558,12 +573,25 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	var err error
-	plan, err = r.deployAsNewOrUpdate(ctx, plan, oldPlan, resp)
+	// CLI-173: bound the entire Update (component removals + redeploy) by
+	// the configured timeout. The duration is also forwarded into Zarf
+	// DeployOptions/RemoveOptions as a second line of defense.
+	timeoutCtx, cancel, diag := withOperationTimeout(ctx, plan.Timeout.ValueString())
+	if diag != nil {
+		resp.Diagnostics.Append(diag)
+		return
+	}
+	defer cancel()
+
+	plan, err := r.deployAsNewOrUpdate(timeoutCtx, plan, oldPlan, resp)
 	if err != nil {
+		// NOTE: like Create, an error path here can leave the cluster in a
+		// state that diverges from Terraform state. Reconciling that
+		// divergence is tracked by CLI-101 (drift detection) and CLI-130
+		// (non-cluster Zarf packages).
 		resp.Diagnostics.AddError(
 			"Error updating package",
-			"Could not update package, unexpected error: "+err.Error(),
+			operationErrorDetail(timeoutCtx, plan.Timeout.ValueString(), err),
 		)
 		return
 	}
@@ -583,23 +611,25 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 
-	// convert the terraform timeout to a time.Duration
-	deleteTimeout, err := time.ParseDuration(data.Timeout.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error determine timeout",
-			"Could not determine timeout: "+err.Error(),
-		)
+	// CLI-173: bound the entire Delete operation (cluster wait, package load,
+	// Zarf remove) by the configured timeout. The duration is also forwarded
+	// to Zarf RemoveOptions as a second line of defense.
+	deleteCtx, cancel, diag := withOperationTimeout(ctx, data.Timeout.ValueString())
+	if diag != nil {
+		resp.Diagnostics.Append(diag)
 		return
 	}
-
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	c, err := r.cluster.NewWithWait(timeoutCtx)
+
+	deleteTimeout, _ := time.ParseDuration(data.Timeout.ValueString())
+
+	clusterCtx, clusterCancel := withClusterTimeout(deleteCtx)
+	defer clusterCancel()
+	c, err := r.cluster.NewWithWait(clusterCtx)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Could not connect to cluster",
-			"Error connecting to cluster: "+err.Error(),
+			operationErrorDetail(deleteCtx, data.Timeout.ValueString(), err),
 		)
 		return
 	}
@@ -634,11 +664,11 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 
 	packageSource := data.Name.ValueString()
-	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, c, packageSource, data.Namespace.ValueString(), loadOpts)
+	pkg, err := r.packager.GetPackageFromSourceOrCluster(deleteCtx, c, packageSource, data.Namespace.ValueString(), loadOpts)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error loading package",
-			"Could not load package: "+err.Error(),
+			operationErrorDetail(deleteCtx, data.Timeout.ValueString(), err),
 		)
 		return
 	}
@@ -648,10 +678,13 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		Cluster:           c,
 		Timeout:           deleteTimeout,
 	}
-	if err := r.packager.Remove(ctx, pkg, removeOpt); err != nil {
+	if err := r.packager.Remove(deleteCtx, pkg, removeOpt); err != nil {
+		// NOTE: a remove that errors mid-flight may leave residual cluster
+		// resources. Reconciling that divergence is tracked by CLI-101 (drift
+		// detection) and CLI-130 (non-cluster Zarf packages).
 		resp.Diagnostics.AddError(
 			"Error removing package",
-			"Could not remove package: "+err.Error(),
+			operationErrorDetail(deleteCtx, data.Timeout.ValueString(), err),
 		)
 		return
 	}
@@ -796,8 +829,9 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 
 	namespaceOverride := plan.Namespace.ValueString()
 
-	// get a reference to the k8s cluster
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	// get a reference to the k8s cluster (capped at clusterTimeoutMinutes;
+	// also respects the parent ctx deadline set by Update for CLI-173).
+	timeoutCtx, cancel := withClusterTimeout(ctx)
 	defer cancel()
 	zarfCluster, err := r.cluster.NewWithWait(timeoutCtx)
 	if err != nil {
@@ -1216,6 +1250,42 @@ func getMissingComponents(plan PackageResourceModel, oldPlan PackageResourceMode
 // withClusterTimeout returns a context with a timeout
 func withClusterTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, clusterTimeoutMinutes*time.Minute)
+}
+
+// withOperationTimeout parses a timeout string from a resource model and
+// returns a child context bounded by that duration. The returned diag is
+// non-nil when the timeout cannot be parsed; in that case cancel is a no-op
+// and the context is the input ctx unchanged. This is the provider-side
+// timeout enforcement for CLI-173.
+func withOperationTimeout(ctx context.Context, timeoutStr string) (context.Context, context.CancelFunc, diag.Diagnostic) {
+	timeout, err := time.ParseDuration(timeoutStr)
+	if err != nil {
+		return ctx, func() {}, diag.NewErrorDiagnostic(
+			"Invalid timeout",
+			fmt.Sprintf("Could not parse timeout %q: %s", timeoutStr, err.Error()),
+		)
+	}
+	if timeout <= 0 {
+		return ctx, func() {}, diag.NewErrorDiagnostic(
+			"Invalid timeout",
+			fmt.Sprintf("Timeout must be greater than zero, got %s", timeout),
+		)
+	}
+	child, cancel := context.WithTimeout(ctx, timeout)
+	return child, cancel, nil
+}
+
+// operationErrorDetail formats an error message with timeout context so the
+// user can tell whether an operation failure was caused by the configured
+// timeout firing versus an unrelated error.
+func operationErrorDetail(ctx context.Context, timeoutStr string, err error) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Sprintf("operation exceeded the configured timeout of %s: %s", timeoutStr, err.Error())
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return fmt.Sprintf("operation was canceled: %s", err.Error())
+	}
+	return err.Error()
 }
 
 // Inserts a nested value based on the dot-separated path
