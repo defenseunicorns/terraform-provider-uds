@@ -435,7 +435,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	// load, Zarf deploy) by the configured timeout. The duration is also
 	// forwarded to Zarf's DeployOptions inside upsert as a second line of
 	// defense.
-	timeoutCtx, cancel, diag := withOperationTimeout(ctx, plan.Timeout.ValueString())
+	timeoutCtx, _, cancel, diag := withOperationTimeout(ctx, plan.Timeout.ValueString())
 	if diag != nil {
 		resp.Diagnostics.Append(diag)
 		return
@@ -576,7 +576,7 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	// CLI-173: bound the entire Update (component removals + redeploy) by
 	// the configured timeout. The duration is also forwarded into Zarf
 	// DeployOptions/RemoveOptions as a second line of defense.
-	timeoutCtx, cancel, diag := withOperationTimeout(ctx, plan.Timeout.ValueString())
+	timeoutCtx, _, cancel, diag := withOperationTimeout(ctx, plan.Timeout.ValueString())
 	if diag != nil {
 		resp.Diagnostics.Append(diag)
 		return
@@ -610,18 +610,19 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	// CLI-173: bound the entire Delete operation (cluster wait, package load,
 	// Zarf remove) by the configured timeout. The duration is also forwarded
 	// to Zarf RemoveOptions as a second line of defense.
-	deleteCtx, cancel, diag := withOperationTimeout(ctx, data.Timeout.ValueString())
+	deleteCtx, deleteTimeout, cancel, diag := withOperationTimeout(ctx, data.Timeout.ValueString())
 	if diag != nil {
 		resp.Diagnostics.Append(diag)
 		return
 	}
 	defer cancel()
-
-	deleteTimeout, _ := time.ParseDuration(data.Timeout.ValueString())
 
 	clusterCtx, clusterCancel := withClusterTimeout(deleteCtx)
 	defer clusterCancel()
@@ -1253,26 +1254,28 @@ func withClusterTimeout(ctx context.Context) (context.Context, context.CancelFun
 }
 
 // withOperationTimeout parses a timeout string from a resource model and
-// returns a child context bounded by that duration. The returned diag is
-// non-nil when the timeout cannot be parsed; in that case cancel is a no-op
-// and the context is the input ctx unchanged. This is the provider-side
-// timeout enforcement for CLI-173.
-func withOperationTimeout(ctx context.Context, timeoutStr string) (context.Context, context.CancelFunc, diag.Diagnostic) {
+// returns a child context bounded by that duration along with the parsed
+// duration (callers forward it to Zarf as a second line of defense). The
+// returned diag is non-nil when the timeout cannot be parsed; in that case
+// cancel is a no-op, the context is the input ctx unchanged, and the
+// duration is zero. This is the provider-side timeout enforcement for
+// CLI-173.
+func withOperationTimeout(ctx context.Context, timeoutStr string) (context.Context, time.Duration, context.CancelFunc, diag.Diagnostic) {
 	timeout, err := time.ParseDuration(timeoutStr)
 	if err != nil {
-		return ctx, func() {}, diag.NewErrorDiagnostic(
+		return ctx, 0, func() {}, diag.NewErrorDiagnostic(
 			"Invalid timeout",
 			fmt.Sprintf("Could not parse timeout %q: %s", timeoutStr, err.Error()),
 		)
 	}
 	if timeout <= 0 {
-		return ctx, func() {}, diag.NewErrorDiagnostic(
+		return ctx, 0, func() {}, diag.NewErrorDiagnostic(
 			"Invalid timeout",
 			fmt.Sprintf("Timeout must be greater than zero, got %s", timeout),
 		)
 	}
 	child, cancel := context.WithTimeout(ctx, timeout)
-	return child, cancel, nil
+	return child, timeout, cancel, nil
 }
 
 // operationErrorDetail formats an error message with timeout context so the

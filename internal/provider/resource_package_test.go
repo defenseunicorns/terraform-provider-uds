@@ -3890,7 +3890,7 @@ func TestWithOperationTimeout(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx, cancel, d := withOperationTimeout(context.Background(), tc.timeoutStr)
+			ctx, _, cancel, d := withOperationTimeout(context.Background(), tc.timeoutStr)
 			t.Cleanup(cancel)
 			if tc.wantDiag {
 				require.NotNil(t, d)
@@ -3908,7 +3908,7 @@ func TestWithOperationTimeout(t *testing.T) {
 }
 
 func TestWithOperationTimeout_FiresAtDeadline(t *testing.T) {
-	ctx, cancel, d := withOperationTimeout(context.Background(), "50ms")
+	ctx, _, cancel, d := withOperationTimeout(context.Background(), "50ms")
 	require.Nil(t, d)
 	defer cancel()
 
@@ -3920,9 +3920,28 @@ func TestWithOperationTimeout_FiresAtDeadline(t *testing.T) {
 	}
 }
 
+func TestWithOperationTimeout_ReturnsParsedDuration(t *testing.T) {
+	cases := []struct {
+		timeoutStr string
+		expected   time.Duration
+	}{
+		{"30s", 30 * time.Second},
+		{"5m", 5 * time.Minute},
+		{"1h30m", 90 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.timeoutStr, func(t *testing.T) {
+			_, got, cancel, d := withOperationTimeout(context.Background(), tc.timeoutStr)
+			defer cancel()
+			require.Nil(t, d)
+			assert.Equal(t, tc.expected, got)
+		})
+	}
+}
+
 func TestWithOperationTimeout_RespectsParentCancel(t *testing.T) {
 	parent, parentCancel := context.WithCancel(context.Background())
-	ctx, cancel, d := withOperationTimeout(parent, "1h")
+	ctx, _, cancel, d := withOperationTimeout(parent, "1h")
 	require.Nil(t, d)
 	defer cancel()
 
