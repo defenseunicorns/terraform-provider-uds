@@ -3871,7 +3871,6 @@ func TestPackageResource_GetEffectiveSignatureVerification(t *testing.T) {
 // (the inner function that all of Create/Update flow through). End-to-end
 // timeout firing through the framework methods is covered by acceptance
 // tests in test/acc.
-
 func TestWithOperationTimeout(t *testing.T) {
 	tests := []struct {
 		name        string
