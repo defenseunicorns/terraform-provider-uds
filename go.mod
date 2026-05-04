@@ -18,9 +18,9 @@ require (
 	github.com/hashicorp/terraform-plugin-framework-validators v0.19.0
 	github.com/hashicorp/terraform-plugin-go v0.31.0
 	github.com/hashicorp/terraform-plugin-log v0.10.0
-	github.com/hashicorp/terraform-plugin-testing v1.15.0
+	github.com/hashicorp/terraform-plugin-testing v1.16.0
 	github.com/stretchr/testify v1.11.1
-	github.com/zarf-dev/zarf v0.75.0
+	github.com/zarf-dev/zarf v0.75.1
 	gopkg.in/yaml.v2 v2.4.0
 	helm.sh/helm/v4 v4.1.4
 	oras.land/oras-go/v2 v2.6.0
@@ -80,7 +80,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/Microsoft/hcsshim v0.14.0-rc.1 // indirect
 	github.com/OneOfOne/xxhash v1.2.8 // indirect
-	github.com/ProtonMail/go-crypto v1.4.0 // indirect
+	github.com/ProtonMail/go-crypto v1.4.1 // indirect
 	github.com/STARRY-S/zip v0.2.3 // indirect
 	github.com/ThalesIgnite/crypto11 v1.2.5 // indirect
 	github.com/a8m/envsubst v1.4.3 // indirect
@@ -261,7 +261,7 @@ require (
 	github.com/go-errors/errors v1.5.1 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
 	github.com/go-git/go-billy/v5 v5.8.0 // indirect
-	github.com/go-git/go-git/v5 v5.17.2 // indirect
+	github.com/go-git/go-git/v5 v5.18.0 // indirect
 	github.com/go-gorp/gorp/v3 v3.1.0 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
@@ -339,18 +339,18 @@ require (
 	github.com/hashicorp/go-secure-stdlib/strutil v0.1.2 // indirect
 	github.com/hashicorp/go-sockaddr v1.0.7 // indirect
 	github.com/hashicorp/go-uuid v1.0.3 // indirect
-	github.com/hashicorp/go-version v1.8.0 // indirect
+	github.com/hashicorp/go-version v1.9.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
-	github.com/hashicorp/hc-install v0.9.3 // indirect
+	github.com/hashicorp/hc-install v0.9.4 // indirect
 	github.com/hashicorp/hcl v1.0.1-vault-7 // indirect
 	github.com/hashicorp/hcl/v2 v2.24.0 // indirect
 	github.com/hashicorp/logutils v1.0.0 // indirect
-	github.com/hashicorp/terraform-exec v0.25.0 // indirect
-	github.com/hashicorp/terraform-json v0.27.2 // indirect
-	github.com/hashicorp/terraform-plugin-docs v0.24.0 // indirect
+	github.com/hashicorp/terraform-exec v0.25.1 // indirect
+	github.com/hashicorp/terraform-json v0.27.3-0.20260213134036-298b8f6b673a // indirect
+	github.com/hashicorp/terraform-plugin-docs v0.25.0 // indirect
 	github.com/hashicorp/terraform-plugin-sdk/v2 v2.40.0 // indirect
 	github.com/hashicorp/terraform-registry-address v0.4.0 // indirect
-	github.com/hashicorp/terraform-svchost v0.1.1 // indirect
+	github.com/hashicorp/terraform-svchost v0.2.1 // indirect
 	github.com/hashicorp/vault/api v1.22.0 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
 	github.com/henvic/httpretty v0.1.4 // indirect
@@ -444,7 +444,7 @@ require (
 	github.com/nix-community/go-nix v0.0.0-20250101154619-4bdde671e0a1 // indirect
 	github.com/nozzle/throttler v0.0.0-20180817012639-2ea982251481 // indirect
 	github.com/nwaples/rardecode/v2 v2.2.0 // indirect
-	github.com/oklog/run v1.1.0 // indirect
+	github.com/oklog/run v1.2.0 // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
 	github.com/oleiade/reflections v1.1.0 // indirect
 	github.com/olekukonko/cat v0.0.0-20250911104152-50322a0618f6 // indirect
@@ -569,7 +569,7 @@ require (
 	github.com/yuin/goldmark v1.7.13 // indirect
 	github.com/yuin/goldmark-meta v1.1.0 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
-	github.com/zclconf/go-cty v1.18.0 // indirect
+	github.com/zclconf/go-cty v1.18.1 // indirect
 	github.com/zyedidia/generic v1.2.2-0.20230320175451-4410d2372cb1 // indirect
 	gitlab.com/gitlab-org/api/client-go v1.46.0 // indirect
 	go.abhg.dev/goldmark/frontmatter v0.2.0 // indirect
@@ -594,15 +594,15 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.3 // indirect
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
-	golang.org/x/crypto v0.49.0 // indirect
+	golang.org/x/crypto v0.50.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
-	golang.org/x/mod v0.34.0 // indirect
+	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/term v0.41.0 // indirect
-	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/term v0.42.0 // indirect
+	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.43.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
