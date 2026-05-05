@@ -3970,7 +3970,7 @@ func TestOperationErrorDetail(t *testing.T) {
 		cancel()
 
 		got := operationErrorDetail(ctx, "5m", errors.New("interrupted"))
-		assert.Contains(t, got, "operation was canceled")
+		assert.Contains(t, got, "Operation was canceled")
 		assert.Contains(t, got, "interrupted")
 	})
 

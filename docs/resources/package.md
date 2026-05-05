@@ -189,7 +189,7 @@ resource "uds_package" "dos_games" {
 - `public_key` (String) Raw public key value to validate against a signed UDS package.
 - `sensitive_vars` (Attributes Set) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))
 - `skip_signature_validation` (Boolean, Deprecated) Skip validating the signature of a signed UDS package.
-- `timeout` (String) Timeout for the deploy operation.
+- `timeout` (String) Wall-clock budget for the entire package operation (create, update, or delete). This is **not** the same as the Zarf helm timeout: it bounds the full Terraform-side flow end to end, including cluster connection wait, OCI/disk package load and pull, and the Zarf deploy or remove call. When the timeout fires, the operation is canceled and Terraform returns an error. Accepts a Go duration string (e.g. `30s`, `5m`, `1h`). Defaults to `15m`.
 - `vars` (Attributes Set) UDS package variables to set. (see [below for nested schema](#nestedatt--vars))
 - `verify_signature` (Boolean) Verify the signature of a UDS package. When enabled, a signed package with an invalid or missing signature will fail to deploy. When disabled, the package will continue to deploy with signature verification issues logged as warnings.
 
