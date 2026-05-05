@@ -8,12 +8,7 @@ Accepted, 2026-05-05.
 
 Before this change (CLI-173), the `timeout` attribute on `uds_package` was only forwarded to Zarf's helm timeout. As a result, `terraform apply` could exceed the configured value, because cluster connection wait and OCI package pull/load were not bounded by it.
 
-User feedback (Slack, [#cli](https://defense-unicorns.slack.com/archives/C08KECJFRDF/p1777359840015259)):
-
-* Jase Koonce (customer): "I personally expected it to cover the whole process (pull -> deploy)."
-* Joel McCoy: "I should never see a terraform resource log 5m10s when the deploy timeout is 5m."
-
-The fix is small in code but a UX/architecture call. This ADR records the chosen scope so future readers do not have to re-litigate it.
+This ADR records the chosen scope so future readers do not have to re-litigate it.
 
 ## Decision
 
