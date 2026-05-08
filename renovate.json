@@ -40,14 +40,14 @@
     },
     {
       "matchFileNames": ["README.md"],
-      "matchManagers": ["regex"],
+      "matchManagers": ["custom.regex"],
       "matchUpdateTypes": ["major", "minor", "patch"],
       "groupName": "readme-versions",
       "commitMessageTopic": "readme versions"
     },
     {
       "matchPackageNames": ["defenseunicorns/terraform-provider-uds"],
-      "matchManagers": ["regex"],
+      "matchManagers": ["custom.regex"],
       "ignoreUnstable": true,
       "groupName": "uds-provider-version",
       "commitMessageTopic": "uds provider version"
@@ -59,56 +59,50 @@
       "commitMessageTopic": "dev dependencies"
     }
   ],
-  "regexManagers": [
+  "customManagers": [
     {
-      "fileMatch": ["^README\\.md$"],
-      "matchStrings": [
-        "version\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"\\s*#\\s*UDS\\s+Provider\\s+Version"
-      ],
+      "customType": "regex",
+      "managerFilePatterns": ["/^README\\.md$/"],
+      "matchStrings": ["version\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"\\s*#\\s*UDS\\s+Provider\\s+Version"],
       "depNameTemplate": "defenseunicorns/terraform-provider-uds",
       "datasourceTemplate": "github-tags"
     },
     {
-      "fileMatch": ["\\.tf$"],
-      "matchStrings": [
-        "zarf-dev/packages/init:v(?<currentValue>\\d+\\.\\d+\\.\\d+)\\s*#\\s*renovate:\\s*datasource=github-tags\\s+depName=zarf-dev/zarf"
-      ],
+      "customType": "regex",
+      "managerFilePatterns": ["/\\.tf$/"],
+      "matchStrings": ["zarf-dev/packages/init:v(?<currentValue>\\d+\\.\\d+\\.\\d+)\\s*#\\s*renovate:\\s*datasource=github-tags\\s+depName=zarf-dev/zarf"],
       "depNameTemplate": "zarf-dev/zarf",
       "datasourceTemplate": "github-tags",
       "extractVersionTemplate": "^v(?<version>.*)$"
     },
     {
-      "fileMatch": ["^README\\.md$"],
-      "matchStrings": [
-        "<!--\\s*renovate:\\s*datasource=github-tags\\s+depName=zarf-dev/zarf[^>]*-->\\s*```[\\s\\S]*?zarf-dev/packages/init:v(?<currentValue>\\d+\\.\\d+\\.\\d+)"
-      ],
+      "customType": "regex",
+      "managerFilePatterns": ["/^README\\.md$/"],
+      "matchStrings": ["<!--\\s*renovate:\\s*datasource=github-tags\\s+depName=zarf-dev/zarf[^>]*-->\\s*```[\\s\\S]*?zarf-dev/packages/init:v(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
       "depNameTemplate": "zarf-dev/zarf",
       "datasourceTemplate": "github-tags",
       "extractVersionTemplate": "^v(?<version>.*)$"
     },
     {
-      "fileMatch": ["\\.go$"],
-      "matchStrings": [
-        "//\\s*renovate:\\s*datasource=github-tags\\s+depName=zarf-dev/zarf\\s*\\nconst\\s+\\w+\\s*=\\s*\"v(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
-      ],
+      "customType": "regex",
+      "managerFilePatterns": ["/\\.go$/"],
+      "matchStrings": ["//\\s*renovate:\\s*datasource=github-tags\\s+depName=zarf-dev/zarf\\s*\\nconst\\s+\\w+\\s*=\\s*\"v(?<currentValue>\\d+\\.\\d+\\.\\d+)\""],
       "depNameTemplate": "zarf-dev/zarf",
       "datasourceTemplate": "github-tags",
       "extractVersionTemplate": "^v(?<version>.*)$"
     },
     {
-      "fileMatch": ["\\.tf$"],
-      "matchStrings": [
-        "source\\s*=\\s*\"defenseunicorns/uds\"\\s*\\n\\s*version\\s*=\\s*\"~>\\s*(?<currentValue>\\d+\\.\\d+)\\.\\d+\"\\s*#\\s*renovate:\\s*datasource=github-releases\\s+depName=defenseunicorns/terraform-provider-uds"
-      ],
+      "customType": "regex",
+      "managerFilePatterns": ["/\\.tf$/"],
+      "matchStrings": ["source\\s*=\\s*\"defenseunicorns/uds\"\\s*\\n\\s*version\\s*=\\s*\"~>\\s*(?<currentValue>\\d+\\.\\d+)\\.\\d+\"\\s*#\\s*renovate:\\s*datasource=github-releases\\s+depName=defenseunicorns/terraform-provider-uds"],
       "depNameTemplate": "defenseunicorns/terraform-provider-uds",
       "datasourceTemplate": "github-releases",
       "versioningTemplate": "semver"
     },
     {
-      "fileMatch": ["^README\\.md$"],
-      "matchStrings": [
-        "<!--\\s*renovate:\\s*datasource=github-releases\\s+depName=defenseunicorns/terraform-provider-uds[^>]*-->\\s*```[\\s\\S]*?version\\s*=\\s*\"~>\\s*(?<currentValue>\\d+\\.\\d+)\\.\\d+\""
-      ],
+      "customType": "regex",
+      "managerFilePatterns": ["/^README\\.md$/"],
+      "matchStrings": ["<!--\\s*renovate:\\s*datasource=github-releases\\s+depName=defenseunicorns/terraform-provider-uds[^>]*-->\\s*```[\\s\\S]*?version\\s*=\\s*\"~>\\s*(?<currentValue>\\d+\\.\\d+)\\.\\d+\""],
       "depNameTemplate": "defenseunicorns/terraform-provider-uds",
       "datasourceTemplate": "github-releases",
       "versioningTemplate": "semver"
