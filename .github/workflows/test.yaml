@@ -48,7 +48,7 @@ jobs:
         uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1.0.1
         with:
           # renovate: datasource=github-tags depName=defenseunicorns/uds-cli versioning=semver
-          version: v0.30.4
+          version: v0.31.0
 
       - name: Install k3d
         shell: bash
@@ -62,7 +62,7 @@ jobs:
         uses: opentofu/setup-opentofu@fc711fa910b93cba0f3fbecaafc9f42fd0c411cb # v2.0.0
         with:
           # renovate: datasource=github-tags depName=opentofu/opentofu versioning=semver
-          tofu_version: v1.11.6
+          tofu_version: v1.11.7
           tofu_wrapper: false
 
       - name: Run acceptance tests
@@ -84,7 +84,7 @@ jobs:
         uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1.0.1
         with:
           # renovate: datasource=github-tags depName=defenseunicorns/uds-cli versioning=semver
-          version: v0.30.4
+          version: v0.31.0
 
       - name: Setup golang
         uses: ./.github/actions/setup-golang
