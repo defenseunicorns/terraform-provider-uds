@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.3.5](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.3.4...v0.3.5) (2026-05-15)
+
+
+### Bug Fixes
+
+* **deps:** update zarf to v0.76.0 ([#222](https://github.com/defenseunicorns/terraform-provider-uds/issues/222)) ([2101dd7](https://github.com/defenseunicorns/terraform-provider-uds/commit/2101dd7c80c25fe92e5063ce241f01ce59f6bc1c))
+
+
+### Miscellaneous
+
+* **config:** migrate config renovate.json ([#218](https://github.com/defenseunicorns/terraform-provider-uds/issues/218)) ([4c7775b](https://github.com/defenseunicorns/terraform-provider-uds/commit/4c7775ba54ebf7430510bce5b2b710a59cc9a81d))
+* **deps:** update dependency defenseunicorns/uds-cli to v0.31.0 ([#223](https://github.com/defenseunicorns/terraform-provider-uds/issues/223)) ([54b5a57](https://github.com/defenseunicorns/terraform-provider-uds/commit/54b5a570bdf82f8b69f7c760dafeebd1ea86bf3d))
+* **deps:** update github actions to v5 ([#211](https://github.com/defenseunicorns/terraform-provider-uds/issues/211)) ([f8bd29b](https://github.com/defenseunicorns/terraform-provider-uds/commit/f8bd29b6c7098db88465bcee4334febce0c630b4))
+* **deps:** update github-actions ([#207](https://github.com/defenseunicorns/terraform-provider-uds/issues/207)) ([b8264ba](https://github.com/defenseunicorns/terraform-provider-uds/commit/b8264ba9ad508542d391d03d87f5083226df22e3))
+* **deps:** update github-actions ([#221](https://github.com/defenseunicorns/terraform-provider-uds/issues/221)) ([293fe79](https://github.com/defenseunicorns/terraform-provider-uds/commit/293fe7923cacab7710afeaf4fbe1dd8b50f1fa4b))
+* **deps:** update github-actions to v21 ([#219](https://github.com/defenseunicorns/terraform-provider-uds/issues/219)) ([f879a5a](https://github.com/defenseunicorns/terraform-provider-uds/commit/f879a5a417a032883e558b296409345ae6f0deec))
+
 ## [0.3.4](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.3.3...v0.3.4) (2026-05-01)
 
 
