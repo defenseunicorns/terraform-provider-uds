@@ -4,8 +4,10 @@
 
 Proposed — 2026-05-27
 
-> **Note:** The `values` attribute described in this ADR is **alpha** in lockstep with Zarf's
-> `feature.Values` alpha gate. Behavior may change until Zarf promotes the feature to stable.
+> **Note:** The `values` and `optional_components` attributes are **alpha** in lockstep with Zarf's
+> `feature.Values` alpha gate. They are available now but mutually exclusive with `component` blocks —
+> the `component` block is not formally deprecated until at least Zarf promotes `feature.Values`
+>to stable/GA. Behavior may change before that point.
 
 ---
 
@@ -107,7 +109,7 @@ Behavior:
 - **No drift detection for chart values.** Chart value drift is not detectable. Zarf's deployed package Kubernetes secret records package metadata and installed components, not the merged chart values that were applied. If chart configuration diverges from stored `values` through out-of-band Helm operations or a failed partial deploy, the provider's Read operation will not detect it and `tofu plan` will show no diff. Recovery requires forcing redeployment via `tofu apply -replace=<resource address>`.
 - **Zarf feature flag.** The provider enables `feature.Values` before calling `Deploy`, mirroring the cli-next approach.
 - **Sensitive by default.** The `values` attribute is marked sensitive in the schema, which redacts its content from Tofu plan and apply output. This does not encrypt the values in Tofu state — state remains plaintext and should be protected at rest via standard state backend security controls. A parallel `sensitive_values` attribute (mirroring the `vars`/`sensitive_vars` split) is not viable here: merge order is significant, and splitting sensitive and non-sensitive content across two lists makes interleaved ordering impossible to express without additional metadata. Marking `values` uniformly sensitive is the simplest correct approach.
-- **Alpha status.** Documented as alpha; semantics may change until Zarf promotes `feature.Values` to stable.
+- **Alpha status.** Documented as alpha; semantics may change until Zarf promotes `feature.Values` to stable/GA.
 
 **Not interchangeable with cli-next.** cli-next uses Go `text/template` syntax (`{{ .vars.domain }}`) because it is a Go application with no access to Tofu's HCL evaluation engine. The provider keeps the interface idiomatic for OpenTofu by delegating rendering to HCL expressions and built-in functions (`${var.domain}`, `templatefile()`, `yamlencode()`, data sources, etc.). Users migrating between tools must rewrite template syntax — this is an intentional trade-off that avoids introducing a second variable system into the provider.
 
@@ -139,13 +141,13 @@ Behavior:
 
 ### `component` block deprecation
 
-The `component` dynamic block is deprecated. Its schema gains a `DeprecationMessage`:
+The `component` block is not formally deprecated until Zarf promotes `feature.Values` to stable/GA. At that point, the schema gains a `DeprecationMessage`:
 
 > `The component block is deprecated. Use optional_components to select optional components and values to supply chart values. The component block will be removed in a future version.`
 
-The block remains functional during the deprecation window. Both cross-field rules above enforce that `component` blocks cannot coexist with either new attribute.
+Until then, `values` and `optional_components` are available as alpha features but cannot coexist with `component` blocks — the mutual exclusivity rules are enforced regardless of deprecation status. This avoids marking the `component` block deprecated while the replacement feature is still alpha, preventing users from being nudged toward an unstable API.
 
-Any code paths that exclusively support the deprecated `component` block — schema definitions, validators, override flattening, deploy wiring — must be marked with a `TODO` comment referencing the deprecation:
+Any code paths that exclusively support the `component` block — schema definitions, validators, override flattening, deploy wiring — must be marked with a `TODO` comment referencing the future removal:
 
 ```go
 // TODO: remove when component block is removed
