@@ -166,7 +166,7 @@ The two paradigms (`component` blocks vs. `values` + `optional_components`) are 
 
 **Backward (values → component blocks):**
 
-Remove `values` and `optional_components`, re-add `component` blocks with `override` sub-blocks, run `tofu apply`. The same mutual exclusivity that makes the forward migration seamless applies in reverse. No conversion tooling needed in either direction.
+Remove `values` and `optional_components`, re-add `component` blocks with `override` sub-blocks, run `tofu apply`. As with the forward direction, this requires re-authoring configuration from scratch — `{path, value}` override pairs are structurally different from the YAML keyed to `chart.values[].sourcePath` mappings used in `values`. There is no mechanical conversion in either direction; both paths require new configuration content. No conversion tooling is provided.
 
 ---
 
