@@ -1,13 +1,13 @@
-# 1. uds_package: helm values attribute and optional_components attribute (deprecate component block)
+# 1. uds_package: Zarf chart values support and optional_components (deprecate component block)
 
 ## Status
 
 Proposed — 2026-05-27
 
-> **Note:** The `values` and `optional_components` attributes are **alpha** in lockstep with Zarf's
+> **Note:** The `values`, `sensitive_values`, and `optional_components` attributes are **alpha** in lockstep with Zarf's
 > `feature.Values` alpha gate. They are available now but mutually exclusive with `component` blocks —
 > the `component` block is not formally deprecated until at least Zarf promotes `feature.Values`
->to stable/GA. Behavior may change before that point.
+> to stable/GA. Behavior may change before that point.
 
 ---
 
@@ -76,42 +76,83 @@ Add two new top-level attributes to `uds_package` and deprecate the `component` 
 
 ### `values` attribute (alpha)
 
-A new optional `values = list(string)` attribute accepts an ordered list of raw YAML strings. Each string is a fully rendered YAML document; the provider performs no template processing. Users supply content using Tofu's built-in functions:
+A new optional `values` attribute accepts an HCL map of arbitrary depth (`schema.DynamicAttribute`). The provider encodes the map internally to `map[string]any` and passes it to `DeployOptions.Values` at deploy time. No YAML parsing or template rendering occurs in the provider — all evaluation is handled by Tofu's HCL engine before the provider receives the value:
 
 ```hcl
 resource "uds_package" "example" {
   source = "oci://ghcr.io/example/package:1.0.0"
 
-  # Values are pre-rendered YAML strings. Use file(), templatefile(),
-  # yamlencode(), data source outputs, or inline HCL expressions.
-  values = [
-    file("${path.module}/base-values.yaml"),
-    templatefile("${path.module}/env-values.yaml", {
-      replica_count = var.replica_count
-      image_tag     = var.image_tag
-    }),
-  ]
+  values = {
+    replicaCount = 3
+    resources = {
+      requests = {
+        memory = "512Mi"
+        cpu    = "250m"
+      }
+    }
+  }
 }
+```
+
+Users who need to compose values from multiple sources use Tofu's native `merge()` function:
+
+```hcl
+values = merge(
+  jsondecode(file("${path.module}/base-values.json")),
+  { replicaCount = var.replica_count }
+)
 ```
 
 Behavior:
 
-- **Order matters.** Index 0 is the base layer; each subsequent element overrides the previous. Objects deep-merge (Helm convention); scalar and list values replace. Implementation: each string is decoded directly into `value.Values` (`map[string]any`) using a YAML decoder, then `value.DeepMerge()` from the Zarf SDK is called in order to produce the final merged map, which is passed to `DeployOptions.Values`. cli-next uses `value.ParseFiles()` — appropriate there because its input is local file paths. The provider's input is already-evaluated string content, so bypassing the file layer and using `value.DeepMerge()` directly is the more correct fit and avoids temp file lifecycle concerns entirely.
-- **Source is unrestricted.** Because the attribute accepts string content rather than file paths, values can originate from local files, remote object storage, secrets managers, other provider data sources, or any Tofu expression that evaluates to a string. The provider is decoupled from the storage mechanism entirely.
-- **State tracking.** The final merged `value.Values` (`map[string]any`) is serialized and stored in state — not the input `list(string)`. The diff is based on the merged result: reorganizing input strings, switching between `file()` and `templatefile()`, or splitting/combining YAML documents does not trigger re-deploy as long as the merged output is unchanged. Only actual chart value changes produce a plan diff. This is the correct semantic — the merged map is what gets passed to Zarf at deploy time and is the true contract with the package.
-- **Content is case-sensitive.** YAML key casing is preserved as-is.
-- **Mutual exclusivity.** If `values` is specified (including as an empty list) and any `component` block exists — with or without an `override` sub-block — schema validation emits an error:
+- **Type: `schema.DynamicAttribute`.** Accepts any HCL map type at runtime — scalars, nested objects, lists, and mixed types are all valid. The Terraform plugin framework does not enforce a static type constraint; structural errors surface at apply time or through provider validation. Tofu cannot preview deferred map values (e.g., values sourced from other resource outputs or data sources) in plan output — they appear as `(known after apply)` until apply.
+- **Merging is the user's responsibility.** When values must be composed from multiple sources, use Tofu's built-in `merge()` function before assigning to the attribute. The provider does not own merge semantics; a single composed expression is passed to the provider and stored in state.
+- **Source is unrestricted.** Because the attribute accepts any HCL expression, values can originate from local files, secrets managers, other provider data sources, resource outputs, or any Tofu-evaluable expression. The provider is decoupled from the storage mechanism entirely.
+- **State tracking.** The attribute value is stored as-is in Tofu state. Tofu's native map comparison drives plan diffs — structural changes trigger a re-deploy; changes that produce the same resolved map do not.
+- **Content is case-sensitive.** Key casing is preserved as configured.
+- **Validation hooks.** Input-shape checks and key-conflict detection (duplicate keys between `values` and `sensitive_values`) are performed in `ValidateConfig` for statically known values. Package metadata validation — whether keys correspond to the package's exposed `chart.values[].sourcePath` mappings — requires loading package metadata and is performed in `ModifyPlan`. If the package is unreachable during plan, this validation is skipped and deferred to apply time.
+- **Mutual exclusivity.** If `values` is specified (including as an empty map) and any `component` block exists — with or without an `override` sub-block — schema validation emits an error:
   > `values cannot be specified together with component blocks`
 
-  An explicitly empty `values = []` is a meaningful signal: the user has opted into the values paradigm, even if no values are currently supplied. This intentionally disallows `component` blocks. Callers who do not intend to use `values` must omit the attribute or set it to `null` — not `[]`. In particular, when wiring `values = var.package_values`, the variable must default to `null` rather than `[]` to avoid unintentionally triggering mutual exclusivity in environments that do not supply values.
+  An explicitly empty `values = {}` is a meaningful signal: the user has opted into the values paradigm, even if no values are currently supplied. This intentionally disallows `component` blocks. Callers who do not intend to use `values` must omit the attribute or set it to `null` — not `{}`. In particular, when wiring `values = var.package_values`, the variable must default to `null` rather than `{}` to avoid unintentionally triggering mutual exclusivity in environments that do not supply values.
 
   This is also a deliberate policy decision around migration. A name-only `component` block alongside `values` is technically valid — optional component selection and chart value customization are independent concerns. Allowing it would permit incremental migration (adopt `values` first, migrate to `optional_components` separately). The strict rule is chosen instead because it avoids a mixed-paradigm configuration that is harder to document and reason about during the deprecation window, and because it nudges users toward a clean cut-over to both new attributes together. Users who want to migrate incrementally should complete both changes in the same `tofu apply`.
-- **No drift detection for chart values.** Chart value drift is not detectable. Zarf's deployed package Kubernetes secret records package metadata and installed components, not the merged chart values that were applied. If chart configuration diverges from stored `values` through out-of-band Helm operations or a failed partial deploy, the provider's Read operation will not detect it and `tofu plan` will show no diff. Recovery requires forcing redeployment via `tofu apply -replace=<resource address>`.
+- **No drift detection for chart values.** Chart value drift is not detectable. Zarf's deployed package Kubernetes secret records package metadata and installed components, not the applied chart values. If chart configuration diverges from stored `values` through out-of-band Helm operations or a failed partial deploy, the provider's Read operation will not detect it and `tofu plan` will show no diff. Recovery requires forcing redeployment via `tofu apply -replace=<resource address>`.
 - **Zarf feature flag.** The provider enables `feature.Values` before calling `Deploy`, mirroring the cli-next approach.
-- **Sensitive by default.** The `values` attribute is marked sensitive in the schema, which redacts its content from Tofu plan and apply output. This does not encrypt the values in Tofu state — state remains plaintext and should be protected at rest via standard state backend security controls. A parallel `sensitive_values` attribute (mirroring the `vars`/`sensitive_vars` split) is not viable here: merge order is significant, and splitting sensitive and non-sensitive content across two lists makes interleaved ordering impossible to express without additional metadata. Marking `values` uniformly sensitive is the simplest correct approach.
 - **Alpha status.** Documented as alpha; semantics may change until Zarf promotes `feature.Values` to stable/GA.
 
-**Not interchangeable with cli-next.** cli-next uses Go `text/template` syntax (`{{ .vars.domain }}`) because it is a Go application with no access to Tofu's HCL evaluation engine. The provider keeps the interface idiomatic for OpenTofu by delegating rendering to HCL expressions and built-in functions (`${var.domain}`, `templatefile()`, `yamlencode()`, data sources, etc.). Users migrating between tools must rewrite template syntax — this is an intentional trade-off that avoids introducing a second variable system into the provider.
+**Not interchangeable with cli-next.** cli-next accepts YAML file paths and applies Go `text/template` rendering because it is a Go application with no access to Tofu's HCL evaluation engine. The provider accepts HCL map expressions — a fundamentally different input mechanism. Users cannot share values configurations between tools: the input format (HCL map expression vs. YAML file), the variable reference syntax, and the scoping model all differ.
+
+### `sensitive_values` attribute (alpha)
+
+A new optional `sensitive_values` attribute mirrors `values` in type (`schema.DynamicAttribute`) but is marked `Sensitive: true` in the schema. Its content is redacted from Tofu plan and apply output. The same alpha status and `DynamicAttribute` trade-offs apply.
+
+```hcl
+resource "uds_package" "example" {
+  source = "oci://ghcr.io/example/package:1.0.0"
+
+  values = {
+    replicaCount = 3
+  }
+  sensitive_values = {
+    auth = {
+      token = var.api_token
+    }
+  }
+}
+```
+
+`values` and `sensitive_values` may both be specified simultaneously. Before passing to `DeployOptions.Values`, the provider merges both maps. **Duplicate top-level keys between `values` and `sensitive_values` are a validation error** caught at `ValidateConfig` for statically known values, and deferred to apply for values not known at plan time:
+
+> `duplicate key "<key>" found in both values and sensitive_values`
+
+The mutual exclusivity rule applies to `sensitive_values` independently:
+
+> `sensitive_values cannot be specified together with component blocks`
+
+An explicitly empty `sensitive_values = {}` carries the same meaning as `values = {}` — it is a signal that the user has opted into the values paradigm and intentionally disallows `component` blocks. Callers must omit the attribute or set it to `null` when they do not intend to use `sensitive_values`.
+
+As with `values`, chart value drift is not detectable — the same recovery path applies (`tofu apply -replace=<resource address>`).
 
 ### `optional_components` attribute
 
@@ -157,19 +198,19 @@ This keeps removal work discoverable and ensures deprecated code does not silent
 
 ### Migration path
 
-The two paradigms (`component` blocks vs. `values` + `optional_components`) are mutually exclusive by schema validation. There is no conversion of one set of configuration to the other — the values YAML is new content written against the package's `chart.values` mappings, not a transformation of override path/value pairs. Switching paradigms removes the old configuration from state and replaces it with the new; switching always triggers a full package redeploy on the next `tofu apply`.
+The two paradigms (`component` blocks vs. `values` + `optional_components`) are mutually exclusive by schema validation. There is no conversion of one set of configuration to the other — the values HCL map is new content written against the package's `chart.values` mappings, not a transformation of override path/value pairs. Switching paradigms removes the old configuration from state and replaces it with the new; switching always triggers a full package redeploy on the next `tofu apply`.
 
 **Forward (component blocks → values + optional_components):**
 
 1. Confirm the target package has shipped `chart.values[].sourcePath → targetPath` mappings in `zarf.yaml` (required prerequisite — package author work, independent of Tofu changes).
 2. Remove all `component` blocks from the resource configuration.
-3. Author `values` YAML content targeting the package's exposed `sourcePath` keys via Tofu functions.
-4. Add `values = [...]` and (if applicable) `optional_components = [...]`.
+3. Author a `values` HCL map targeting the package's exposed `sourcePath` keys.
+4. Add `values = { ... }` and (if applicable) `optional_components = [...]`.
 5. Run `tofu plan` — plan shows a full redeploy. Run `tofu apply`.
 
 **Backward (values → component blocks):**
 
-Remove `values` and `optional_components`, re-add `component` blocks with `override` sub-blocks, run `tofu apply`. As with the forward direction, this requires re-authoring configuration from scratch — `{path, value}` override pairs are structurally different from the YAML keyed to `chart.values[].sourcePath` mappings used in `values`. There is no mechanical conversion in either direction; both paths require new configuration content. No conversion tooling is provided.
+Remove `values` and `optional_components`, re-add `component` blocks with `override` sub-blocks, run `tofu apply`. As with the forward direction, this requires re-authoring configuration from scratch — `{path, value}` override pairs are structurally different from the HCL map values used in `values`. There is no mechanical conversion in either direction; both paths require new configuration content. No conversion tooling is provided.
 
 ---
 
@@ -185,9 +226,9 @@ Remove `values` and `optional_components`, re-add `component` blocks with `overr
 
 ### Negative
 
-- **Verbosity vs. file-path ergonomics.** Accepting string content requires users to wrap each source in a Tofu function (`file()`, `templatefile()`, etc.), which is more verbose than a flat list of filenames would be. This is the cost of flexibility — the trade-off is intentional but worth acknowledging.
-- **Migration effort.** Users must author new values YAML keyed to the package's `chart.values[].sourcePath` mappings. This content cannot be derived from existing override path/value pairs — it is new configuration written against the updated package schema.
-- **Not interchangeable with cli-next.** Duplicate maintenance for organizations using both tools. Teams must maintain separate values file templates. This divergence is rooted in tooling: cli-next has no access to Tofu's HCL engine and implements Go `text/template`; the provider gets HCL interpolation natively and Go `text/template` would be a foreign addition.
+- **Migration effort.** Users must author new values HCL maps targeting the package's `chart.values[].sourcePath` mappings. This content cannot be derived from existing override path/value pairs — it is new configuration written against the updated package schema.
+- **Not interchangeable with cli-next.** cli-next accepts YAML file paths with Go `text/template` rendering; the provider accepts HCL map expressions. Input format, variable reference syntax, and scoping model all differ — values configurations cannot be shared between tools. Duplicate maintenance for organizations using both tools.
+- **`DynamicAttribute` defers type validation.** The provider cannot enforce a type constraint on `values` or `sensitive_values` at schema validation time. Structural errors surface at apply time or through `ValidateConfig`/`ModifyPlan` hooks. Plan output shows `(known after apply)` for deferred map values from resource outputs or data sources, reducing plan legibility for dynamic configurations.
 - **No chart value drift detection.** Unlike `optional_components`, chart value drift cannot be detected by the Read operation — Zarf's package state does not record applied chart values. Out-of-band Helm changes are invisible to `tofu plan`; recovery requires `tofu apply -replace=<resource address>`.
 - **Alpha dependency.** `values` inherits Zarf's alpha status. If Zarf changes the `feature.Values` API before GA, the provider must adapt.
 - **Name ambiguity (transitional).** The top-level `values` attribute and the `override` block's nested `values` attribute share the same name during the deprecation window. Mutual exclusivity prevents coexistence; the conflict fully resolves when the `component` block is removed.
@@ -196,28 +237,27 @@ Remove `values` and `optional_components`, re-add `component` blocks with `overr
 
 ## Alternatives Considered
 
+### `values` and `sensitive_values` as ordered lists (layered merge)
+
+Define `values` and `sensitive_values` as `list(map)` or `list(string)` so multiple value documents can be supplied in order, with the provider merging them layer-by-layer — mirroring cli-next's `values_files` layered approach where index 0 is base and each subsequent entry overrides the previous.
+
+Not adopted. We believe single-map configurations will be the primary usage pattern, though real-world adoption may prove otherwise. Tofu's native `merge()` function covers multi-source composition when needed and gives users explicit control over merge logic, ordering, and conflict resolution at the call site — the provider does not need to own those semantics. A single map attribute is simpler to reason about, simpler to store in state, and consistent with how other Tofu providers model structured configuration.
+
+### `values` as raw YAML strings
+
+Accept `values` as a raw YAML string (or `list(string)` of YAML documents), with the provider parsing YAML internally before passing to `DeployOptions.Values`. Users would supply content via `file()`, `yamlencode()`, or inline strings.
+
+Not adopted. `DeployOptions.Values` is typed as `value.Values` (`map[string]any`) — Zarf takes a Go map directly, not raw YAML. Accepting YAML strings would require parsing them back into the same `map[string]any` that an HCL map expression produces natively, adding a YAML parsing layer with no benefit. An HCL map is the natural fit: it integrates with Tofu's type system and plan diffing, requires no provider-side parsing, and avoids forcing users to reason about two syntaxes within the same configuration file. The `schema.DynamicAttribute` type makes an HCL-native map viable without a fixed type constraint.
+
 ### `values_files = list(string)` of file paths
 
-Accept a list of local file paths, with the provider reading the files at deploy time. This mirrors the cli-next `values_files` surface. Regardless of what is stored in state — file paths, file contents, or the merged map — the file-path approach restricts sources to the local filesystem. Accepting string content instead opens the attribute to secrets managers, remote storage, and any other Tofu-evaluable expression. Storing the final merged `map[string]any` in state (the chosen approach) means the diff reflects actual chart value changes regardless of how the input strings are organized — a property that a file-path attribute cannot offer even if file contents were stored. cli-next reads file paths because it is a Go application with no access to Tofu's evaluation engine — the provider has no such constraint.
+Accept a list of local file paths, with the provider reading the files at deploy time. This mirrors the cli-next `values_files` surface. A file-path attribute restricts sources to the local filesystem regardless of what is stored in state. Accepting an HCL map expression instead opens the attribute to secrets managers, remote storage, other provider data sources, and any Tofu-evaluable expression — with no provider-side file I/O. cli-next reads file paths because it is a Go application with no access to Tofu's evaluation engine; the provider has no such constraint.
 
-### `merge_values()` provider function with `values = string`
+### `merge_values()` provider function
 
-Expose a provider-registered `merge_values()` function accepting an ordered list of YAML strings and returning the deep-merged result. The `values` attribute would accept a single string; `merge_values()` is called only when multiple documents need layering:
+Expose a provider-registered `merge_values()` function accepting multiple maps and returning the deep-merged result, with `values` accepting a single map. The function name makes layering explicit at the call site.
 
-```hcl
-# Single document — no merge needed
-values = file("${path.module}/values.yaml")
-
-# Multiple documents — explicit merge, order visible at the call site
-values = merge_values(
-  file("${path.module}/base-values.yaml"),
-  templatefile("${path.module}/env-values.yaml", { replica_count = var.replica_count }),
-)
-```
-
-The function name is intuitive and makes the merge operation explicit at the call site rather than implicit in list ordering. Users who don't need to merge set `values` directly without calling it. The trade-off is adding a provider-registered function to the public API surface.
-
-Not adopted for initial implementation. The `list(string)` approach is simpler to ship and the ergonomic difference is modest. The primary open question — how often users will have a single values document versus multiple — remains unknown; if single-document usage proves dominant in practice, `merge_values()` is a candidate for a follow-on release. See Open Questions.
+Not adopted — superseded by the decision to accept a single HCL map. Tofu's native `merge()` function covers multi-source composition at the call site without adding a provider-registered function to the public API surface. The HCL-native approach eliminates any YAML parsing layer entirely.
 
 ### Deprecate overrides only; retain name-only `component` blocks for optional component selection
 
@@ -230,9 +270,3 @@ Implement Go `text/template` pre-processing in the provider so that values file 
 ### `values_files` as the attribute name
 
 Mirror the cli-next attribute name. `values_files` implies the attribute accepts file paths; to keep the name accurate the provider would need to accept file paths, read files internally, and store content as state — which reintroduces the local-filesystem restriction and provider-side file I/O. `DeployOptions.Values` in the Zarf SDK is also not Helm- or file-specific; a name suggesting "files" misrepresents the underlying mechanism. `values` with mutual exclusivity enforcement is the cleaner resolution.
-
----
-
-## Open Questions
-
-- **`merge_values()` provider function.** Deferred from initial implementation. If real-world usage shows that single-document `values` is the common case and multi-document merging is rare, a `merge_values()` provider function is a candidate for a follow-on release. It would make layering explicit at the call site and avoid the implicit "merge of 1" semantics of the `list(string)` approach.
