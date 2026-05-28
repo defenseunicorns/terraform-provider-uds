@@ -39,8 +39,8 @@ import (
 	zarfFilters "github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfLayout "github.com/zarf-dev/zarf/src/pkg/packager/layout"
+	"github.com/zarf-dev/zarf/src/pkg/signing"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
-	zarfUtils "github.com/zarf-dev/zarf/src/pkg/utils"
 	zarfTypes "github.com/zarf-dev/zarf/src/types"
 )
 
@@ -756,8 +756,8 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 
 	// Verify package signature
 	enforceSignatureVerification := getEffectiveSignatureVerification(model)
-	verifyOpts := zarfUtils.DefaultVerifyBlobOptions()
-	verifyOpts.KeyRef = publicKeyPath
+	verifyOpts := signing.DefaultVerifyBlobOptions()
+	verifyOpts.Key = publicKeyPath
 	err = pkgLayout.VerifyPackageSignature(ctx, verifyOpts)
 	if err != nil {
 		// Error only if package is signed and enforcing signature verification
