@@ -101,7 +101,9 @@ Behavior:
 - **Mutual exclusivity.** If `values` is specified (including as an empty list) and any `component` block exists — with or without an `override` sub-block — schema validation emits an error:
   > `values cannot be specified together with component blocks`
 
-  This is a deliberate policy decision. A name-only `component` block alongside `values` is technically valid — optional component selection and chart value customization are independent concerns. Allowing it would permit incremental migration (adopt `values` first, migrate to `optional_components` separately). The strict rule is chosen instead because it avoids a mixed-paradigm configuration that is harder to document and reason about during the deprecation window, and because it nudges users toward a clean cut-over to both new attributes together. Users who want to migrate incrementally should complete both changes in the same `tofu apply`.
+  An explicitly empty `values = []` is a meaningful signal: the user has opted into the values paradigm, even if no values are currently supplied. This intentionally disallows `component` blocks. Callers who do not intend to use `values` must omit the attribute or set it to `null` — not `[]`. In particular, when wiring `values = var.package_values`, the variable must default to `null` rather than `[]` to avoid unintentionally triggering mutual exclusivity in environments that do not supply values.
+
+  This is also a deliberate policy decision around migration. A name-only `component` block alongside `values` is technically valid — optional component selection and chart value customization are independent concerns. Allowing it would permit incremental migration (adopt `values` first, migrate to `optional_components` separately). The strict rule is chosen instead because it avoids a mixed-paradigm configuration that is harder to document and reason about during the deprecation window, and because it nudges users toward a clean cut-over to both new attributes together. Users who want to migrate incrementally should complete both changes in the same `tofu apply`.
 - **Zarf feature flag.** The provider enables `feature.Values` before calling `Deploy`, mirroring the cli-next approach.
 - **Sensitive by default.** The `values` attribute is marked sensitive in the schema, which redacts its content from Tofu plan and apply output. This does not encrypt the values in Tofu state — state remains plaintext and should be protected at rest via standard state backend security controls. A parallel `sensitive_values` attribute (mirroring the `vars`/`sensitive_vars` split) is not viable here: merge order is significant, and splitting sensitive and non-sensitive content across two lists makes interleaved ordering impossible to express without additional metadata. Marking `values` uniformly sensitive is the simplest correct approach.
 - **Alpha status.** Documented as alpha; semantics may change until Zarf promotes `feature.Values` to stable.
@@ -129,8 +131,10 @@ Behavior:
   - Required component name → error: `component "<name>" is required and cannot be specified in optional_components`
 - **Drift detection.** `optional_components` is stored in state as the set of canonical component names. The provider's Read operation compares the stored set against the list of installed components recorded in the deployed package's Kubernetes secret. If any stored component is absent from the deployed state, Read updates the refreshed state so the next `tofu plan` detects drift and `tofu apply` redeploys.
 - **Redeploy on change.** Adding or removing a name causes a plan diff and re-deploy on `tofu apply`.
-- **Mutual exclusivity.** If `optional_components` is specified (including as an empty list) and any `component` block exists, schema validation emits an error:
+- **Mutual exclusivity.** If `optional_components` is specified (including as an empty set) and any `component` block exists, schema validation emits an error:
   > `optional_components cannot be specified together with component blocks`
+
+  As with `values`, an explicitly empty `optional_components = []` signals that the user has opted into the new paradigm. Callers must omit the attribute or set it to `null` — not `[]` — when they do not intend to use `optional_components`.
 
 ### `component` block deprecation
 
