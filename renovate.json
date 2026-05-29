@@ -33,6 +33,13 @@
       "commitMessageTopic": "zarf"
     },
     {
+      "matchPackageNames": ["zarf-dev/zarf"],
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["test/acc/package_test.go"],
+      "allowedVersions": "<=0.76.0",
+      "description": "Pinned temporarily at v0.76.0; v0.77.0+ init packages are signed with keyless method which is not yet supported. See Linear CLI-200"
+    },
+    {
       "matchFileNames": ["**/*.tf", "**/*.tfvars", "**/*.hcl"],
       "matchManagers": ["terraform"],
       "groupName": "terraform-dependencies",

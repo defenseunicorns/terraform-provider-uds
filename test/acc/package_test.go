@@ -12,8 +12,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
+// Temporarily pinned to v0.76.0; v0.77.0+ init packages require keyless signature verification (not yet supported). See Linear CLI-200
 // renovate: datasource=github-tags depName=zarf-dev/zarf
-const initPackageVersion = "v0.77.0"
+const initPackageVersion = "v0.76.0"
 
 func TestAccPackageResource(t *testing.T) {
 	resource.Test(t, resource.TestCase{
