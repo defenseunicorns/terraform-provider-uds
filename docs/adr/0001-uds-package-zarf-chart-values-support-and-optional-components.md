@@ -94,19 +94,13 @@ resource "uds_package" "example" {
 }
 ```
 
-Users who need to compose values from multiple sources use Tofu's native `merge()` function:
-
-```hcl
-values = merge(
-  jsondecode(file("${path.module}/base-values.json")),
-  { replicaCount = var.replica_count }
-)
-```
+Users who need to compose values from multiple sources must deep merge them before assigning
+`values`. The provider receives one final map and does not apply additional merge layering.
 
 Behavior:
 
 - **Type: `schema.DynamicAttribute`.** Accepts any HCL map type at runtime — scalars, nested objects, lists, and mixed types are all valid. The Terraform plugin framework does not enforce a static type constraint; structural errors surface at apply time or through provider validation. Tofu cannot preview deferred map values (e.g., values sourced from other resource outputs or data sources) in plan output — they appear as `(known after apply)` until apply.
-- **Merging is the user's responsibility.** When values must be composed from multiple sources, use Tofu's built-in `merge()` function before assigning to the attribute. The provider does not own merge semantics; a single composed expression is passed to the provider and stored in state.
+- **Merging is the user's responsibility.** When values must be composed from multiple sources, the caller must deep merge them into a single map before assigning to this attribute. The provider does not own merge semantics today; it receives one composed expression, passes it to Zarf, and stores it in state. If demand emerges later, we can evaluate provider-owned deep merge behavior.
 - **Source is unrestricted.** Because the attribute accepts any HCL expression, values can originate from local files, secrets managers, other provider data sources, resource outputs, or any Tofu-evaluable expression. The provider is decoupled from the storage mechanism entirely.
 - **State tracking.** The attribute value is stored as-is in Tofu state. Tofu's native map comparison drives plan diffs — structural changes trigger a re-deploy; changes that produce the same resolved map do not.
 - **Content is case-sensitive.** Key casing is preserved as configured.
