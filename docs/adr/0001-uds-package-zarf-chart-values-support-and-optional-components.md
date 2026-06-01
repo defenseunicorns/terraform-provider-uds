@@ -72,7 +72,7 @@ cli-next accepts file paths and runs a Go `text/template` rendering step before 
 
 ## Decision
 
-Add two new top-level attributes to `uds_package` and deprecate the `component` dynamic block. The two features are coupled — both are driven by the need to replace the `component` block's dual purpose.
+Add three new top-level attributes to `uds_package` and deprecate the `component` dynamic block. The two features are coupled — both are driven by the need to replace the `component` block's dual purpose.
 
 ### `values` attribute (alpha)
 
