@@ -1204,11 +1204,24 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if err != nil {
 		return plan, err
 	}
+	values, _, err := dynamicToValues(ctx, "values", plan.Values)
+	if err != nil {
+		return plan, err
+	}
+	sensitiveValues, _, err := dynamicToValues(ctx, "sensitive_values", plan.SensitiveValues)
+	if err != nil {
+		return plan, err
+	}
+	deployValues, err := mergePackageValues(values, sensitiveValues)
+	if err != nil {
+		return plan, err
+	}
 
 	// TODO(erickson): Add support for Retries, OCIConcurrency?
 	deployOpts := zarfPackager.DeployOptions{
 		AdoptExistingResources: false,
 		SetVariables:           buildSetVariableMap(plan),
+		Values:                 deployValues,
 		ValuesOverridesMap:     valuesOverridesMap,
 		RemoteOptions:          r.getRemoteOptions(),
 		NamespaceOverride:      plan.Namespace.ValueString(),

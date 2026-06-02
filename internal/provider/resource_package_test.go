@@ -1117,6 +1117,153 @@ func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
 	}
 }
 
+func TestPackageResource_Upsert_Values(t *testing.T) {
+	tests := []struct {
+		name             string
+		values           types.Dynamic
+		sensitiveValues  types.Dynamic
+		expectedValues   zarfValue.Values
+		expectedErrorMsg string
+	}{
+		{
+			name:           "package without values deploys with empty values",
+			expectedValues: zarfValue.Values{},
+		},
+		{
+			name: "package with values passes deploy values",
+			values: types.DynamicValue(types.ObjectValueMust(
+				map[string]attr.Type{
+					"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
+						"replicaCount": types.NumberType,
+					}},
+					"logLevel": types.StringType,
+				},
+				map[string]attr.Value{
+					"pod": types.ObjectValueMust(
+						map[string]attr.Type{"replicaCount": types.NumberType},
+						map[string]attr.Value{"replicaCount": types.NumberValue(big.NewFloat(3))},
+					),
+					"logLevel": types.StringValue("info"),
+				},
+			)),
+			expectedValues: zarfValue.Values{
+				"pod":      map[string]any{"replicaCount": int64(3)},
+				"logLevel": "info",
+			},
+		},
+		{
+			name: "package with sensitive values deep merges deploy values",
+			values: types.DynamicValue(types.ObjectValueMust(
+				map[string]attr.Type{
+					"db": types.ObjectType{AttrTypes: map[string]attr.Type{
+						"hostname": types.StringType,
+					}},
+				},
+				map[string]attr.Value{
+					"db": types.ObjectValueMust(
+						map[string]attr.Type{"hostname": types.StringType},
+						map[string]attr.Value{"hostname": types.StringValue("postgres")},
+					),
+				},
+			)),
+			sensitiveValues: types.DynamicValue(types.ObjectValueMust(
+				map[string]attr.Type{
+					"db": types.ObjectType{AttrTypes: map[string]attr.Type{
+						"password": types.StringType,
+					}},
+				},
+				map[string]attr.Value{
+					"db": types.ObjectValueMust(
+						map[string]attr.Type{"password": types.StringType},
+						map[string]attr.Value{"password": types.StringValue("secret")},
+					),
+				},
+			)),
+			expectedValues: zarfValue.Values{
+				"db": map[string]any{
+					"hostname": "postgres",
+					"password": "secret",
+				},
+			},
+		},
+		{
+			name: "package with conflicting sensitive values returns error",
+			values: types.DynamicValue(types.ObjectValueMust(
+				map[string]attr.Type{
+					"db": types.ObjectType{AttrTypes: map[string]attr.Type{
+						"password": types.StringType,
+					}},
+				},
+				map[string]attr.Value{
+					"db": types.ObjectValueMust(
+						map[string]attr.Type{"password": types.StringType},
+						map[string]attr.Value{"password": types.StringValue("plain")},
+					),
+				},
+			)),
+			sensitiveValues: types.DynamicValue(types.ObjectValueMust(
+				map[string]attr.Type{
+					"db": types.ObjectType{AttrTypes: map[string]attr.Type{
+						"password": types.StringType,
+					}},
+				},
+				map[string]attr.Value{
+					"db": types.ObjectValueMust(
+						map[string]attr.Type{"password": types.StringType},
+						map[string]attr.Value{"password": types.StringValue("secret")},
+					),
+				},
+			)),
+			expectedErrorMsg: "db.password",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+			validLoadPackageResult := newValidLoadPackageResult()
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+				validLoadPackageResult.Layout,
+				validLoadPackageResult.Error,
+			)
+
+			if tc.expectedErrorMsg == "" {
+				mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+				mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+			}
+
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+			testModel := NewTestPackageResourceModel(
+				WithValues(tc.values),
+				WithSensitiveValues(tc.sensitiveValues),
+			)
+
+			_, err := packageResource.upsert(context.Background(), testModel)
+
+			if tc.expectedErrorMsg != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tc.expectedErrorMsg)
+				return
+			}
+
+			assert.NoError(t, err)
+			mockPackager.AssertExpectations(t)
+			mockPackageComponentFilter.AssertExpectations(t)
+
+			var actualValues zarfValue.Values
+			for _, call := range mockPackager.Calls {
+				if call.Method == "Deploy" && len(call.Arguments) >= 3 {
+					deployOpts := call.Arguments[2].(zarfPackager.DeployOptions)
+					actualValues = deployOpts.Values
+				}
+			}
+			assert.Equal(t, tc.expectedValues, actualValues)
+		})
+	}
+}
+
 func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 	tests := []struct {
 		name                      string
