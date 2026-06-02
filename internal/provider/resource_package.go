@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"sort"
@@ -43,6 +44,7 @@ import (
 	zarfLayout "github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfSigning "github.com/zarf-dev/zarf/src/pkg/signing"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
+	zarfValue "github.com/zarf-dev/zarf/src/pkg/value"
 	zarfZoci "github.com/zarf-dev/zarf/src/pkg/zoci"
 	zarfTypes "github.com/zarf-dev/zarf/src/types"
 )
@@ -1097,7 +1099,6 @@ func (r *PackageResource) getDeployedPackage(ctx context.Context, name string, n
 }
 
 func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
-
 	// Get the package name from the source package metadata
 	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
 	if err != nil {
@@ -1129,7 +1130,6 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 
 // TODO(erickson): Remove response parameter and return an error after refactoring removeComponents to do the same
 func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel, resp *resource.UpdateResponse) (PackageResourceModel, error) {
-
 	// TODO(erickson): Need to revisit this logic. If deploy errors, can we recover?
 	// Generate list of components to remove after the update is complete.
 	// Combines legacy component-block removals with optional_components removals.
@@ -1413,6 +1413,141 @@ func flattenComponentOverrides(ctx context.Context, components []ComponentModel)
 	return result, nil
 }
 
+func dynamicToValues(_ context.Context, attrName string, value types.Dynamic) (zarfValue.Values, bool, error) {
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return zarfValue.Values{}, false, nil
+	}
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return zarfValue.Values{}, true, nil
+	}
+
+	converted, err := terraformValueToGoValue(value.UnderlyingValue())
+	if err != nil {
+		return zarfValue.Values{}, true, fmt.Errorf("failed to convert %s: %w", attrName, err)
+	}
+
+	values, ok := converted.(map[string]any)
+	if !ok {
+		return zarfValue.Values{}, true, fmt.Errorf("%s must be a map or object", attrName)
+	}
+
+	return zarfValue.Values(values), true, nil
+}
+
+func terraformValueToGoValue(value attr.Value) (any, error) {
+	if value == nil || value.IsNull() {
+		return nil, nil
+	}
+	if value.IsUnknown() {
+		return nil, fmt.Errorf("unknown values cannot be converted")
+	}
+
+	switch v := value.(type) {
+	case types.String:
+		return v.ValueString(), nil
+	case types.Bool:
+		return v.ValueBool(), nil
+	case types.Number:
+		return numberToGoValue(v.ValueBigFloat()), nil
+	case types.Map:
+		return terraformMapToGoMap(v.Elements())
+	case types.Object:
+		return terraformMapToGoMap(v.Attributes())
+	case types.List:
+		return terraformCollectionToGoSlice(v.Elements())
+	case types.Set:
+		return terraformCollectionToGoSlice(v.Elements())
+	case types.Tuple:
+		return terraformCollectionToGoSlice(v.Elements())
+	case types.Dynamic:
+		return terraformValueToGoValue(v.UnderlyingValue())
+	default:
+		return nil, fmt.Errorf("unsupported value type %T", value)
+	}
+}
+
+func terraformMapToGoMap(elements map[string]attr.Value) (map[string]any, error) {
+	result := make(map[string]any, len(elements))
+	for key, value := range elements {
+		converted, err := terraformValueToGoValue(value)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", key, err)
+		}
+		result[key] = converted
+	}
+	return result, nil
+}
+
+func terraformCollectionToGoSlice(elements []attr.Value) ([]any, error) {
+	result := make([]any, 0, len(elements))
+	for idx, value := range elements {
+		converted, err := terraformValueToGoValue(value)
+		if err != nil {
+			return nil, fmt.Errorf("%d: %w", idx, err)
+		}
+		result = append(result, converted)
+	}
+	return result, nil
+}
+
+func numberToGoValue(value *big.Float) any {
+	if value == nil {
+		return nil
+	}
+
+	if intValue, accuracy := value.Int64(); accuracy == big.Exact {
+		return intValue
+	}
+
+	floatValue, _ := value.Float64()
+	return floatValue
+}
+
+func validateNoValueConflicts(values zarfValue.Values, sensitiveValues zarfValue.Values) error {
+	return validateNoValueConflictsAtPath(map[string]any(values), map[string]any(sensitiveValues), "")
+}
+
+func validateNoValueConflictsAtPath(values map[string]any, sensitiveValues map[string]any, prefix string) error {
+	for key, sensitiveValue := range sensitiveValues {
+		path := joinValuePath(prefix, key)
+		value, exists := values[key]
+		if !exists {
+			continue
+		}
+
+		valueMap, valueIsMap := value.(map[string]any)
+		sensitiveValueMap, sensitiveValueIsMap := sensitiveValue.(map[string]any)
+		if valueIsMap && sensitiveValueIsMap {
+			if err := validateNoValueConflictsAtPath(valueMap, sensitiveValueMap, path); err != nil {
+				return err
+			}
+			continue
+		}
+
+		return fmt.Errorf("duplicate or conflicting value path %q found in both values and sensitive_values", path)
+	}
+
+	return nil
+}
+
+func mergePackageValues(values zarfValue.Values, sensitiveValues zarfValue.Values) (zarfValue.Values, error) {
+	if err := validateNoValueConflicts(values, sensitiveValues); err != nil {
+		return zarfValue.Values{}, err
+	}
+
+	merged := zarfValue.Values{}
+	merged.DeepMerge(values)
+	merged.DeepMerge(sensitiveValues)
+	return merged, nil
+}
+
+func joinValuePath(prefix string, key string) string {
+	if prefix == "" {
+		return key
+	}
+	return prefix + "." + key
+}
+
 // getMissingComponents compares two Package plans and returns a list of components that was specified in the
 // 'oldPlan' but not specified in the newer plan.
 // TODO: remove when component block is removed; use getMissingOptionalComponents exclusively
@@ -1549,7 +1684,6 @@ func getPackageSource(pkg PackageResourceModel, providerConfig udsProviderConfig
 // getPackageOverrideName generates a deterministic tarball filename for a package based on its original source value.
 // Returns a filename in the format "zarf-package-{sha1-checksum}.tar.zst".
 func getPackageOverrideName(pkg PackageResourceModel) string {
-
 	sourceString := pkg.Source.ValueString()
 	if !strings.HasPrefix(sourceString, "oci://") {
 		sourceString = filepath.Base(sourceString)

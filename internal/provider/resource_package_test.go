@@ -8,6 +8,7 @@ import (
 	"crypto/sha1"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,6 +33,7 @@ import (
 	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
+	zarfValue "github.com/zarf-dev/zarf/src/pkg/value"
 	"github.com/zarf-dev/zarf/src/pkg/variables"
 	zarfZoci "github.com/zarf-dev/zarf/src/pkg/zoci"
 
@@ -923,9 +925,11 @@ func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
 		{
 			name: "package with single required component overrides deploys with single component overrides map",
 			components: []ComponentModel{
-				NewTestComponentModel("test-required-component-0",
+				NewTestComponentModel(
+					"test-required-component-0",
 					WithComponentOverrides([]ComponentChartValuesModel{
-						NewTestComponentChartValuesModel("chart1",
+						NewTestComponentChartValuesModel(
+							"chart1",
 							WithComponentChartValues([]HelmChartPathValueModel{
 								{Path: types.StringValue("replicaCount"), Value: types.StringValue("3")},
 								{Path: types.StringValue("ui.color"), Value: types.StringValue("blue")},
@@ -954,9 +958,11 @@ func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
 		{
 			name: "package with single optional component overrides deploys with single component overrides map",
 			components: []ComponentModel{
-				NewTestComponentModel("test-optional-default-component-0",
+				NewTestComponentModel(
+					"test-optional-default-component-0",
 					WithComponentOverrides([]ComponentChartValuesModel{
-						NewTestComponentChartValuesModel("chart1",
+						NewTestComponentChartValuesModel(
+							"chart1",
 							WithComponentChartValues([]HelmChartPathValueModel{
 								{Path: types.StringValue("replicaCount"), Value: types.StringValue("3")},
 								{Path: types.StringValue("ui.color"), Value: types.StringValue("blue")},
@@ -985,9 +991,11 @@ func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
 		{
 			name: "package with multiple components and charts passes overrides deploys with all components overrides map",
 			components: []ComponentModel{
-				NewTestComponentModel("test-required-component-0",
+				NewTestComponentModel(
+					"test-required-component-0",
 					WithComponentOverrides([]ComponentChartValuesModel{
-						NewTestComponentChartValuesModel("chart1",
+						NewTestComponentChartValuesModel(
+							"chart1",
 							WithComponentChartValues([]HelmChartPathValueModel{
 								{Path: types.StringValue("replicaCount"), Value: types.StringValue("3")},
 								{Path: types.StringValue("ui.color"), Value: types.StringValue("blue")},
@@ -998,23 +1006,28 @@ func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
 						),
 					}),
 				),
-				NewTestComponentModel("test-optional-default-component-0",
+				NewTestComponentModel(
+					"test-optional-default-component-0",
 					WithComponentOverrides([]ComponentChartValuesModel{
-						NewTestComponentChartValuesModel("chart1",
+						NewTestComponentChartValuesModel(
+							"chart1",
 							WithComponentChartValues([]HelmChartPathValueModel{
 								{Path: types.StringValue("replicaCount"), Value: types.StringValue("2")},
 							}),
 						),
-						NewTestComponentChartValuesModel("chart2",
+						NewTestComponentChartValuesModel(
+							"chart2",
 							WithComponentChartValues([]HelmChartPathValueModel{
 								{Path: types.StringValue("service.port"), Value: types.StringValue("\"8080\"")},
 							}),
 						),
 					}),
 				),
-				NewTestComponentModel("test-optional-non-default-component-0",
+				NewTestComponentModel(
+					"test-optional-non-default-component-0",
 					WithComponentOverrides([]ComponentChartValuesModel{
-						NewTestComponentChartValuesModel("chart3",
+						NewTestComponentChartValuesModel(
+							"chart3",
 							WithComponentChartValues([]HelmChartPathValueModel{
 								{Path: types.StringValue("image.tag"), Value: types.StringValue("v2.0.0")},
 							}),
@@ -1236,7 +1249,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			if tc.localFilePathExists && !strings.HasPrefix(tc.source, helpers.OCIURLPrefix) {
 				dir := filepath.Dir(tc.source)
 				if dir != "." {
-					err := os.MkdirAll(dir, 0755)
+					err := os.MkdirAll(dir, 0o755)
 					if err != nil {
 						t.Fatalf("Failed to create test directory %s: %v", dir, err)
 					}
@@ -4429,6 +4442,196 @@ func TestPackageResource_ValidateConfig_ValuesComponentMutualExclusivity(t *test
 			}
 		})
 	}
+}
+
+func TestDynamicToValues(t *testing.T) {
+	objectValue := types.ObjectValueMust(
+		map[string]attr.Type{
+			"string": types.StringType,
+			"bool":   types.BoolType,
+			"int":    types.NumberType,
+			"float":  types.NumberType,
+			"nested": types.ObjectType{AttrTypes: map[string]attr.Type{
+				"list": types.ListType{ElemType: types.StringType},
+			}},
+		},
+		map[string]attr.Value{
+			"string": types.StringValue("value"),
+			"bool":   types.BoolValue(true),
+			"int":    types.NumberValue(big.NewFloat(3)),
+			"float":  types.NumberValue(big.NewFloat(1.5)),
+			"nested": types.ObjectValueMust(
+				map[string]attr.Type{"list": types.ListType{ElemType: types.StringType}},
+				map[string]attr.Value{
+					"list": types.ListValueMust(types.StringType, []attr.Value{
+						types.StringValue("one"),
+						types.StringValue("two"),
+					}),
+				},
+			),
+		},
+	)
+
+	tests := []struct {
+		name       string
+		input      types.Dynamic
+		expected   zarfValue.Values
+		configured bool
+		errorText  string
+	}{
+		{
+			name:       "null returns unconfigured empty values",
+			input:      types.DynamicNull(),
+			expected:   zarfValue.Values{},
+			configured: false,
+		},
+		{
+			name:       "unknown returns configured empty values",
+			input:      types.DynamicUnknown(),
+			expected:   zarfValue.Values{},
+			configured: true,
+		},
+		{
+			name:  "object converts recursively",
+			input: types.DynamicValue(objectValue),
+			expected: zarfValue.Values{
+				"string": "value",
+				"bool":   true,
+				"int":    int64(3),
+				"float":  1.5,
+				"nested": map[string]any{
+					"list": []any{"one", "two"},
+				},
+			},
+			configured: true,
+		},
+		{
+			name:      "root scalar returns error",
+			input:     types.DynamicValue(types.StringValue("nope")),
+			errorText: "values must be a map or object",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			actual, configured, err := dynamicToValues(context.Background(), "values", tc.input)
+
+			if tc.errorText != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errorText)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Equal(t, tc.configured, configured)
+			assert.Equal(t, tc.expected, actual)
+		})
+	}
+}
+
+func TestValidateNoValueConflicts(t *testing.T) {
+	tests := []struct {
+		name            string
+		values          zarfValue.Values
+		sensitiveValues zarfValue.Values
+		errorText       string
+	}{
+		{
+			name:   "disjoint top-level keys are allowed",
+			values: zarfValue.Values{"replicaCount": 2},
+			sensitiveValues: zarfValue.Values{
+				"token": "secret",
+			},
+		},
+		{
+			name: "sibling nested keys are allowed",
+			values: zarfValue.Values{
+				"db": map[string]any{"hostname": "postgres"},
+			},
+			sensitiveValues: zarfValue.Values{
+				"db": map[string]any{"password": "secret"},
+			},
+		},
+		{
+			name: "duplicate leaf path conflicts",
+			values: zarfValue.Values{
+				"db": map[string]any{"password": "plain"},
+			},
+			sensitiveValues: zarfValue.Values{
+				"db": map[string]any{"password": "secret"},
+			},
+			errorText: "db.password",
+		},
+		{
+			name: "scalar and object conflict",
+			values: zarfValue.Values{
+				"db": "postgres",
+			},
+			sensitiveValues: zarfValue.Values{
+				"db": map[string]any{"password": "secret"},
+			},
+			errorText: "db",
+		},
+		{
+			name: "list and list conflict",
+			values: zarfValue.Values{
+				"tolerations": []any{"a"},
+			},
+			sensitiveValues: zarfValue.Values{
+				"tolerations": []any{"b"},
+			},
+			errorText: "tolerations",
+		},
+		{
+			name: "null and object conflict",
+			values: zarfValue.Values{
+				"db": nil,
+			},
+			sensitiveValues: zarfValue.Values{
+				"db": map[string]any{"password": "secret"},
+			},
+			errorText: "db",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateNoValueConflicts(tc.values, tc.sensitiveValues)
+
+			if tc.errorText != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errorText)
+				return
+			}
+
+			assert.NoError(t, err)
+		})
+	}
+}
+
+func TestMergePackageValues(t *testing.T) {
+	merged, err := mergePackageValues(
+		zarfValue.Values{
+			"db": map[string]any{
+				"hostname": "postgres",
+			},
+			"replicaCount": 2,
+		},
+		zarfValue.Values{
+			"db": map[string]any{
+				"password": "secret",
+			},
+		},
+	)
+
+	assert.NoError(t, err)
+	assert.Equal(t, zarfValue.Values{
+		"db": map[string]any{
+			"hostname": "postgres",
+			"password": "secret",
+		},
+		"replicaCount": 2,
+	}, merged)
 }
 
 func TestBuildVerifyBlobOptions(t *testing.T) {
