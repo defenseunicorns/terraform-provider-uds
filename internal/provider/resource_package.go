@@ -95,6 +95,9 @@ type PackageResourceModel struct {
 	Vars               types.Set `tfsdk:"vars"`                // Set of VariableModel objects
 	SensitiveVars      types.Set `tfsdk:"sensitive_vars"`      // Set of VariableModel objects
 
+	Values          types.Dynamic `tfsdk:"values"`
+	SensitiveValues types.Dynamic `tfsdk:"sensitive_values"`
+
 	// readonly metadata
 	Name           types.String `tfsdk:"name"`
 	Kind           types.String `tfsdk:"kind"` // Kind reflects the type of UDS package; either ZarfInit or ZarfPackage
@@ -390,6 +393,15 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				ElementType:         types.StringType,
 				Sensitive:           true,
 			},
+			"values": schema.DynamicAttribute{
+				MarkdownDescription: "[Alpha] Package values to apply at deploy time. Values must correspond to value mappings exposed by the package.",
+				Optional:            true,
+			},
+			"sensitive_values": schema.DynamicAttribute{
+				MarkdownDescription: "[Alpha] Sensitive package values to apply at deploy time. Values must correspond to value mappings exposed by the package and are redacted from Terraform output.",
+				Optional:            true,
+				Sensitive:           true,
+			},
 		},
 		Blocks: map[string]schema.Block{
 			// TODO: remove when component block is removed
@@ -499,6 +511,7 @@ func (r *PackageResource) ValidateConfig(ctx context.Context, req resource.Valid
 	validateSignatureVerificationAttributes(ctx, model, resp)
 	// TODO: remove when component block is removed
 	validateComponentBlockOptionalComponentsMutualExclusivity(model, resp)
+	validateValuesComponentMutualExclusivity(model, resp)
 }
 
 // Configure configures the resource with provider data.
@@ -1724,6 +1737,35 @@ func validateComponentBlockOptionalComponentsMutualExclusivity(model PackageReso
 // TODO: remove when component block is removed
 func componentBlocksMayBePresent(components types.Set) bool {
 	return !components.IsNull() && (components.IsUnknown() || len(components.Elements()) > 0)
+}
+
+func validateValuesComponentMutualExclusivity(model PackageResourceModel, resp *resource.ValidateConfigResponse) {
+	if !componentBlocksMayBePresent(model.Components) {
+		return
+	}
+
+	if isDynamicAttributeConfigured(model.Values) {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("values"),
+			"Invalid package values configuration",
+			"values cannot be specified together with component blocks",
+		)
+	}
+
+	if isDynamicAttributeConfigured(model.SensitiveValues) {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("sensitive_values"),
+			"Invalid package values configuration",
+			"sensitive_values cannot be specified together with component blocks",
+		)
+	}
+}
+func isDynamicAttributeConfigured(value types.Dynamic) bool {
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return false
+	}
+
+	return true
 }
 
 // buildVerifyBlobOptions constructs signing.VerifyBlobOptions from the model.

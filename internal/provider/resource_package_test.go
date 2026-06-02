@@ -195,6 +195,18 @@ func WithOptionalComponents(names []string) PackageResourceModelDataOption {
 	}
 }
 
+func WithValues(values types.Dynamic) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.Values = values
+	}
+}
+
+func WithSensitiveValues(values types.Dynamic) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.SensitiveValues = values
+	}
+}
+
 // NewTestPackageResourceModel creates a PackageResourceModel with default values and applies data options
 func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) PackageResourceModel {
 	model := PackageResourceModel{
@@ -207,6 +219,8 @@ func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) Pack
 		OptionalComponents:    types.SetNull(types.StringType),
 		Vars:                  variableSliceToSet([]VariableModel{}),
 		SensitiveVars:         variableSliceToSet([]VariableModel{}),
+		Values:                types.DynamicNull(),
+		SensitiveValues:       types.DynamicNull(),
 	}
 
 	for _, option := range options {
@@ -4321,6 +4335,100 @@ func WithKeylessVerification(identity, issuer string) PackageResourceModelDataOp
 		UseSignedTimestamps:         types.BoolValue(false),
 	}
 	return withSigVerification(newTestSigVerification(true, "", keyless))
+}
+
+func TestPackageResource_ValidateConfig_ValuesComponentMutualExclusivity(t *testing.T) {
+	emptyDynamicObject := func() types.Dynamic {
+		return types.DynamicValue(types.ObjectValueMust(map[string]attr.Type{}, map[string]attr.Value{}))
+	}
+
+	tests := []struct {
+		name                  string
+		model                 PackageResourceModel
+		expectedErrorContains []string
+	}{
+		{
+			name: "values without components is allowed",
+			model: NewTestPackageResourceModel(
+				WithValues(emptyDynamicObject()),
+			),
+		},
+		{
+			name: "sensitive_values without components is allowed",
+			model: NewTestPackageResourceModel(
+				WithSensitiveValues(emptyDynamicObject()),
+			),
+		},
+		{
+			name: "null values with components is allowed",
+			model: NewTestPackageResourceModel(
+				WithComponents(NewComponentModelsFromNames([]string{"test-component"})),
+				WithValues(types.DynamicNull()),
+				WithSensitiveValues(types.DynamicNull()),
+			),
+		},
+		{
+			name: "empty values object conflicts with components",
+			model: NewTestPackageResourceModel(
+				WithComponents(NewComponentModelsFromNames([]string{"test-component"})),
+				WithValues(emptyDynamicObject()),
+			),
+			expectedErrorContains: []string{"values cannot be specified together with component blocks"},
+		},
+		{
+			name: "empty sensitive_values object conflicts with components",
+			model: NewTestPackageResourceModel(
+				WithComponents(NewComponentModelsFromNames([]string{"test-component"})),
+				WithSensitiveValues(emptyDynamicObject()),
+			),
+			expectedErrorContains: []string{"sensitive_values cannot be specified together with component blocks"},
+		},
+		{
+			name: "values and sensitive_values both conflict with components",
+			model: NewTestPackageResourceModel(
+				WithComponents(NewComponentModelsFromNames([]string{"test-component"})),
+				WithValues(emptyDynamicObject()),
+				WithSensitiveValues(emptyDynamicObject()),
+			),
+			expectedErrorContains: []string{
+				"values cannot be specified together with component blocks",
+				"sensitive_values cannot be specified together with component blocks",
+			},
+		},
+		{
+			name: "unknown values conflicts with components",
+			model: NewTestPackageResourceModel(
+				WithComponents(NewComponentModelsFromNames([]string{"test-component"})),
+				WithValues(types.DynamicUnknown()),
+			),
+			expectedErrorContains: []string{"values cannot be specified together with component blocks"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &resource.ValidateConfigResponse{Diagnostics: diag.Diagnostics{}}
+
+			validateValuesComponentMutualExclusivity(tc.model, resp)
+
+			if len(tc.expectedErrorContains) == 0 {
+				assert.False(t, resp.Diagnostics.HasError(), "expected no error but got: %v", resp.Diagnostics.Errors())
+				return
+			}
+
+			assert.True(t, resp.Diagnostics.HasError(), "expected error but got none")
+			for _, expected := range tc.expectedErrorContains {
+				found := false
+				for _, d := range resp.Diagnostics.Errors() {
+					if strings.Contains(d.Detail(), expected) {
+						found = true
+						break
+					}
+				}
+				assert.True(t, found, "expected error containing %q, got: %v", expected, resp.Diagnostics.Errors())
+			}
+		})
+	}
 }
 
 func TestBuildVerifyBlobOptions(t *testing.T) {
