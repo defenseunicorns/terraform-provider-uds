@@ -4703,6 +4703,125 @@ func TestDynamicToValues(t *testing.T) {
 	}
 }
 
+func TestDynamicContainsUnknown(t *testing.T) {
+	nestedKnownObject := types.DynamicValue(types.ObjectValueMust(
+		map[string]attr.Type{
+			"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
+				"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
+					"pet-name": types.StringType,
+				}},
+			}},
+		},
+		map[string]attr.Value{
+			"pod": types.ObjectValueMust(
+				map[string]attr.Type{
+					"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
+						"pet-name": types.StringType,
+					}},
+				},
+				map[string]attr.Value{
+					"annotations": types.ObjectValueMust(
+						map[string]attr.Type{"pet-name": types.StringType},
+						map[string]attr.Value{"pet-name": types.StringValue("fluffy")},
+					),
+				},
+			),
+		},
+	))
+	nestedUnknownObject := types.DynamicValue(types.ObjectValueMust(
+		map[string]attr.Type{
+			"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
+				"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
+					"pet-name": types.StringType,
+				}},
+			}},
+		},
+		map[string]attr.Value{
+			"pod": types.ObjectValueMust(
+				map[string]attr.Type{
+					"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
+						"pet-name": types.StringType,
+					}},
+				},
+				map[string]attr.Value{
+					"annotations": types.ObjectValueMust(
+						map[string]attr.Type{"pet-name": types.StringType},
+						map[string]attr.Value{"pet-name": types.StringUnknown()},
+					),
+				},
+			),
+		},
+	))
+	listWithUnknown := types.DynamicValue(types.ObjectValueMust(
+		map[string]attr.Type{
+			"items": types.ListType{ElemType: types.StringType},
+		},
+		map[string]attr.Value{
+			"items": types.ListValueMust(types.StringType, []attr.Value{
+				types.StringValue("known"),
+				types.StringUnknown(),
+			}),
+		},
+	))
+
+	tests := []struct {
+		name     string
+		input    types.Dynamic
+		expected bool
+	}{
+		{name: "null does not contain unknown", input: types.DynamicNull(), expected: false},
+		{name: "top-level unknown contains unknown", input: types.DynamicUnknown(), expected: true},
+		{name: "known nested object does not contain unknown", input: nestedKnownObject, expected: false},
+		{name: "nested object contains unknown", input: nestedUnknownObject, expected: true},
+		{name: "list contains unknown", input: listWithUnknown, expected: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, dynamicContainsUnknown(tc.input))
+		})
+	}
+}
+
+func TestPackageResource_ValidatePackageValuesConfig_DefersNestedUnknowns(t *testing.T) {
+	mockPackager := &MockPackager{}
+	model := NewTestPackageResourceModel(
+		WithValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{
+				"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
+					"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
+						"pet-name": types.StringType,
+					}},
+				}},
+			},
+			map[string]attr.Value{
+				"pod": types.ObjectValueMust(
+					map[string]attr.Type{
+						"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
+							"pet-name": types.StringType,
+						}},
+					},
+					map[string]attr.Value{
+						"annotations": types.ObjectValueMust(
+							map[string]attr.Type{"pet-name": types.StringType},
+							map[string]attr.Value{"pet-name": types.StringUnknown()},
+						),
+					},
+				),
+			},
+		))),
+	)
+	packageResource := NewPackageResource(nil, mockPackager, nil, nil).(*PackageResource)
+	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
+
+	packageResource.validatePackageValuesConfig(context.Background(), model, resp)
+
+	assert.False(t, resp.Diagnostics.HasError(), "expected nested unknown values to defer validation, got: %v", resp.Diagnostics.Errors())
+	// Source path validation requires loading the package metadata. Nested unknown values
+	// should skip that plan-time validation and wait until apply, when the values are known.
+	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+}
+
 func TestValidateNoValueConflicts(t *testing.T) {
 	tests := []struct {
 		name            string

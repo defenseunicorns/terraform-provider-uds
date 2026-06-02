@@ -1570,7 +1570,7 @@ func joinValuePath(prefix string, key string) string {
 }
 
 func (r *PackageResource) validatePackageValuesConfig(ctx context.Context, model PackageResourceModel, resp *resource.ModifyPlanResponse) {
-	if shouldDeferValuesValidation(model.Values) || shouldDeferValuesValidation(model.SensitiveValues) {
+	if dynamicContainsUnknown(model.Values) || dynamicContainsUnknown(model.SensitiveValues) {
 		return
 	}
 
@@ -1616,8 +1616,59 @@ func (r *PackageResource) validatePackageValuesConfig(ctx context.Context, model
 	}
 }
 
-func shouldDeferValuesValidation(value types.Dynamic) bool {
-	return value.IsUnknown() || value.IsUnderlyingValueUnknown()
+func dynamicContainsUnknown(value types.Dynamic) bool {
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return true
+	}
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return false
+	}
+
+	return attrValueContainsUnknown(value.UnderlyingValue())
+}
+
+func attrValueContainsUnknown(value attr.Value) bool {
+	if value == nil || value.IsNull() {
+		return false
+	}
+	if value.IsUnknown() {
+		return true
+	}
+
+	switch v := value.(type) {
+	case types.Dynamic:
+		return dynamicContainsUnknown(v)
+	case types.Map:
+		return collectionMapContainsUnknown(v.Elements())
+	case types.Object:
+		return collectionMapContainsUnknown(v.Attributes())
+	case types.List:
+		return collectionSliceContainsUnknown(v.Elements())
+	case types.Set:
+		return collectionSliceContainsUnknown(v.Elements())
+	case types.Tuple:
+		return collectionSliceContainsUnknown(v.Elements())
+	default:
+		return false
+	}
+}
+
+func collectionMapContainsUnknown(elements map[string]attr.Value) bool {
+	for _, value := range elements {
+		if attrValueContainsUnknown(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func collectionSliceContainsUnknown(elements []attr.Value) bool {
+	for _, value := range elements {
+		if attrValueContainsUnknown(value) {
+			return true
+		}
+	}
+	return false
 }
 
 func collectValuePaths(values map[string]any) []string {
