@@ -1216,6 +1216,23 @@ func TestPackageResource_Upsert_Values(t *testing.T) {
 			)),
 			expectedErrorMsg: "db.password",
 		},
+		{
+			name: "package with unexposed value path returns error",
+			values: types.DynamicValue(types.ObjectValueMust(
+				map[string]attr.Type{
+					"image": types.ObjectType{AttrTypes: map[string]attr.Type{
+						"tag": types.StringType,
+					}},
+				},
+				map[string]attr.Value{
+					"image": types.ObjectValueMust(
+						map[string]attr.Type{"tag": types.StringType},
+						map[string]attr.Value{"tag": types.StringValue("latest")},
+					),
+				},
+			)),
+			expectedErrorMsg: "image.tag",
+		},
 	}
 
 	for _, tc := range tests {
@@ -1224,6 +1241,16 @@ func TestPackageResource_Upsert_Values(t *testing.T) {
 			mockPackageComponentFilter := &MockPackageComponentFilter{}
 
 			validLoadPackageResult := newValidLoadPackageResult()
+			validLoadPackageResult.Layout.Pkg.Components[0].Charts = []v1alpha1.ZarfChart{
+				{
+					Name: "test-chart",
+					Values: []v1alpha1.ZarfChartValue{
+						{SourcePath: ".pod.replicaCount", TargetPath: ".pod.replicaCount"},
+						{SourcePath: ".logLevel", TargetPath: ".logLevel"},
+						{SourcePath: ".db", TargetPath: ".db"},
+					},
+				},
+			}
 			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
 				validLoadPackageResult.Layout,
 				validLoadPackageResult.Error,
@@ -1231,8 +1258,8 @@ func TestPackageResource_Upsert_Values(t *testing.T) {
 
 			if tc.expectedErrorMsg == "" {
 				mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
-				mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 			}
+			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 			testModel := NewTestPackageResourceModel(
@@ -4779,6 +4806,110 @@ func TestMergePackageValues(t *testing.T) {
 		},
 		"replicaCount": 2,
 	}, merged)
+}
+
+func TestCollectValuePaths(t *testing.T) {
+	paths := collectValuePaths(map[string]any{
+		"pod": map[string]any{
+			"replicaCount": int64(3),
+			"annotations": map[string]any{
+				"example.com/source": "terraform-provider-uds",
+			},
+			"empty": map[string]any{},
+		},
+		"logLevel": "info",
+	})
+
+	assert.ElementsMatch(t, []string{
+		"pod.replicaCount",
+		"pod.annotations.example.com/source",
+		"pod.empty",
+		"logLevel",
+	}, paths)
+}
+
+func TestIsValuePathExposed(t *testing.T) {
+	exposedPaths := []string{".pod.annotations", ".pod.replicaCount", ".logLevel"}
+
+	tests := []struct {
+		name        string
+		valuePath   string
+		exposedPath []string
+		expected    bool
+	}{
+		{
+			name:      "exact path is exposed",
+			valuePath: "pod.replicaCount",
+			expected:  true,
+		},
+		{
+			name:      "descendant path is exposed by map source path",
+			valuePath: "pod.annotations.example.com/source",
+			expected:  true,
+		},
+		{
+			name:      "unmapped sibling is not exposed",
+			valuePath: "pod.unmapped",
+			expected:  false,
+		},
+		{
+			name:        "root source path exposes all values",
+			valuePath:   "anything.nested",
+			exposedPath: []string{"."},
+			expected:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			paths := exposedPaths
+			if tc.exposedPath != nil {
+				paths = tc.exposedPath
+			}
+			assert.Equal(t, tc.expected, isValuePathExposed(tc.valuePath, paths))
+		})
+	}
+}
+
+func TestPackageResource_GetPlannedComponentValueSourcePaths(t *testing.T) {
+	pkgLayout := &layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Components: []v1alpha1.ZarfComponent{
+				{
+					Name:     "required-component",
+					Required: helpers.BoolPtr(true),
+					Charts: []v1alpha1.ZarfChart{
+						{
+							Name: "required-chart",
+							Values: []v1alpha1.ZarfChartValue{
+								{SourcePath: ".required.value", TargetPath: ".required.value"},
+							},
+						},
+					},
+				},
+				{
+					Name:     "optional-component",
+					Required: helpers.BoolPtr(false),
+					Charts: []v1alpha1.ZarfChart{
+						{
+							Name: "optional-chart",
+							Values: []v1alpha1.ZarfChartValue{
+								{SourcePath: ".optional.value", TargetPath: ".optional.value"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	packageResource := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+	model := NewTestPackageResourceModel()
+
+	paths, err := packageResource.getPlannedComponentValueSourcePaths(model, pkgLayout)
+
+	assert.NoError(t, err)
+	assert.ElementsMatch(t, []string{".required.value"}, paths)
 }
 
 func TestBuildVerifyBlobOptions(t *testing.T) {

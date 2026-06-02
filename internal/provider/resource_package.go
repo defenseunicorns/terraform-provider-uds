@@ -875,6 +875,11 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		}
 	}
 
+	r.validatePackageValuesConfig(ctx, plan, resp)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
@@ -1214,6 +1219,9 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 	deployValues, err := mergePackageValues(values, sensitiveValues)
 	if err != nil {
+		return plan, err
+	}
+	if err := r.validatePackageValuesAgainstSourcePaths(plan, pkgLayout, deployValues); err != nil {
 		return plan, err
 	}
 
@@ -1559,6 +1567,136 @@ func joinValuePath(prefix string, key string) string {
 		return key
 	}
 	return prefix + "." + key
+}
+
+func (r *PackageResource) validatePackageValuesConfig(ctx context.Context, model PackageResourceModel, resp *resource.ModifyPlanResponse) {
+	if shouldDeferValuesValidation(model.Values) || shouldDeferValuesValidation(model.SensitiveValues) {
+		return
+	}
+
+	values, valuesConfigured, err := dynamicToValues(ctx, "values", model.Values)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
+		return
+	}
+	sensitiveValues, sensitiveValuesConfigured, err := dynamicToValues(ctx, "sensitive_values", model.SensitiveValues)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
+		return
+	}
+	if !valuesConfigured && !sensitiveValuesConfigured {
+		return
+	}
+
+	mergedValues, err := mergePackageValues(values, sensitiveValues)
+	if err != nil {
+		resp.Diagnostics.AddError("Conflicting package values", err.Error())
+		return
+	}
+	valuePaths := collectValuePaths(map[string]any(mergedValues))
+	if len(valuePaths) == 0 {
+		return
+	}
+
+	pkgLayout, err := r.getPackageLayoutFromSource(ctx, model)
+	if err != nil {
+		// Package metadata may be unavailable during planning, especially for remote sources.
+		// Defer this validation to apply where package loading is already required.
+		tflog.Debug(ctx, "deferred package values validation because package could not be loaded", map[string]any{"error": err.Error()})
+		return
+	}
+	defer func() {
+		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
+			tflog.Warn(ctx, "failed to clean up package layout after values validation", map[string]any{"error": cleanupErr.Error()})
+		}
+	}()
+
+	if err := r.validatePackageValuesAgainstSourcePaths(model, pkgLayout, mergedValues); err != nil {
+		resp.Diagnostics.AddError("Invalid package value", err.Error())
+	}
+}
+
+func shouldDeferValuesValidation(value types.Dynamic) bool {
+	return value.IsUnknown() || value.IsUnderlyingValueUnknown()
+}
+
+func collectValuePaths(values map[string]any) []string {
+	paths := []string{}
+	collectValuePathsAtPath(values, "", &paths)
+	return paths
+}
+
+func collectValuePathsAtPath(values map[string]any, prefix string, paths *[]string) {
+	for key, value := range values {
+		currentPath := joinValuePath(prefix, key)
+		valueMap, ok := value.(map[string]any)
+		if !ok {
+			*paths = append(*paths, currentPath)
+			continue
+		}
+		if len(valueMap) == 0 {
+			*paths = append(*paths, currentPath)
+			continue
+		}
+		collectValuePathsAtPath(valueMap, currentPath, paths)
+	}
+}
+
+func (r *PackageResource) getPlannedComponentValueSourcePaths(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) ([]string, error) {
+	_, optionalComponents, err := getRequiredAndOptionalPackageComponentsNames(model, pkgLayout)
+	if err != nil {
+		return []string{}, err
+	}
+
+	filter := r.packageFilter.ForDeploy(optionalComponents)
+	components, err := filter.Apply(pkgLayout.Pkg)
+	if err != nil {
+		return []string{}, err
+	}
+
+	paths := []string{}
+	for _, component := range components {
+		for _, chart := range component.Charts {
+			for _, chartValue := range chart.Values {
+				paths = append(paths, chartValue.SourcePath)
+			}
+		}
+	}
+	return paths, nil
+}
+
+func (r *PackageResource) validatePackageValuesAgainstSourcePaths(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, values zarfValue.Values) error {
+	valuePaths := collectValuePaths(map[string]any(values))
+	if len(valuePaths) == 0 {
+		return nil
+	}
+
+	exposedPaths, err := r.getPlannedComponentValueSourcePaths(model, pkgLayout)
+	if err != nil {
+		return err
+	}
+
+	var validationErrors []error
+	for _, valuePath := range valuePaths {
+		if !isValuePathExposed(valuePath, exposedPaths) {
+			validationErrors = append(validationErrors, fmt.Errorf("value path %q does not match any chart value sourcePath exposed by the package components planned for deployment", valuePath))
+		}
+	}
+
+	return errors.Join(validationErrors...)
+}
+
+func isValuePathExposed(valuePath string, exposedPaths []string) bool {
+	for _, exposedPath := range exposedPaths {
+		normalized := strings.TrimPrefix(exposedPath, ".")
+		if normalized == "" {
+			return true
+		}
+		if valuePath == normalized || strings.HasPrefix(valuePath, normalized+".") {
+			return true
+		}
+	}
+	return false
 }
 
 // getMissingComponents compares two Package plans and returns a list of components that was specified in the
