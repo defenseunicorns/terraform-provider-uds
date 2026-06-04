@@ -21,6 +21,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -164,6 +165,15 @@ var signatureVerificationAttrTypes = map[string]attr.Type{
 	"keyless":    types.ObjectType{AttrTypes: keylessVerificationAttrTypes},
 }
 
+var defaultSignatureVerification = types.ObjectValueMust(
+	signatureVerificationAttrTypes,
+	map[string]attr.Value{
+		"verify":     types.BoolValue(true),
+		"public_key": types.StringNull(),
+		"keyless":    types.ObjectNull(keylessVerificationAttrTypes),
+	},
+)
+
 // Metadata sets the resource type name.
 func (r *PackageResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_package"
@@ -205,6 +215,8 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"signature_verification": schema.SingleNestedAttribute{
 				MarkdownDescription: "Signature verification configuration. Omit to use defaults (verification enabled, no key).",
 				Optional:            true,
+				Computed:            true,
+				Default:             objectdefault.StaticValue(defaultSignatureVerification),
 				Attributes: map[string]schema.Attribute{
 					"verify": schema.BoolAttribute{
 						MarkdownDescription: "When true, verify the signature of a signed UDS package. When false, skip package signature verification.",
@@ -843,10 +855,10 @@ func handleVerifyResult(ctx context.Context, err error, isSigned bool, enforce b
 	return nil
 }
 
-// getEffectiveSignatureVerification determines whether to verify package signatures based on the
 // getEffectiveSignatureVerification returns whether signature verification is enforced.
 // Absent signature_verification block defaults to enforced/enabled.
 func getEffectiveSignatureVerification(ctx context.Context, model PackageResourceModel) bool {
+	// schema default ensures this is never null in practice; guard for safety (e.g. import, tests)
 	if model.SignatureVerification.IsNull() || model.SignatureVerification.IsUnknown() {
 		return true
 	}
@@ -1510,6 +1522,7 @@ func validateSignatureVerificationAttributes(ctx context.Context, model PackageR
 // Writes any inline key or trusted-root content to files under tmpDir (caller owns cleanup).
 // Returns nil when no verification material is configured.
 func buildVerifyBlobOptions(ctx context.Context, model PackageResourceModel, tmpDir string) (*zarfSigning.VerifyBlobOptions, error) {
+	// schema default ensures this is never null in practice; guard for safety (e.g. import, tests)
 	if model.SignatureVerification.IsNull() || model.SignatureVerification.IsUnknown() {
 		return nil, nil
 	}

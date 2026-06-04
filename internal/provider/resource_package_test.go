@@ -18,7 +18,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/defaults"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
@@ -110,9 +113,13 @@ func WithArchitecture(arch string) PackageResourceModelDataOption {
 
 // newTestSigVerification builds a SignatureVerificationModel for use in tests.
 func newTestSigVerification(enabled bool, publicKey string, keyless *KeylessVerificationModel) SignatureVerificationModel {
+	pubKeyVal := types.StringNull()
+	if publicKey != "" {
+		pubKeyVal = types.StringValue(publicKey)
+	}
 	sig := SignatureVerificationModel{
 		Verify:    types.BoolValue(enabled),
-		PublicKey: types.StringValue(publicKey),
+		PublicKey: pubKeyVal,
 		Keyless:   types.ObjectNull(keylessVerificationAttrTypes),
 	}
 	if keyless != nil {
@@ -3767,6 +3774,32 @@ func TestPackageResource_ValidateConfig_SignatureVerification(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPackageResource_Schema_SignatureVerificationDefault(t *testing.T) {
+	packageResource := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+	resp := &resource.SchemaResponse{}
+
+	packageResource.Schema(context.Background(), resource.SchemaRequest{}, resp)
+	assert.False(t, resp.Diagnostics.HasError(), "unexpected schema diagnostics: %v", resp.Diagnostics.Errors())
+
+	signatureVerificationAttr, ok := resp.Schema.Attributes["signature_verification"].(schema.SingleNestedAttribute)
+	assert.True(t, ok, "signature_verification should be a SingleNestedAttribute")
+	assert.True(t, signatureVerificationAttr.Optional)
+	assert.True(t, signatureVerificationAttr.Computed)
+	assert.NotNil(t, signatureVerificationAttr.Default)
+
+	defaultResp := &defaults.ObjectResponse{}
+	signatureVerificationAttr.Default.DefaultObject(context.Background(), defaults.ObjectRequest{}, defaultResp)
+	assert.False(t, defaultResp.Diagnostics.HasError(), "unexpected default diagnostics: %v", defaultResp.Diagnostics.Errors())
+	assert.True(t, defaultSignatureVerification.Equal(defaultResp.PlanValue))
+
+	var defaultModel SignatureVerificationModel
+	diags := defaultResp.PlanValue.As(context.Background(), &defaultModel, basetypes.ObjectAsOptions{})
+	assert.False(t, diags.HasError(), "unexpected default conversion diagnostics: %v", diags.Errors())
+	assert.True(t, defaultModel.Verify.ValueBool())
+	assert.True(t, defaultModel.PublicKey.IsNull())
+	assert.True(t, defaultModel.Keyless.IsNull())
 }
 
 // WithKeylessVerification sets signature_verification.keyless with exact identity and issuer.
