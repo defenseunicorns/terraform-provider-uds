@@ -333,7 +333,6 @@ func (p *udsProvider) Resources(context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		// Pass the packager to NewPackageResource
 		func() resource.Resource { return NewPackageResource(nil, nil, nil, nil) },
-		NewBundleMetadataResource,
 	}
 }
 

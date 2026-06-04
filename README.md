@@ -1,6 +1,6 @@
-# OpenTofu Provider for UDS (Unicorn Delivery Service)
+# OpenTofu Provider for UDS (Unified Defense Stack)
 
-The UDS (Unicorn Delivery Service) OpenTofu Provider enables declarative infrastructure-as-code capabilities to manage deployment of UDS packages and bundles using OpenTofu.
+The UDS (Unified Defense Stack) OpenTofu Provider enables declarative infrastructure-as-code capabilities to manage deployment of UDS zarf packages using OpenTofu.
 
 ## Quick Start
 
@@ -22,7 +22,6 @@ tofu apply
 - **Package Variables**: Set both regular and sensitive variables for packages
 - **Multi-Architecture Support**: Deploy packages for `amd64` or `arm64` architectures
 - **Registry Flexibility**: Work with public or private OCI registries, including insecure registries
-- **Bundle Metadata**: Track and manage UDS Bundle metadata including version and architecture
 
 ## Requirements
 
@@ -145,7 +144,6 @@ For detailed documentation on the provider, resources and their attributes, see:
 
 - **[Provider Configuration](./docs/index.md)** - Configure the UDS provider with architecture defaults and registry options
 - **[`uds_package` Resource](./docs/resources/package.md)** - Deploy and manage UDS packages with full schema reference
-- **[`uds_bundle_metadata` Resource](./docs/resources/bundle_metadata.md)** - Retrieve metadata from UDS bundles
 - **[Examples](./examples)** - Working examples
 
 ## Development
