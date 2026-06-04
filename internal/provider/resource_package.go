@@ -1749,6 +1749,9 @@ func (r *PackageResource) planTimeSignatureVerification(ctx context.Context, pla
 	if !getEffectiveSignatureVerification(ctx, plan) {
 		return nil
 	}
-	_, err := r.getPackageLayoutFromSource(ctx, plan)
+	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
+	if pkgLayout != nil {
+		defer pkgLayout.Cleanup()
+	}
 	return err
 }
