@@ -21,16 +21,17 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"gopkg.in/yaml.v2"
 
 	udsCluster "github.com/defenseunicorns/terraform-provider-uds/internal/cluster"
-	"github.com/defenseunicorns/terraform-provider-uds/internal/fileutil"
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 
@@ -39,8 +40,8 @@ import (
 	zarfFilters "github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfLayout "github.com/zarf-dev/zarf/src/pkg/packager/layout"
+	zarfSigning "github.com/zarf-dev/zarf/src/pkg/signing"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
-	zarfUtils "github.com/zarf-dev/zarf/src/pkg/utils"
 	zarfTypes "github.com/zarf-dev/zarf/src/types"
 )
 
@@ -80,14 +81,12 @@ func NewPackageResource(providerConfig *udsProviderConfig, packager udsPackager.
 
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
-	ID                      types.String `tfsdk:"id"`
-	Source                  types.String `tfsdk:"source"`
-	Architecture            types.String `tfsdk:"architecture"`
-	Timeout                 types.String `tfsdk:"timeout"`
-	PublicKey               types.String `tfsdk:"public_key"`
-	SkipSignatureValidation types.Bool   `tfsdk:"skip_signature_validation"`
-	VerifySignature         types.Bool   `tfsdk:"verify_signature"`
-	Namespace               types.String `tfsdk:"namespace"`
+	ID                    types.String `tfsdk:"id"`
+	Source                types.String `tfsdk:"source"`
+	Architecture          types.String `tfsdk:"architecture"`
+	Timeout               types.String `tfsdk:"timeout"`
+	SignatureVerification types.Object `tfsdk:"signature_verification"`
+	Namespace             types.String `tfsdk:"namespace"`
 
 	Components    types.Set `tfsdk:"component"`      // Set of ComponentModel objects
 	Vars          types.Set `tfsdk:"vars"`           // Set of VariableModel objects
@@ -132,6 +131,49 @@ type VariableModel struct {
 	Value types.String `tfsdk:"value"`
 }
 
+// KeylessVerificationModel holds Sigstore/OIDC keyless signature verification configuration.
+type KeylessVerificationModel struct {
+	CertificateIdentity         types.String `tfsdk:"certificate_identity"`
+	CertificateIdentityRegexp   types.String `tfsdk:"certificate_identity_regexp"`
+	CertificateOIDCIssuer       types.String `tfsdk:"certificate_oidc_issuer"`
+	CertificateOIDCIssuerRegexp types.String `tfsdk:"certificate_oidc_issuer_regexp"`
+	TrustedRoot                 types.String `tfsdk:"trusted_root"`
+	InsecureIgnoreTlog          types.Bool   `tfsdk:"insecure_ignore_tlog"`
+	UseSignedTimestamps         types.Bool   `tfsdk:"use_signed_timestamps"`
+}
+
+var keylessVerificationAttrTypes = map[string]attr.Type{
+	"certificate_identity":           types.StringType,
+	"certificate_identity_regexp":    types.StringType,
+	"certificate_oidc_issuer":        types.StringType,
+	"certificate_oidc_issuer_regexp": types.StringType,
+	"trusted_root":                   types.StringType,
+	"insecure_ignore_tlog":           types.BoolType,
+	"use_signed_timestamps":          types.BoolType,
+}
+
+// SignatureVerificationModel holds all signature verification configuration for a UDS package.
+type SignatureVerificationModel struct {
+	Verify    types.Bool   `tfsdk:"verify"`
+	PublicKey types.String `tfsdk:"public_key"`
+	Keyless   types.Object `tfsdk:"keyless"`
+}
+
+var signatureVerificationAttrTypes = map[string]attr.Type{
+	"verify":     types.BoolType,
+	"public_key": types.StringType,
+	"keyless":    types.ObjectType{AttrTypes: keylessVerificationAttrTypes},
+}
+
+var defaultSignatureVerification = types.ObjectValueMust(
+	signatureVerificationAttrTypes,
+	map[string]attr.Value{
+		"verify":     types.BoolValue(true),
+		"public_key": types.StringNull(),
+		"keyless":    types.ObjectNull(keylessVerificationAttrTypes),
+	},
+)
+
 // Metadata sets the resource type name.
 func (r *PackageResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_package"
@@ -170,23 +212,61 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				MarkdownDescription: "Version of the deployed UDS package.",
 				Computed:            true,
 			},
-			"public_key": schema.StringAttribute{
-				MarkdownDescription: "Raw public key value to validate against a signed UDS package.",
+			"signature_verification": schema.SingleNestedAttribute{
+				MarkdownDescription: "Signature verification configuration. Omit to use defaults (verification enabled, no key).",
 				Optional:            true,
-			},
-			// TODO: Remove skip_signature_validation attribute in subsequent release
-			"skip_signature_validation": schema.BoolAttribute{
-				MarkdownDescription: "Skip validating the signature of a signed UDS package.",
-				DeprecationMessage:  "This attribute is deprecated. Use `verify_signature` instead. The `skip_signature_validation` attribute will be removed in a future version.",
 				Computed:            true,
-				Optional:            true,
-				Default:             booldefault.StaticBool(false),
-			},
-			"verify_signature": schema.BoolAttribute{
-				MarkdownDescription: "Verify the signature of a UDS package. When enabled, a signed package with an invalid or missing signature will fail to deploy. When disabled, the package will continue to deploy with signature verification issues logged as warnings.",
-				Computed:            true,
-				Optional:            true,
-				Default:             booldefault.StaticBool(true),
+				Default:             objectdefault.StaticValue(defaultSignatureVerification),
+				Attributes: map[string]schema.Attribute{
+					"verify": schema.BoolAttribute{
+						MarkdownDescription: "When true, verify the signature of a signed UDS package. When false, skip package signature verification.",
+						Optional:            true,
+						Computed:            true,
+						Default:             booldefault.StaticBool(true),
+					},
+					"public_key": schema.StringAttribute{
+						MarkdownDescription: "Raw public key value to validate against a key-signed UDS package. Mutually exclusive with `keyless`.",
+						Optional:            true,
+					},
+					"keyless": schema.SingleNestedAttribute{
+						MarkdownDescription: "Keyless (Sigstore/OIDC) signature verification configuration. Mutually exclusive with `public_key`.",
+						Optional:            true,
+						Attributes: map[string]schema.Attribute{
+							"certificate_identity": schema.StringAttribute{
+								MarkdownDescription: "Required identity claim in the signing certificate. Mutually exclusive with `certificate_identity_regexp`.",
+								Optional:            true,
+							},
+							"certificate_identity_regexp": schema.StringAttribute{
+								MarkdownDescription: "Regex-based alternative to `certificateIdentity` for pattern matching. Mutually exclusive with `certificate_identity`.",
+								Optional:            true,
+							},
+							"certificate_oidc_issuer": schema.StringAttribute{
+								MarkdownDescription: "Required OIDC issuer claim in the signing certificate. Mutually exclusive with `certificate_oidc_issuer_regexp`.",
+								Optional:            true,
+							},
+							"certificate_oidc_issuer_regexp": schema.StringAttribute{
+								MarkdownDescription: "Regex-based variant of `certificateOIDCIssuer`. Mutually exclusive with `certificate_oidc_issuer`.",
+								Optional:            true,
+							},
+							"trusted_root": schema.StringAttribute{
+								MarkdownDescription: "Sigstore TrustedRoot JSON content for keyless signature verification. Omit to use Zarf's embedded TrustedRoot.",
+								Optional:            true,
+							},
+							"insecure_ignore_tlog": schema.BoolAttribute{
+								MarkdownDescription: "Skip Rekor transparency log inclusion verification. Set to true only for air-gapped or private Sigstore infrastructure.",
+								Optional:            true,
+								Computed:            true,
+								Default:             booldefault.StaticBool(false),
+							},
+							"use_signed_timestamps": schema.BoolAttribute{
+								MarkdownDescription: "Verify RFC3161 signed timestamps in the Sigstore verification bundle. Auto-enabled when the bundle contains TSA timestamp data.",
+								Optional:            true,
+								Computed:            true,
+								Default:             booldefault.StaticBool(false),
+							},
+						},
+					},
+				},
 			},
 			"timeout": schema.StringAttribute{
 				MarkdownDescription: "Timeout for the deploy operation.",
@@ -398,7 +478,7 @@ func (r *PackageResource) ValidateConfig(ctx context.Context, req resource.Valid
 		return
 	}
 	validateUniqueVarNames(model, resp)
-	validateSignatureVerificationAttributes(model, resp)
+	validateSignatureVerificationAttributes(ctx, model, resp)
 }
 
 // Configure configures the resource with provider data.
@@ -604,19 +684,24 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 
-	publicKeyPath, err := getTempPublicKeyPath(data.PublicKey.ValueString())
+	tmpDir, err := os.MkdirTemp("", "uds-package-verify-*")
 	if err != nil {
 		resp.Diagnostics.AddError(
-			"Public key path error",
-			"Could not get/create public key path: "+err.Error(),
+			"Temp dir error",
+			"Could not create temp dir for package verification: "+err.Error(),
 		)
 		return
 	}
-	defer func() {
-		if publicKeyPath != "" {
-			os.Remove(publicKeyPath)
-		}
-	}()
+	defer os.RemoveAll(tmpDir)
+
+	verifyBlobOpts, err := buildVerifyBlobOptions(ctx, data, tmpDir)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Verification config error",
+			"Could not build verification options: "+err.Error(),
+		)
+		return
+	}
 
 	// TODO(erickson): Do we need configurable remote options?
 	remoteOpts := zarfTypes.RemoteOptions{
@@ -627,7 +712,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	loadOpts := zarfPackager.LoadOptions{
 		Filter:               r.packageFilter.ForRemove([]string{}),
 		Architecture:         getArchitecture(data, *r.providerConfig),
-		PublicKeyPath:        publicKeyPath,
+		VerifyBlobOptions:    verifyBlobOpts,
 		VerificationStrategy: layout.VerifyNever,
 		RemoteOptions:        remoteOpts,
 		CachePath:            r.providerConfig.ZarfCachePath,
@@ -690,24 +775,18 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		plan.Architecture = types.StringValue(defaultArch)
 	}
 
-	// Migrate signature verification attributes
-	syncSignatureVerificationAttributes(ctx, &config, &plan)
+	if r.providerConfig == nil || r.providerConfig.VerifyPackageSignaturesOnPlan {
+		if err := r.planTimeSignatureVerification(ctx, plan); err != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("signature_verification"),
+				"Package signature verification failed",
+				err.Error(),
+			)
+			return
+		}
+	}
 
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
-}
-
-// syncSignatureVerificationAttributes syncs skip_signature_validation and verify_signature attributes
-// to ensure they are consistent in the plan.
-func syncSignatureVerificationAttributes(ctx context.Context, config *PackageResourceModel, plan *PackageResourceModel) {
-	effective := getEffectiveSignatureVerification(*config)
-
-	plan.VerifySignature = types.BoolValue(effective)
-	plan.SkipSignatureValidation = types.BoolValue(!effective)
-
-	tflog.Debug(ctx, "Synchronized signature verification attributes", map[string]any{
-		"verify_signature":          plan.VerifySignature.ValueBool(),
-		"skip_signature_validation": plan.SkipSignatureValidation.ValueBool(),
-	})
 }
 
 // ImportState imports the resource state from an external system.
@@ -728,22 +807,22 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 		return nil, err
 	}
 
-	// generate a temporary public key file if needed
-	publicKeyPath, err := getTempPublicKeyPath(model.PublicKey.ValueString())
+	tmpDir, err := os.MkdirTemp("", "uds-package-verify-*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp dir for package verification: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	verifyBlobOpts, err := buildVerifyBlobOptions(ctx, model, tmpDir)
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		if publicKeyPath != "" {
-			os.Remove(publicKeyPath)
-		}
-	}()
 
 	// TODO(erickson): add support for Shasum, CachePath, OCIConcurrency?
 	loadOpt := zarfPackager.LoadOptions{
 		Filter:               zarfFilters.Empty(),
 		Architecture:         getArchitecture(model, *r.providerConfig),
-		PublicKeyPath:        publicKeyPath,
+		VerifyBlobOptions:    verifyBlobOpts,
 		VerificationStrategy: layout.VerifyNever,
 		RemoteOptions:        r.getRemoteOptions(),
 		CachePath:            r.providerConfig.ZarfCachePath,
@@ -755,38 +834,53 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 	}
 
 	// Verify package signature
-	enforceSignatureVerification := getEffectiveSignatureVerification(model)
-	verifyOpts := zarfUtils.DefaultVerifyBlobOptions()
-	verifyOpts.KeyRef = publicKeyPath
-	err = pkgLayout.VerifyPackageSignature(ctx, verifyOpts)
-	if err != nil {
-		// Error only if package is signed and enforcing signature verification
-		if enforceSignatureVerification && pkgLayout.IsSigned() {
-			return nil, err
-		}
-
-		// Only warn if package is unsigned or not enforcing signature verification
-		tflog.Warn(ctx, "package signature could not be verified", map[string]any{"error": err.Error()})
+	enforceSignatureVerification := getEffectiveSignatureVerification(ctx, model)
+	verifyOpts := zarfSigning.DefaultVerifyBlobOptions()
+	if verifyBlobOpts != nil {
+		verifyOpts = *verifyBlobOpts
+	}
+	verifyErr := pkgLayout.VerifyPackageSignature(ctx, verifyOpts)
+	if err := handleVerifyResult(ctx, verifyErr, pkgLayout.IsSigned(), enforceSignatureVerification); err != nil {
+		return nil, err
 	}
 
 	return pkgLayout, nil
 }
 
-// getEffectiveSignatureVerification determines whether to verify package signatures based on the
-// verify_signature and (deprecated) skip_signature_validation attributes.
-func getEffectiveSignatureVerification(model PackageResourceModel) bool {
-	// Use verify_signature if set and skip_signature_validation not set
-	if !model.VerifySignature.IsNull() && !model.VerifySignature.IsUnknown() {
-		return model.VerifySignature.ValueBool()
+// handleVerifyResult interprets the error from VerifyPackageSignature and either
+// returns an error (to block deploy) or emits a contextual warning and returns nil.
+func handleVerifyResult(ctx context.Context, err error, isSigned bool, enforce bool) error {
+	if err == nil {
+		return nil
 	}
-
-	// Use skip_signature_validation if set and verify_signature not set
-	if !model.SkipSignatureValidation.IsNull() && !model.SkipSignatureValidation.IsUnknown() {
-		return !model.SkipSignatureValidation.ValueBool()
+	if !isSigned {
+		tflog.Warn(ctx, "package is unsigned; skipping signature verification",
+			map[string]any{"error": err.Error()})
+		return nil
 	}
+	if enforce {
+		return err
+	}
+	tflog.Warn(ctx, "signature verification failed; proceeding because verify=false",
+		map[string]any{"error": err.Error()})
+	return nil
+}
 
-	// Verify by default
-	return true
+// getEffectiveSignatureVerification returns whether signature verification is enforced.
+// Absent signature_verification block defaults to enforced/enabled.
+func getEffectiveSignatureVerification(ctx context.Context, model PackageResourceModel) bool {
+	// schema default ensures this is never null in practice; guard for safety (e.g. import, tests)
+	if model.SignatureVerification.IsNull() || model.SignatureVerification.IsUnknown() {
+		return true
+	}
+	var sig SignatureVerificationModel
+	if diags := model.SignatureVerification.As(ctx, &sig, basetypes.ObjectAsOptions{}); diags.HasError() {
+		return true
+	}
+	if sig.Verify.IsNull() || sig.Verify.IsUnknown() {
+		return true
+	}
+	return sig.Verify.ValueBool()
 }
 
 func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string, resp *resource.UpdateResponse) {
@@ -1382,41 +1476,109 @@ func validateUniqueVarNames(model PackageResourceModel, resp *resource.ValidateC
 	}
 }
 
-// validateSignatureVerificationAttributes validates that verify_signature and (deprecated) skip_signature_validation
-// don't have conflicting values when both are explicitly set.
-func validateSignatureVerificationAttributes(model PackageResourceModel, resp *resource.ValidateConfigResponse) {
-	// Only need to validate if both attributes are explicitly set
-	if model.SkipSignatureValidation.IsNull() || model.SkipSignatureValidation.IsUnknown() || model.VerifySignature.IsNull() || model.VerifySignature.IsUnknown() {
+// validateSignatureVerificationAttributes validates the signature_verification block.
+func validateSignatureVerificationAttributes(ctx context.Context, model PackageResourceModel, resp *resource.ValidateConfigResponse) {
+	if model.SignatureVerification.IsNull() || model.SignatureVerification.IsUnknown() {
 		return
 	}
 
-	// Conflict when both are true or both are false
-	skip := model.SkipSignatureValidation.ValueBool()
-	verify := model.VerifySignature.ValueBool()
-	if skip == verify {
+	var sig SignatureVerificationModel
+	resp.Diagnostics.Append(model.SignatureVerification.As(ctx, &sig, basetypes.ObjectAsOptions{})...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if sig.Keyless.IsNull() || sig.Keyless.IsUnknown() {
+		return
+	}
+
+	if !sig.PublicKey.IsNull() && !sig.PublicKey.IsUnknown() && sig.PublicKey.ValueString() != "" {
 		resp.Diagnostics.AddError(
 			"Conflicting signature verification configuration",
-			fmt.Sprintf(
-				"The attributes 'skip_signature_validation=%t' and 'verify_signature=%t' have conflicting values. "+
-					"Please use only 'verify_signature' (recommended) or ensure both attributes are consistent. "+
-					"Note: 'skip_signature_validation' is deprecated and will be removed in a future version.",
-				skip, verify,
-			),
+			"Cannot set both `public_key` and `keyless`. Specify one or the other.",
 		)
+		return
+	}
+
+	var keyless KeylessVerificationModel
+	resp.Diagnostics.Append(sig.Keyless.As(ctx, &keyless, basetypes.ObjectAsOptions{})...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	hasIdentity := !keyless.CertificateIdentity.IsNull() && keyless.CertificateIdentity.ValueString() != ""
+	hasIdentityRegexp := !keyless.CertificateIdentityRegexp.IsNull() && keyless.CertificateIdentityRegexp.ValueString() != ""
+	hasIssuer := !keyless.CertificateOIDCIssuer.IsNull() && keyless.CertificateOIDCIssuer.ValueString() != ""
+	hasIssuerRegexp := !keyless.CertificateOIDCIssuerRegexp.IsNull() && keyless.CertificateOIDCIssuerRegexp.ValueString() != ""
+
+	if hasIdentity && hasIdentityRegexp {
+		resp.Diagnostics.AddError("Conflicting keyless verification configuration",
+			"`certificate_identity` and `certificate_identity_regexp` are mutually exclusive.")
+	}
+	if hasIssuer && hasIssuerRegexp {
+		resp.Diagnostics.AddError("Conflicting keyless verification configuration",
+			"`certificate_oidc_issuer` and `certificate_oidc_issuer_regexp` are mutually exclusive.")
+	}
+	if !hasIdentity && !hasIdentityRegexp {
+		resp.Diagnostics.AddError("Invalid keyless verification configuration",
+			"`keyless` requires `certificate_identity` or `certificate_identity_regexp`.")
+	}
+	if !hasIssuer && !hasIssuerRegexp {
+		resp.Diagnostics.AddError("Invalid keyless verification configuration",
+			"`keyless` requires `certificate_oidc_issuer` or `certificate_oidc_issuer_regexp`.")
 	}
 }
 
-func getTempPublicKeyPath(publicKey string) (string, error) {
-	if publicKey == "" {
-		return "", nil
+// buildVerifyBlobOptions constructs signing.VerifyBlobOptions from the model.
+// Writes any inline key or trusted-root content to files under tmpDir (caller owns cleanup).
+// Returns nil when no verification material is configured.
+func buildVerifyBlobOptions(ctx context.Context, model PackageResourceModel, tmpDir string) (*zarfSigning.VerifyBlobOptions, error) {
+	// schema default ensures this is never null in practice; guard for safety (e.g. import, tests)
+	if model.SignatureVerification.IsNull() || model.SignatureVerification.IsUnknown() {
+		return nil, nil
 	}
 
-	publicKeyPath, err := fileutil.CreateTempPublicKeyFile(publicKey)
-	if err != nil {
-		return "", err
+	var sig SignatureVerificationModel
+	if diags := model.SignatureVerification.As(ctx, &sig, basetypes.ObjectAsOptions{}); diags.HasError() {
+		return nil, fmt.Errorf("error reading signature_verification config")
 	}
 
-	return publicKeyPath, nil
+	if !sig.PublicKey.IsNull() && !sig.PublicKey.IsUnknown() && sig.PublicKey.ValueString() != "" {
+		keyPath := filepath.Join(tmpDir, "key.pub")
+		if err := os.WriteFile(keyPath, []byte(sig.PublicKey.ValueString()), 0600); err != nil {
+			return nil, fmt.Errorf("failed to write public key file: %w", err)
+		}
+		opts := zarfSigning.DefaultVerifyBlobOptions()
+		opts.Key = keyPath
+		return &opts, nil
+	}
+
+	if !sig.Keyless.IsNull() && !sig.Keyless.IsUnknown() {
+		var keyless KeylessVerificationModel
+		if diags := sig.Keyless.As(ctx, &keyless, basetypes.ObjectAsOptions{}); diags.HasError() {
+			return nil, fmt.Errorf("error reading keyless verification config")
+		}
+
+		opts := zarfSigning.DefaultVerifyBlobOptions()
+		opts.CertVerify.CertIdentity = keyless.CertificateIdentity.ValueString()
+		opts.CertVerify.CertIdentityRegexp = keyless.CertificateIdentityRegexp.ValueString()
+		opts.CertVerify.CertOidcIssuer = keyless.CertificateOIDCIssuer.ValueString()
+		opts.CertVerify.CertOidcIssuerRegexp = keyless.CertificateOIDCIssuerRegexp.ValueString()
+		opts.CommonVerifyOptions.IgnoreTlog = keyless.InsecureIgnoreTlog.ValueBool()
+		opts.CommonVerifyOptions.UseSignedTimestamps = keyless.UseSignedTimestamps.ValueBool()
+
+		if !keyless.TrustedRoot.IsNull() && !keyless.TrustedRoot.IsUnknown() && keyless.TrustedRoot.ValueString() != "" {
+			rootPath := filepath.Join(tmpDir, "trusted-root.json")
+			if err := os.WriteFile(rootPath, []byte(keyless.TrustedRoot.ValueString()), 0600); err != nil {
+				return nil, fmt.Errorf("failed to write trusted root file: %w", err)
+			}
+			opts.CommonVerifyOptions.TrustedRootPath = rootPath
+		}
+
+		return &opts, nil
+	}
+
+	return nil, nil
 }
 
 func buildSetVariableMap(model PackageResourceModel) map[string]string {
@@ -1573,4 +1735,23 @@ func emptyConnectStringSet() types.Set {
 		},
 		[]attr.Value{}, // empty slice
 	)
+}
+
+// planTimeSignatureVerification loads the package and verifies its signature at plan time.
+// Skipped when source is unknown, verification is disabled, or resource is unconfigured.
+func (r *PackageResource) planTimeSignatureVerification(ctx context.Context, plan PackageResourceModel) error {
+	if plan.Source.IsUnknown() || plan.Source.IsNull() {
+		return nil
+	}
+	if r.packager == nil || r.providerConfig == nil {
+		return nil
+	}
+	if !getEffectiveSignatureVerification(ctx, plan) {
+		return nil
+	}
+	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
+	if pkgLayout != nil {
+		defer pkgLayout.Cleanup()
+	}
+	return err
 }
