@@ -787,22 +787,6 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
-// planTimeSignatureVerification loads the package and verifies its signature at plan time.
-// Skipped when source is unknown, verification is disabled, or resource is unconfigured.
-func (r *PackageResource) planTimeSignatureVerification(ctx context.Context, plan PackageResourceModel) error {
-	if plan.Source.IsUnknown() || plan.Source.IsNull() {
-		return nil
-	}
-	if r.packager == nil || r.providerConfig == nil {
-		return nil
-	}
-	if !getEffectiveSignatureVerification(ctx, plan) {
-		return nil
-	}
-	_, err := r.getPackageLayoutFromSource(ctx, plan)
-	return err
-}
-
 // ImportState imports the resource state from an external system.
 func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
@@ -1749,4 +1733,20 @@ func emptyConnectStringSet() types.Set {
 		},
 		[]attr.Value{}, // empty slice
 	)
+}
+
+// planTimeSignatureVerification loads the package and verifies its signature at plan time.
+// Skipped when source is unknown, verification is disabled, or resource is unconfigured.
+func (r *PackageResource) planTimeSignatureVerification(ctx context.Context, plan PackageResourceModel) error {
+	if plan.Source.IsUnknown() || plan.Source.IsNull() {
+		return nil
+	}
+	if r.packager == nil || r.providerConfig == nil {
+		return nil
+	}
+	if !getEffectiveSignatureVerification(ctx, plan) {
+		return nil
+	}
+	_, err := r.getPackageLayoutFromSource(ctx, plan)
+	return err
 }
