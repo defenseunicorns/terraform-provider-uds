@@ -4783,7 +4783,108 @@ func TestDynamicContainsUnknown(t *testing.T) {
 	}
 }
 
-func TestPackageResource_ValidatePackageValuesConfig_DefersNestedUnknowns(t *testing.T) {
+func TestCollectDynamicValuePaths(t *testing.T) {
+	nestedKnownObject := types.DynamicValue(types.ObjectValueMust(
+		map[string]attr.Type{
+			"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
+				"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
+					"pet-name": types.StringType,
+				}},
+				"empty": types.ObjectType{AttrTypes: map[string]attr.Type{}},
+			}},
+			"items": types.ListType{ElemType: types.StringType},
+		},
+		map[string]attr.Value{
+			"pod": types.ObjectValueMust(
+				map[string]attr.Type{
+					"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
+						"pet-name": types.StringType,
+					}},
+					"empty": types.ObjectType{AttrTypes: map[string]attr.Type{}},
+				},
+				map[string]attr.Value{
+					"annotations": types.ObjectValueMust(
+						map[string]attr.Type{"pet-name": types.StringType},
+						map[string]attr.Value{"pet-name": types.StringValue("fluffy")},
+					),
+					"empty": types.ObjectValueMust(map[string]attr.Type{}, map[string]attr.Value{}),
+				},
+			),
+			"items": types.ListValueMust(types.StringType, []attr.Value{
+				types.StringValue("one"),
+				types.StringValue("two"),
+			}),
+		},
+	))
+	nestedUnknownObject := types.DynamicValue(types.ObjectValueMust(
+		map[string]attr.Type{
+			"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
+				"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
+					"pet-name": types.StringType,
+				}},
+			}},
+		},
+		map[string]attr.Value{
+			"pod": types.ObjectValueMust(
+				map[string]attr.Type{
+					"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
+						"pet-name": types.StringType,
+					}},
+				},
+				map[string]attr.Value{
+					"annotations": types.ObjectValueMust(
+						map[string]attr.Type{"pet-name": types.StringType},
+						map[string]attr.Value{"pet-name": types.StringUnknown()},
+					),
+				},
+			),
+		},
+	))
+	listWithUnknown := types.DynamicValue(types.ObjectValueMust(
+		map[string]attr.Type{
+			"items": types.ListType{ElemType: types.StringType},
+		},
+		map[string]attr.Value{
+			"items": types.ListValueMust(types.StringType, []attr.Value{
+				types.StringValue("known"),
+				types.StringUnknown(),
+			}),
+		},
+	))
+
+	tests := []struct {
+		name               string
+		input              types.Dynamic
+		expectedPaths      []string
+		expectedHasUnknown bool
+		errorText          string
+	}{
+		{name: "null has no paths", input: types.DynamicNull(), expectedPaths: []string{}},
+		{name: "root unknown has no paths but records unknown", input: types.DynamicUnknown(), expectedPaths: []string{}, expectedHasUnknown: true},
+		{name: "known object returns leaf paths", input: nestedKnownObject, expectedPaths: []string{"pod.annotations.pet-name", "pod.empty", "items"}},
+		{name: "nested unknown returns path and records unknown", input: nestedUnknownObject, expectedPaths: []string{"pod.annotations.pet-name"}, expectedHasUnknown: true},
+		{name: "list with unknown returns list path and records unknown", input: listWithUnknown, expectedPaths: []string{"items"}, expectedHasUnknown: true},
+		{name: "root scalar returns error", input: types.DynamicValue(types.StringValue("nope")), errorText: "values must be a map or object"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			paths, hasUnknown, err := collectDynamicValuePaths(tc.input, "values")
+
+			if tc.errorText != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errorText)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.ElementsMatch(t, tc.expectedPaths, paths)
+			assert.Equal(t, tc.expectedHasUnknown, hasUnknown)
+		})
+	}
+}
+
+func TestPackageResource_ValidatePackageValuesConfig_NestedUnknownsValidateKnownPaths(t *testing.T) {
 	mockPackager := &MockPackager{}
 	model := NewTestPackageResourceModel(
 		WithValues(types.DynamicValue(types.ObjectValueMust(
@@ -4811,14 +4912,107 @@ func TestPackageResource_ValidatePackageValuesConfig_DefersNestedUnknowns(t *tes
 			},
 		))),
 	)
+	pkgLayout := &layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Components: []v1alpha1.ZarfComponent{
+				{
+					Name:     "required-component",
+					Required: helpers.BoolPtr(true),
+					Charts: []v1alpha1.ZarfChart{
+						{
+							Name: "chart",
+							Values: []v1alpha1.ZarfChartValue{
+								{SourcePath: ".pod.annotations", TargetPath: ".pod.annotations"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil)
 	packageResource := NewPackageResource(nil, mockPackager, nil, nil).(*PackageResource)
 	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
 
 	packageResource.validatePackageValuesConfig(context.Background(), model, resp)
 
-	assert.False(t, resp.Diagnostics.HasError(), "expected nested unknown values to defer validation, got: %v", resp.Diagnostics.Errors())
-	// Source path validation requires loading the package metadata. Nested unknown values
-	// should skip that plan-time validation and wait until apply, when the values are known.
+	assert.False(t, resp.Diagnostics.HasError(), "expected nested unknown values with exposed paths to pass, got: %v", resp.Diagnostics.Errors())
+	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestPackageResource_ValidatePackageValuesConfig_NestedUnknownsFailKnownUnexposedPaths(t *testing.T) {
+	mockPackager := &MockPackager{}
+	model := NewTestPackageResourceModel(
+		WithValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{
+				"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
+					"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
+						"pet-name": types.StringType,
+					}},
+				}},
+				"image": types.ObjectType{AttrTypes: map[string]attr.Type{
+					"tag": types.StringType,
+				}},
+			},
+			map[string]attr.Value{
+				"pod": types.ObjectValueMust(
+					map[string]attr.Type{
+						"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
+							"pet-name": types.StringType,
+						}},
+					},
+					map[string]attr.Value{
+						"annotations": types.ObjectValueMust(
+							map[string]attr.Type{"pet-name": types.StringType},
+							map[string]attr.Value{"pet-name": types.StringUnknown()},
+						),
+					},
+				),
+				"image": types.ObjectValueMust(
+					map[string]attr.Type{"tag": types.StringType},
+					map[string]attr.Value{"tag": types.StringValue("1.2.3")},
+				),
+			},
+		))),
+	)
+	pkgLayout := &layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Components: []v1alpha1.ZarfComponent{
+				{
+					Name:     "required-component",
+					Required: helpers.BoolPtr(true),
+					Charts: []v1alpha1.ZarfChart{
+						{
+							Name: "chart",
+							Values: []v1alpha1.ZarfChartValue{
+								{SourcePath: ".pod.annotations", TargetPath: ".pod.annotations"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil)
+	packageResource := NewPackageResource(nil, mockPackager, nil, nil).(*PackageResource)
+	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
+
+	packageResource.validatePackageValuesConfig(context.Background(), model, resp)
+
+	assert.True(t, resp.Diagnostics.HasError(), "expected unexposed known path to fail")
+	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "image.tag")
+	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestPackageResource_ValidatePackageValuesConfig_DefersRootUnknowns(t *testing.T) {
+	mockPackager := &MockPackager{}
+	model := NewTestPackageResourceModel(WithValues(types.DynamicUnknown()))
+	packageResource := NewPackageResource(nil, mockPackager, nil, nil).(*PackageResource)
+	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
+
+	packageResource.validatePackageValuesConfig(context.Background(), model, resp)
+
+	assert.False(t, resp.Diagnostics.HasError(), "expected root unknown values to defer validation, got: %v", resp.Diagnostics.Errors())
 	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 

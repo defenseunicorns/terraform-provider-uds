@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1570,32 +1571,39 @@ func joinValuePath(prefix string, key string) string {
 }
 
 func (r *PackageResource) validatePackageValuesConfig(ctx context.Context, model PackageResourceModel, resp *resource.ModifyPlanResponse) {
-	if dynamicContainsUnknown(model.Values) || dynamicContainsUnknown(model.SensitiveValues) {
-		return
-	}
-
-	values, valuesConfigured, err := dynamicToValues(ctx, "values", model.Values)
+	valuePaths, valuesContainUnknown, err := collectDynamicValuePaths(model.Values, "values")
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
 		return
 	}
-	sensitiveValues, sensitiveValuesConfigured, err := dynamicToValues(ctx, "sensitive_values", model.SensitiveValues)
+	sensitiveValuePaths, sensitiveValuesContainUnknown, err := collectDynamicValuePaths(model.SensitiveValues, "sensitive_values")
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
 		return
 	}
-	if !valuesConfigured && !sensitiveValuesConfigured {
+
+	allValuePaths := slices.Concat(valuePaths, sensitiveValuePaths)
+	containsUnknown := valuesContainUnknown || sensitiveValuesContainUnknown
+
+	if len(allValuePaths) == 0 {
 		return
 	}
 
-	mergedValues, err := mergePackageValues(values, sensitiveValues)
-	if err != nil {
-		resp.Diagnostics.AddError("Conflicting package values", err.Error())
-		return
-	}
-	valuePaths := collectValuePaths(map[string]any(mergedValues))
-	if len(valuePaths) == 0 {
-		return
+	if !containsUnknown {
+		values, _, err := dynamicToValues(ctx, "values", model.Values)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
+			return
+		}
+		sensitiveValues, _, err := dynamicToValues(ctx, "sensitive_values", model.SensitiveValues)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
+			return
+		}
+		if _, err := mergePackageValues(values, sensitiveValues); err != nil {
+			resp.Diagnostics.AddError("Conflicting package values", err.Error())
+			return
+		}
 	}
 
 	pkgLayout, err := r.getPackageLayoutFromSource(ctx, model)
@@ -1611,7 +1619,7 @@ func (r *PackageResource) validatePackageValuesConfig(ctx context.Context, model
 		}
 	}()
 
-	if err := r.validatePackageValuesAgainstSourcePaths(model, pkgLayout, mergedValues); err != nil {
+	if err := r.validatePackageValuePathsAgainstSourcePaths(model, pkgLayout, allValuePaths); err != nil {
 		resp.Diagnostics.AddError("Invalid package value", err.Error())
 	}
 }
@@ -1671,6 +1679,110 @@ func collectionSliceContainsUnknown(elements []attr.Value) bool {
 	return false
 }
 
+type dynamicValuePathResult struct {
+	paths      []string
+	hasUnknown bool
+	validRoot  bool
+}
+
+func collectDynamicValuePaths(value types.Dynamic, attrName string) ([]string, bool, error) {
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return []string{}, true, nil
+	}
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return []string{}, false, nil
+	}
+
+	result := collectAttrValuePaths(value.UnderlyingValue(), "")
+	if !result.validRoot {
+		return []string{}, false, fmt.Errorf("%s must be a map or object", attrName)
+	}
+	return result.paths, result.hasUnknown, nil
+}
+
+func collectAttrValuePaths(value attr.Value, prefix string) dynamicValuePathResult {
+	if value == nil || value.IsNull() {
+		if prefix == "" {
+			return dynamicValuePathResult{validRoot: true}
+		}
+		return dynamicValuePathResult{paths: []string{prefix}, validRoot: true}
+	}
+	if value.IsUnknown() {
+		if prefix == "" {
+			return dynamicValuePathResult{hasUnknown: true, validRoot: true}
+		}
+		return dynamicValuePathResult{paths: []string{prefix}, hasUnknown: true, validRoot: true}
+	}
+
+	switch v := value.(type) {
+	case types.Dynamic:
+		return collectDynamicAttrValuePaths(v, prefix)
+	case types.Map:
+		return collectAttrMapValuePaths(v.Elements(), prefix)
+	case types.Object:
+		return collectAttrMapValuePaths(v.Attributes(), prefix)
+	case types.List:
+		return collectAttrCollectionValuePaths(v.Elements(), prefix)
+	case types.Set:
+		return collectAttrCollectionValuePaths(v.Elements(), prefix)
+	case types.Tuple:
+		return collectAttrCollectionValuePaths(v.Elements(), prefix)
+	default:
+		if prefix == "" {
+			return dynamicValuePathResult{}
+		}
+		return dynamicValuePathResult{paths: []string{prefix}, validRoot: true}
+	}
+}
+
+func collectDynamicAttrValuePaths(value types.Dynamic, prefix string) dynamicValuePathResult {
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		if prefix == "" {
+			return dynamicValuePathResult{hasUnknown: true, validRoot: true}
+		}
+		return dynamicValuePathResult{paths: []string{prefix}, hasUnknown: true, validRoot: true}
+	}
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		if prefix == "" {
+			return dynamicValuePathResult{validRoot: true}
+		}
+		return dynamicValuePathResult{paths: []string{prefix}, validRoot: true}
+	}
+	return collectAttrValuePaths(value.UnderlyingValue(), prefix)
+}
+
+func collectAttrMapValuePaths(elements map[string]attr.Value, prefix string) dynamicValuePathResult {
+	if len(elements) == 0 {
+		if prefix == "" {
+			return dynamicValuePathResult{validRoot: true}
+		}
+		return dynamicValuePathResult{paths: []string{prefix}, validRoot: true}
+	}
+
+	result := dynamicValuePathResult{validRoot: true}
+	for key, value := range elements {
+		childResult := collectAttrValuePaths(value, joinValuePath(prefix, key))
+		result.paths = append(result.paths, childResult.paths...)
+		result.hasUnknown = result.hasUnknown || childResult.hasUnknown
+	}
+	return result
+}
+
+func collectAttrCollectionValuePaths(elements []attr.Value, prefix string) dynamicValuePathResult {
+	if prefix == "" {
+		return dynamicValuePathResult{}
+	}
+
+	result := dynamicValuePathResult{paths: []string{prefix}, validRoot: true}
+	for _, value := range elements {
+		if attrValueContainsUnknown(value) {
+			result.hasUnknown = true
+			break
+		}
+	}
+	return result
+}
+
 func collectValuePaths(values map[string]any) []string {
 	paths := []string{}
 	collectValuePathsAtPath(values, "", &paths)
@@ -1718,6 +1830,10 @@ func (r *PackageResource) getPlannedComponentValueSourcePaths(model PackageResou
 
 func (r *PackageResource) validatePackageValuesAgainstSourcePaths(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, values zarfValue.Values) error {
 	valuePaths := collectValuePaths(map[string]any(values))
+	return r.validatePackageValuePathsAgainstSourcePaths(model, pkgLayout, valuePaths)
+}
+
+func (r *PackageResource) validatePackageValuePathsAgainstSourcePaths(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, valuePaths []string) error {
 	if len(valuePaths) == 0 {
 		return nil
 	}
