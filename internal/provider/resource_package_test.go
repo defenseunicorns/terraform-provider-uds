@@ -1612,7 +1612,7 @@ func TestPackageResource_PlanTimeSignatureVerification(t *testing.T) {
 				}
 			}
 
-			packageResource := NewPackageResource(nil, mockPackager, nil, nil).(*PackageResource)
+			packageResource := NewPackageResource(&udsProviderConfig{VerifyPackageSignaturesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 			model := NewTestPackageResourceModel(tc.modelOpts...)
 			err := packageResource.planTimeSignatureVerification(context.Background(), model)
 
