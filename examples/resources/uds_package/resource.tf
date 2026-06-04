@@ -157,11 +157,12 @@ resource "uds_package" "dos_games" {
   source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
   namespace  = "demo"
 
+  # This package is signed with a key, but signature verification is disabled here with verify = false.
+  # To verify it, set verify = true or remove that attribute, then provide the public key directly
+  # or fetch it locally and reference it with the file function as shown below:
+  #   curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub
   signature_verification = {
-    verify = false # Do not verify package signature if public key is not available. Otherwise set to true (or remove this attribute) and provide public key.
+    verify = false
+    #public_key = file("dosgames.pub")
   }
-
-  # public_key can be set explicitly to the key value, or use file function to reference local file:
-  #    curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub
-  #public_key                = file("dosgames.pub") 
 }
