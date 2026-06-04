@@ -276,7 +276,7 @@ Optional:
 Optional:
 
 - `certificate_identity` (String) Required identity claim in the signing certificate. Mutually exclusive with `certificate_identity_regexp`.
-- `certificate_identity_regexp` (String) Regex-based alternative to `certificateIdentity` for pattern matching.. Mutually exclusive with `certificate_identity`.
+- `certificate_identity_regexp` (String) Regex-based alternative to `certificateIdentity` for pattern matching. Mutually exclusive with `certificate_identity`.
 - `certificate_oidc_issuer` (String) Required OIDC issuer claim in the signing certificate. Mutually exclusive with `certificate_oidc_issuer_regexp`.
 - `certificate_oidc_issuer_regexp` (String) Regex-based variant of `certificateOIDCIssuer`. Mutually exclusive with `certificate_oidc_issuer`.
 - `insecure_ignore_tlog` (Boolean) Skip Rekor transparency log inclusion verification. Set to true only for air-gapped or private Sigstore infrastructure.

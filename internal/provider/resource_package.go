@@ -237,7 +237,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 								Optional:            true,
 							},
 							"certificate_identity_regexp": schema.StringAttribute{
-								MarkdownDescription: "Regex-based alternative to `certificateIdentity` for pattern matching.. Mutually exclusive with `certificate_identity`.",
+								MarkdownDescription: "Regex-based alternative to `certificateIdentity` for pattern matching. Mutually exclusive with `certificate_identity`.",
 								Optional:            true,
 							},
 							"certificate_oidc_issuer": schema.StringAttribute{
