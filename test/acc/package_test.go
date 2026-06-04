@@ -22,7 +22,7 @@ func TestAccPackageResource(t *testing.T) {
 		Steps: []resource.TestStep{
 			// Create and Read testing
 			{
-				Config: testAccPackageResourceConfig,
+				Config: testAccInitPackageResourceConfig,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", initPackageVersion),
 				),
@@ -31,13 +31,6 @@ func TestAccPackageResource(t *testing.T) {
 		},
 	})
 }
-
-var testAccPackageResourceConfig = fmt.Sprintf(`
-resource "uds_package" "init" {
-  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
-  architecture = "%s"
-}
-`, initPackageVersion, runtime.GOARCH)
 
 func TestInitPackage(t *testing.T) {
 	resource.Test(t, resource.TestCase{
