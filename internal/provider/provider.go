@@ -35,20 +35,22 @@ const (
 )
 
 type udsProviderConfig struct {
-	LocalPathOverride           string // TODO(erickson): Revisit if this is needed
-	DefaultArchitecture         string
-	InsecureForceHTTP           bool
-	InsecureSkipTLSVerification bool
-	ZarfCachePath               string
-	ForceHelmSSAConflicts       bool
+	LocalPathOverride             string // TODO(erickson): Revisit if this is needed
+	DefaultArchitecture           string
+	InsecureForceHTTP             bool
+	InsecureSkipTLSVerification   bool
+	ZarfCachePath                 string
+	ForceHelmSSAConflicts         bool
+	VerifyPackageSignaturesOnPlan bool
 }
 
 type udsProviderModel struct {
-	DefaultArchitecture   types.String `tfsdk:"default_architecture"`
-	InsecureForceHTTP     types.Bool   `tfsdk:"insecure_force_http"`
-	InsecureSkipTLSVerify types.Bool   `tfsdk:"insecure_skip_tls_verification"`
-	ZarfCachePath         types.String `tfsdk:"zarf_cache_path"`
-	ForceHelmSSAConflicts types.Bool   `tfsdk:"force_helm_ssa_conflicts"`
+	DefaultArchitecture           types.String `tfsdk:"default_architecture"`
+	InsecureForceHTTP             types.Bool   `tfsdk:"insecure_force_http"`
+	InsecureSkipTLSVerify         types.Bool   `tfsdk:"insecure_skip_tls_verification"`
+	ZarfCachePath                 types.String `tfsdk:"zarf_cache_path"`
+	ForceHelmSSAConflicts         types.Bool   `tfsdk:"force_helm_ssa_conflicts"`
+	VerifyPackageSignaturesOnPlan types.Bool   `tfsdk:"verify_package_signatures_on_plan"`
 }
 
 // New creates a new provider factory function that returns a provider instance.
@@ -91,6 +93,10 @@ func (p *udsProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *
 			"force_helm_ssa_conflicts": schema.BoolAttribute{
 				Optional:            true,
 				MarkdownDescription: "Force Helm to take ownership of conflicting fields during Server-Side Apply operations during package deployment. Use when external tools (kubectl, HPAs, etc.) have modified resources. Defaults to `false`. Can also be configured with the `UDS_FORCE_HELM_SSA_CONFLICTS` environment variable.",
+			},
+			"verify_package_signatures_on_plan": schema.BoolAttribute{
+				Optional:            true,
+				MarkdownDescription: "Verify package signatures during Terraform/Tofu plan operations. Defaults to `true`. Can also be configured with the `UDS_VERIFY_PACKAGE_SIGNATURES_ON_PLAN` environment variable.",
 			},
 		},
 	}
@@ -143,6 +149,13 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 			"Unknown configuration value for the force Helm SSA conflicts flag. Either target apply the source of the value first, set the value statically in the configuration, or use the UDS_FORCE_HELM_SSA_CONFLICTS environment variable.",
 		)
 	}
+	if config.VerifyPackageSignaturesOnPlan.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("verify_package_signatures_on_plan"),
+			configErrorSummaryUnknownProviderConfigValue,
+			"Unknown configuration value for the verify package signatures on plan flag. Either target apply the source of the value first, set the value statically in the configuration, or use the UDS_VERIFY_PACKAGE_SIGNATURES_ON_PLAN environment variable.",
+		)
+	}
 
 	defaultArchitecture, _, err := resolveProviderStringConfig(ctx, config.DefaultArchitecture, "UDS_DEFAULT_ARCHITECTURE", runtime.GOARCH, "default_architecture",
 		strings.ToLower, // transformer
@@ -179,6 +192,13 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 		return
 	}
 
+	// Resolve verify_package_signatures_on_plan
+	verifyPackageSignaturesOnPlan, _, err := resolveProviderBoolConfig(ctx, config.VerifyPackageSignaturesOnPlan, "UDS_VERIFY_PACKAGE_SIGNATURES_ON_PLAN", true, "verify_package_signatures_on_plan", nil)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("verify_package_signatures_on_plan"), configErrorSummaryInvalidProviderConfigValue, err.Error())
+		return
+	}
+
 	// Resolve zarf_cache_path
 	zarfCachePath, _, err := resolveProviderStringConfig(
 		ctx,
@@ -202,20 +222,22 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 	zarfConfig.CommonOptions.CachePath = zarfCachePath
 
 	providerCfg := udsProviderConfig{
-		LocalPathOverride:           os.Getenv("UDS_LOCAL_PATH_OVERRIDE"),
-		DefaultArchitecture:         defaultArchitecture,
-		InsecureForceHTTP:           forceHTTP,
-		InsecureSkipTLSVerification: skipTLS,
-		ZarfCachePath:               zarfCachePath,
-		ForceHelmSSAConflicts:       forceHelmSSAConflicts,
+		LocalPathOverride:             os.Getenv("UDS_LOCAL_PATH_OVERRIDE"),
+		DefaultArchitecture:           defaultArchitecture,
+		InsecureForceHTTP:             forceHTTP,
+		InsecureSkipTLSVerification:   skipTLS,
+		ZarfCachePath:                 zarfCachePath,
+		ForceHelmSSAConflicts:         forceHelmSSAConflicts,
+		VerifyPackageSignaturesOnPlan: verifyPackageSignaturesOnPlan,
 	}
 
 	tflog.Info(ctx, "Provider configured", map[string]interface{}{
-		"default_architecture":           defaultArchitecture,
-		"insecure_force_http":            forceHTTP,
-		"insecure_skip_tls_verification": skipTLS,
-		"zarf_cache_path":                zarfCachePath,
-		"force_helm_ssa_conflicts":       forceHelmSSAConflicts,
+		"default_architecture":              defaultArchitecture,
+		"insecure_force_http":               forceHTTP,
+		"insecure_skip_tls_verification":    skipTLS,
+		"zarf_cache_path":                   zarfCachePath,
+		"force_helm_ssa_conflicts":          forceHelmSSAConflicts,
+		"verify_package_signatures_on_plan": verifyPackageSignaturesOnPlan,
 	})
 
 	resp.DataSourceData = &providerCfg

@@ -775,13 +775,15 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		plan.Architecture = types.StringValue(defaultArch)
 	}
 
-	if err := r.planTimeSignatureVerification(ctx, plan); err != nil {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("signature_verification"),
-			"Package signature verification failed",
-			err.Error(),
-		)
-		return
+	if r.providerConfig == nil || r.providerConfig.VerifyPackageSignaturesOnPlan {
+		if err := r.planTimeSignatureVerification(ctx, plan); err != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("signature_verification"),
+				"Package signature verification failed",
+				err.Error(),
+			)
+			return
+		}
 	}
 
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
