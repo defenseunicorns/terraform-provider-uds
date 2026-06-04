@@ -26,13 +26,6 @@ provider "uds" {
   default_architecture = "arm64"
 }
 
-resource "uds_bundle_metadata" "example_bundle" {
-  version      = "0.0.1"
-  kind         = "UDSBundle"
-  description  = "A demo bundle for the init and podinfo packages"
-  architecture = "arm64"
-}
-
 resource "uds_package" "init" {
   source = "oci://ghcr.io/zarf-dev/packages/init:v0.74.0"
 
