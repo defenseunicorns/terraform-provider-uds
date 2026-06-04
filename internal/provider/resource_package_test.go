@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 	"crypto/sha1"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -107,22 +108,40 @@ func WithArchitecture(arch string) PackageResourceModelDataOption {
 	}
 }
 
+// newTestSigVerification builds a SignatureVerificationModel for use in tests.
+func newTestSigVerification(enabled bool, publicKey string, keyless *KeylessVerificationModel) SignatureVerificationModel {
+	sig := SignatureVerificationModel{
+		Verify:    types.BoolValue(enabled),
+		PublicKey: types.StringValue(publicKey),
+		Keyless:   types.ObjectNull(keylessVerificationAttrTypes),
+	}
+	if keyless != nil {
+		obj, diags := types.ObjectValueFrom(context.Background(), keylessVerificationAttrTypes, *keyless)
+		if diags.HasError() {
+			panic("newTestSigVerification: failed to build keyless object")
+		}
+		sig.Keyless = obj
+	}
+	return sig
+}
+
+// withSigVerification sets the signature_verification block from a SignatureVerificationModel.
+func withSigVerification(sig SignatureVerificationModel) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		obj, diags := types.ObjectValueFrom(context.Background(), signatureVerificationAttrTypes, sig)
+		if diags.HasError() {
+			panic("withSigVerification: failed to build object")
+		}
+		model.SignatureVerification = obj
+	}
+}
+
 func WithPublicKey(publicKey string) PackageResourceModelDataOption {
-	return func(model *PackageResourceModel) {
-		model.PublicKey = types.StringValue(publicKey)
-	}
+	return withSigVerification(newTestSigVerification(true, publicKey, nil))
 }
 
-func WithSkipSignatureValidation(skip bool) PackageResourceModelDataOption {
-	return func(model *PackageResourceModel) {
-		model.SkipSignatureValidation = types.BoolValue(skip)
-	}
-}
-
-func WithVerifySignature(verify bool) PackageResourceModelDataOption {
-	return func(model *PackageResourceModel) {
-		model.VerifySignature = types.BoolValue(verify)
-	}
+func WithSignatureVerificationEnabled(enabled bool) PackageResourceModelDataOption {
+	return withSigVerification(newTestSigVerification(enabled, "", nil))
 }
 
 func WithTimeout(timeout string) PackageResourceModelDataOption {
@@ -158,16 +177,14 @@ func WithSensitiveVars(sensitiveVars []VariableModel) PackageResourceModelDataOp
 // NewTestPackageResourceModel creates a PackageResourceModel with default values and applies data options
 func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) PackageResourceModel {
 	model := PackageResourceModel{
-		Source:                  types.StringValue("oci://ghcr.io/defenseunicorns/packages/test:latest"),
-		Architecture:            types.StringValue(runtime.GOARCH),
-		PublicKey:               types.StringValue(""),
-		SkipSignatureValidation: types.BoolValue(false),
-		VerifySignature:         types.BoolValue(true),
-		Timeout:                 types.StringValue("10m"),
-		Namespace:               types.StringValue(""),
-		Components:              componentSliceToSet([]ComponentModel{}),
-		Vars:                    variableSliceToSet([]VariableModel{}),
-		SensitiveVars:           variableSliceToSet([]VariableModel{}),
+		Source:                types.StringValue("oci://ghcr.io/defenseunicorns/packages/test:latest"),
+		Architecture:          types.StringValue(runtime.GOARCH),
+		SignatureVerification: types.ObjectNull(signatureVerificationAttrTypes),
+		Timeout:               types.StringValue("10m"),
+		Namespace:             types.StringValue(""),
+		Components:            componentSliceToSet([]ComponentModel{}),
+		Vars:                  variableSliceToSet([]VariableModel{}),
+		SensitiveVars:         variableSliceToSet([]VariableModel{}),
 	}
 
 	for _, option := range options {
@@ -1442,90 +1459,42 @@ func TestPackageResource_Upsert_PublicKeyAndPackageSignatureVerification(t *test
 	tests := []struct {
 		name                                         string
 		publicKey                                    string
-		verifySignature                              bool
-		skipSignatureValidation                      bool
 		zarfPackagerLoadPackageError                 error
 		expectedLoadPackageWithPublicKeyPathProvided bool
 		expectedCallToDeploy                         bool
 	}{
 		{
-			name:                         "public key not provided with signature validation enabled for unsigned package loads package without public key file",
+			name:                         "no public key loads without key file",
 			publicKey:                    "",
-			verifySignature:              true,
-			skipSignatureValidation:      false,
 			zarfPackagerLoadPackageError: nil,
 			expectedLoadPackageWithPublicKeyPathProvided: false,
 			expectedCallToDeploy:                         true,
 		},
 		{
-			name:                         "public key not provided with signature validation disabled for unsigned package loads package without public key file",
+			name:                         "public key loads with key file",
+			publicKey:                    "test-public-key",
+			zarfPackagerLoadPackageError: nil,
+			expectedLoadPackageWithPublicKeyPathProvided: true,
+			expectedCallToDeploy:                         true,
+		},
+		{
+			name:                         "load error without key returns error",
 			publicKey:                    "",
-			verifySignature:              false,
-			skipSignatureValidation:      true,
-			zarfPackagerLoadPackageError: nil,
-			expectedLoadPackageWithPublicKeyPathProvided: false,
-			expectedCallToDeploy:                         true,
-		},
-		{
-			name:                         "public key provided with signature validation enabled for unsigned package loads package with public key file",
-			publicKey:                    "test-public-key",
-			verifySignature:              true,
-			skipSignatureValidation:      false,
-			zarfPackagerLoadPackageError: nil,
-			expectedLoadPackageWithPublicKeyPathProvided: true,
-			expectedCallToDeploy:                         true,
-		},
-		{
-			name:                         "public key provided with signature validation disabled for unsigned package loads package with public key file",
-			publicKey:                    "test-public-key",
-			verifySignature:              false,
-			skipSignatureValidation:      true,
-			zarfPackagerLoadPackageError: nil,
-			expectedLoadPackageWithPublicKeyPathProvided: true,
-			expectedCallToDeploy:                         true,
-		},
-		{
-			name:                         "public key provided with signature validation enabled for signed package loads package with public key file",
-			publicKey:                    "test-public-key",
-			verifySignature:              true,
-			skipSignatureValidation:      false,
-			zarfPackagerLoadPackageError: nil,
-			expectedLoadPackageWithPublicKeyPathProvided: true,
-			expectedCallToDeploy:                         true,
-		},
-		{
-			name:                         "package key provided with signature validation disabled for signed package loads package with public key file",
-			publicKey:                    "test-public-key",
-			verifySignature:              false,
-			skipSignatureValidation:      true,
-			zarfPackagerLoadPackageError: nil,
-			expectedLoadPackageWithPublicKeyPathProvided: true,
-			expectedCallToDeploy:                         true,
-		},
-		{
-			name:                         "signed package load error when public key path not provided and signature validation enabled returns error without deploying",
-			publicKey:                    "",
-			verifySignature:              true,
-			skipSignatureValidation:      false,
 			zarfPackagerLoadPackageError: fmt.Errorf("package is signed but no key was provided"),
 			expectedLoadPackageWithPublicKeyPathProvided: false,
 			expectedCallToDeploy:                         false,
 		},
 		{
-			name:                         "unsigned package load error when public key path provided and signature validation enabled returns error without deploying",
+			name:                         "load error with key returns error",
 			publicKey:                    "test-public-key",
-			verifySignature:              true,
-			skipSignatureValidation:      false,
 			zarfPackagerLoadPackageError: fmt.Errorf("a key was provided but the package is not signed"),
 			expectedLoadPackageWithPublicKeyPathProvided: true,
 			expectedCallToDeploy:                         false,
 		},
 		{
-			name:                         "signed package load when public key path provided and signature validation enabled with mismatched or malformed key returns error without deploying",
+			name:                         "mismatched key returns error",
 			publicKey:                    "mismatched-or-malformed-public-key",
-			verifySignature:              true,
-			skipSignatureValidation:      false,
-			zarfPackagerLoadPackageError: fmt.Errorf("any error regarding mistmatched or malfored key"),
+			zarfPackagerLoadPackageError: fmt.Errorf("any error regarding mismatched or malformed key"),
 			expectedLoadPackageWithPublicKeyPathProvided: true,
 			expectedCallToDeploy:                         false,
 		},
@@ -1533,9 +1502,6 @@ func TestPackageResource_Upsert_PublicKeyAndPackageSignatureVerification(t *test
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// TODO: Remove when (deprecated) skip_signature_validation removed
-			assert.NotEqual(t, tc.verifySignature, tc.skipSignatureValidation, "verify_signature and skip_signature_validation attribute values cannot be equal (conflict)")
-
 			mockPackager := &MockPackager{}
 			mockPackageComponentFilter := &MockPackageComponentFilter{}
 			if tc.zarfPackagerLoadPackageError == nil {
@@ -1555,11 +1521,7 @@ func TestPackageResource_Upsert_PublicKeyAndPackageSignatureVerification(t *test
 			}
 
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
-			testModel := NewTestPackageResourceModel(
-				WithPublicKey(tc.publicKey),
-				WithVerifySignature(tc.verifySignature),
-				WithSkipSignatureValidation(tc.skipSignatureValidation),
-			)
+			testModel := NewTestPackageResourceModel(WithPublicKey(tc.publicKey))
 			_, err := packageResource.upsert(context.Background(), testModel)
 
 			mockPackageComponentFilter.AssertExpectations(t)
@@ -1578,13 +1540,13 @@ func TestPackageResource_Upsert_PublicKeyAndPackageSignatureVerification(t *test
 				}
 			}
 			assert.True(t, loadOptionsArgFound, "Could not find LoadOptions argument in LoadPackage call")
-			publicKeyPathProvided := loadOptions.PublicKeyPath != ""
+			publicKeyPathProvided := loadOptions.VerifyBlobOptions != nil && loadOptions.VerifyBlobOptions.Key != ""
 			if tc.expectedLoadPackageWithPublicKeyPathProvided {
 				assert.True(t, publicKeyPathProvided,
-					"Expected public key path to be provided but it was not. LoadOptions.PublicKeyPath: %s", loadOptions.PublicKeyPath)
+					"Expected verify blob options with key to be provided but it was not.")
 			} else {
 				assert.False(t, publicKeyPathProvided,
-					"Expected public key path to not be provided but it was. LoadOptions.PublicKeyPath: %s", loadOptions.PublicKeyPath)
+					"Expected verify blob options with key to not be provided but it was.")
 			}
 		})
 	}
@@ -3692,7 +3654,7 @@ func TestGetPackageSource_LocalPathOverride(t *testing.T) {
 	})
 }
 
-func TestPackageResource_ValidateConfig_SignatureVerificationConflict(t *testing.T) {
+func TestPackageResource_ValidateConfig_SignatureVerification(t *testing.T) {
 	tests := []struct {
 		name        string
 		configFunc  func() PackageResourceModel
@@ -3700,164 +3662,404 @@ func TestPackageResource_ValidateConfig_SignatureVerificationConflict(t *testing
 		errorMsg    string
 	}{
 		{
-			name: "no error if neither VerifySignature or SkipSignatureValidation attributes set",
+			name:        "no error when signature_verification absent",
+			configFunc:  func() PackageResourceModel { return NewTestPackageResourceModel() },
+			expectError: false,
+		},
+		{
+			name: "no error with enabled=false and no key",
 			configFunc: func() PackageResourceModel {
-				model := NewTestPackageResourceModel()
-				model.SkipSignatureValidation = types.BoolNull()
-				model.VerifySignature = types.BoolNull()
-				return model
+				return NewTestPackageResourceModel(WithSignatureVerificationEnabled(false))
 			},
 			expectError: false,
 		},
 		{
-			name: "no error if only VerifySignature set",
+			name: "no error with public_key only",
 			configFunc: func() PackageResourceModel {
-				model := NewTestPackageResourceModel(WithVerifySignature(false))
-				model.SkipSignatureValidation = types.BoolNull()
-				return model
+				return NewTestPackageResourceModel(WithPublicKey("some-key"))
 			},
 			expectError: false,
 		},
 		{
-			name: "no error if only SkipSignatureValidation set",
+			name: "no error with valid keyless config",
 			configFunc: func() PackageResourceModel {
-				model := NewTestPackageResourceModel(WithSkipSignatureValidation(true))
-				model.VerifySignature = types.BoolNull()
-				return model
+				return NewTestPackageResourceModel(WithKeylessVerification("user@example.com", "https://accounts.google.com"))
 			},
 			expectError: false,
 		},
 		{
-			name: "no error if VerifySignature set to true and SkipSignatureValidation set to false",
+			name: "error when public_key and keyless both set",
 			configFunc: func() PackageResourceModel {
-				return NewTestPackageResourceModel(WithVerifySignature(true), WithSkipSignatureValidation(false))
-			},
-			expectError: false,
-		},
-		{
-			name: "no error if VerifySignature set to false and SkipSignatureValidation set to true",
-			configFunc: func() PackageResourceModel {
-				return NewTestPackageResourceModel(WithVerifySignature(false), WithSkipSignatureValidation(true))
-			},
-			expectError: false,
-		},
-		{
-			name: "conflicting values error if VerifySignature and SkipSignatureValidation both set to true",
-			configFunc: func() PackageResourceModel {
-				return NewTestPackageResourceModel(WithVerifySignature(true), WithSkipSignatureValidation(true))
+				return NewTestPackageResourceModel(
+					withSigVerification(newTestSigVerification(true, "some-key", &KeylessVerificationModel{
+						CertificateIdentity:         types.StringValue("user@example.com"),
+						CertificateIdentityRegexp:   types.StringNull(),
+						CertificateOIDCIssuer:       types.StringValue("https://accounts.google.com"),
+						CertificateOIDCIssuerRegexp: types.StringNull(),
+						TrustedRoot:                 types.StringNull(),
+						InsecureIgnoreTlog:          types.BoolValue(false),
+						UseSignedTimestamps:         types.BoolValue(false),
+					})),
+				)
 			},
 			expectError: true,
-			errorMsg:    "conflicting values",
+			errorMsg:    "public_key",
 		},
 		{
-			name: "conflicting values error if VerifySignature and SkipSignatureValidation both set to false",
+			name: "error when keyless missing identity",
 			configFunc: func() PackageResourceModel {
-				return NewTestPackageResourceModel(WithVerifySignature(false), WithSkipSignatureValidation(false))
+				return NewTestPackageResourceModel(
+					withSigVerification(newTestSigVerification(true, "", &KeylessVerificationModel{
+						CertificateIdentity:         types.StringNull(),
+						CertificateIdentityRegexp:   types.StringNull(),
+						CertificateOIDCIssuer:       types.StringValue("https://accounts.google.com"),
+						CertificateOIDCIssuerRegexp: types.StringNull(),
+						TrustedRoot:                 types.StringNull(),
+						InsecureIgnoreTlog:          types.BoolValue(false),
+						UseSignedTimestamps:         types.BoolValue(false),
+					})),
+				)
 			},
 			expectError: true,
-			errorMsg:    "conflicting values",
+			errorMsg:    "certificate_identity",
+		},
+		{
+			name: "error when keyless missing issuer",
+			configFunc: func() PackageResourceModel {
+				return NewTestPackageResourceModel(
+					withSigVerification(newTestSigVerification(true, "", &KeylessVerificationModel{
+						CertificateIdentity:         types.StringValue("user@example.com"),
+						CertificateIdentityRegexp:   types.StringNull(),
+						CertificateOIDCIssuer:       types.StringNull(),
+						CertificateOIDCIssuerRegexp: types.StringNull(),
+						TrustedRoot:                 types.StringNull(),
+						InsecureIgnoreTlog:          types.BoolValue(false),
+						UseSignedTimestamps:         types.BoolValue(false),
+					})),
+				)
+			},
+			expectError: true,
+			errorMsg:    "certificate_oidc_issuer",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			model := tc.configFunc()
-			resp := &resource.ValidateConfigResponse{
-				Diagnostics: diag.Diagnostics{},
-			}
+			resp := &resource.ValidateConfigResponse{Diagnostics: diag.Diagnostics{}}
 
-			validateSignatureVerificationAttributes(model, resp)
+			validateSignatureVerificationAttributes(context.Background(), model, resp)
 
 			if tc.expectError {
 				assert.True(t, resp.Diagnostics.HasError(), "expected error but got none")
 				if tc.errorMsg != "" {
 					found := false
-					errorDetails := ""
 					for _, d := range resp.Diagnostics.Errors() {
-						errorDetails += d.Summary() + ": " + d.Detail() + "\n"
 						if strings.Contains(d.Summary()+d.Detail(), tc.errorMsg) {
 							found = true
 							break
 						}
 					}
-					assert.True(t, found, "expected error to contain '%s', got: %s", tc.errorMsg, errorDetails)
+					assert.True(t, found, "expected error containing %q", tc.errorMsg)
 				}
 			} else {
-				assert.False(t, resp.Diagnostics.HasError(), "expected no error but got: %v", resp.Diagnostics.Errors())
+				assert.False(t, resp.Diagnostics.HasError(), "unexpected error: %v", resp.Diagnostics.Errors())
 			}
 		})
 	}
 }
 
-// TODO: Remove when skip_signature_validation removed
-func TestPackageResource_GetEffectiveSignatureVerification(t *testing.T) {
+// WithKeylessVerification sets signature_verification.keyless with exact identity and issuer.
+func WithKeylessVerification(identity, issuer string) PackageResourceModelDataOption {
+	keyless := &KeylessVerificationModel{
+		CertificateIdentity:         types.StringValue(identity),
+		CertificateIdentityRegexp:   types.StringNull(),
+		CertificateOIDCIssuer:       types.StringValue(issuer),
+		CertificateOIDCIssuerRegexp: types.StringNull(),
+		TrustedRoot:                 types.StringNull(),
+		InsecureIgnoreTlog:          types.BoolValue(false),
+		UseSignedTimestamps:         types.BoolValue(false),
+	}
+	return withSigVerification(newTestSigVerification(true, "", keyless))
+}
+
+func TestBuildVerifyBlobOptions(t *testing.T) {
 	tests := []struct {
-		name                    string
-		verifySignature         *bool // nil = not set
-		skipSignatureValidation *bool // nil = not set
-		expected                bool
+		name                string
+		setupModel          func() PackageResourceModel
+		wantNil             bool
+		wantKey             bool
+		wantCertIdentity    string
+		wantOIDCIssuer      string
+		checkIgnoreTlog     bool
+		wantIgnoreTlog      bool
+		wantTrustedRootFile bool
 	}{
 		{
-			name:                    "neither VerifySignature or SkipSignatureValidation set returns true",
-			verifySignature:         nil,
-			skipSignatureValidation: nil,
-			expected:                true,
+			name: "no verification config returns nil",
+			setupModel: func() PackageResourceModel {
+				return NewTestPackageResourceModel()
+			},
+			wantNil: true,
 		},
 		{
-			name:                    "only VerifySignature set to true returns true",
-			verifySignature:         helpers.BoolPtr(true),
-			skipSignatureValidation: nil,
-			expected:                true,
+			name: "public key sets Key on options and writes key file",
+			setupModel: func() PackageResourceModel {
+				return NewTestPackageResourceModel(WithPublicKey("test-public-key-content"))
+			},
+			wantKey: true,
 		},
 		{
-			name:                    "only VerifySignature set to false returns false",
-			verifySignature:         helpers.BoolPtr(false),
-			skipSignatureValidation: nil,
-			expected:                false,
+			name: "keyless sets cert identity and issuer, IgnoreTlog defaults false",
+			setupModel: func() PackageResourceModel {
+				return NewTestPackageResourceModel(
+					WithKeylessVerification("test@example.com", "https://token.actions.githubusercontent.com"),
+				)
+			},
+			wantCertIdentity: "test@example.com",
+			wantOIDCIssuer:   "https://token.actions.githubusercontent.com",
+			checkIgnoreTlog:  true,
+			wantIgnoreTlog:   false,
 		},
 		{
-			name:                    "only SkipSignatureValidation set to true returns false",
-			verifySignature:         nil,
-			skipSignatureValidation: helpers.BoolPtr(true),
-			expected:                false,
+			name: "keyless insecure_ignore_tlog=true sets IgnoreTlog=true",
+			setupModel: func() PackageResourceModel {
+				return NewTestPackageResourceModel(withSigVerification(newTestSigVerification(true, "", &KeylessVerificationModel{
+					CertificateIdentity:         types.StringValue("test@example.com"),
+					CertificateIdentityRegexp:   types.StringNull(),
+					CertificateOIDCIssuer:       types.StringValue("https://token.actions.githubusercontent.com"),
+					CertificateOIDCIssuerRegexp: types.StringNull(),
+					TrustedRoot:                 types.StringNull(),
+					InsecureIgnoreTlog:          types.BoolValue(true),
+					UseSignedTimestamps:         types.BoolValue(false),
+				})))
+			},
+			wantCertIdentity: "test@example.com",
+			wantOIDCIssuer:   "https://token.actions.githubusercontent.com",
+			checkIgnoreTlog:  true,
+			wantIgnoreTlog:   true,
 		},
 		{
-			name:                    "only SkipSignatureValidation set to false returns true",
-			verifySignature:         nil,
-			skipSignatureValidation: helpers.BoolPtr(false),
-			expected:                true,
-		},
-		{
-			name:                    "VerifySignature set to true and SkipSignatureValidation set to false returns true",
-			verifySignature:         helpers.BoolPtr(true),
-			skipSignatureValidation: helpers.BoolPtr(false),
-			expected:                true,
-		},
-		{
-			name:                    "VerifySignature set to false and SkipSignatureValidation set to true returns false",
-			verifySignature:         helpers.BoolPtr(false),
-			skipSignatureValidation: helpers.BoolPtr(true),
-			expected:                false,
+			name: "keyless with trusted_root writes file and sets TrustedRootPath",
+			setupModel: func() PackageResourceModel {
+				return NewTestPackageResourceModel(withSigVerification(newTestSigVerification(true, "", &KeylessVerificationModel{
+					CertificateIdentity:         types.StringValue("test@example.com"),
+					CertificateIdentityRegexp:   types.StringNull(),
+					CertificateOIDCIssuer:       types.StringValue("https://token.actions.githubusercontent.com"),
+					CertificateOIDCIssuerRegexp: types.StringNull(),
+					TrustedRoot:                 types.StringValue(`{"mediaType":"application/vnd.dev.sigstore.trustedroot+json;version=0.1"}`),
+					InsecureIgnoreTlog:          types.BoolValue(false),
+					UseSignedTimestamps:         types.BoolValue(false),
+				})))
+			},
+			wantCertIdentity:    "test@example.com",
+			wantTrustedRootFile: true,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			model := PackageResourceModel{}
+			tmpDir := t.TempDir()
+			model := tc.setupModel()
 
-			if tc.verifySignature == nil {
-				model.VerifySignature = types.BoolNull()
-			} else {
-				model.VerifySignature = types.BoolValue(*tc.verifySignature)
-			}
-			if tc.skipSignatureValidation == nil {
-				model.SkipSignatureValidation = types.BoolNull()
-			} else {
-				model.SkipSignatureValidation = types.BoolValue(*tc.skipSignatureValidation)
+			opts, err := buildVerifyBlobOptions(context.Background(), model, tmpDir)
+			assert.NoError(t, err)
+
+			if tc.wantNil {
+				assert.Nil(t, opts)
+				return
 			}
 
-			result := getEffectiveSignatureVerification(model)
+			assert.NotNil(t, opts)
+			if tc.wantKey {
+				assert.NotEmpty(t, opts.Key, "expected Key to be set")
+				assert.FileExists(t, opts.Key)
+			}
+			if tc.wantCertIdentity != "" {
+				assert.Equal(t, tc.wantCertIdentity, opts.CertVerify.CertIdentity)
+			}
+			if tc.wantOIDCIssuer != "" {
+				assert.Equal(t, tc.wantOIDCIssuer, opts.CertVerify.CertOidcIssuer)
+			}
+			if tc.checkIgnoreTlog {
+				assert.Equal(t, tc.wantIgnoreTlog, opts.CommonVerifyOptions.IgnoreTlog)
+			}
+			if tc.wantTrustedRootFile {
+				assert.NotEmpty(t, opts.CommonVerifyOptions.TrustedRootPath)
+				assert.FileExists(t, opts.CommonVerifyOptions.TrustedRootPath)
+			}
+		})
+	}
+}
+
+func TestPackageResource_Upsert_KeylessVerification(t *testing.T) {
+	tests := []struct {
+		name                       string
+		identity                   string
+		issuer                     string
+		zarfPackagerLoadPackageErr error
+		wantVerifyOptsSet          bool
+		wantCallToDeploy           bool
+	}{
+		{
+			name:              "keyless opts passed to LoadPackage",
+			identity:          "user@example.com",
+			issuer:            "https://token.actions.githubusercontent.com",
+			wantVerifyOptsSet: true,
+			wantCallToDeploy:  true,
+		},
+		{
+			name:                       "LoadPackage error with keyless opts returns error without deploying",
+			identity:                   "user@example.com",
+			issuer:                     "https://token.actions.githubusercontent.com",
+			zarfPackagerLoadPackageErr: fmt.Errorf("signature verification failed"),
+			wantVerifyOptsSet:          true,
+			wantCallToDeploy:           false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+			if tc.zarfPackagerLoadPackageErr == nil {
+				validResult := newValidLoadPackageResult()
+				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(validResult.Layout, validResult.Error)
+				mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+				mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+			} else {
+				errResult := newErrorLoadPackageResult(tc.zarfPackagerLoadPackageErr)
+				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(errResult.Layout, errResult.Error)
+			}
+
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+			testModel := NewTestPackageResourceModel(
+				WithKeylessVerification(tc.identity, tc.issuer),
+			)
+			_, err := packageResource.upsert(context.Background(), testModel)
+
+			if tc.zarfPackagerLoadPackageErr != nil {
+				assert.NotNil(t, err)
+			}
+
+			loadOptionsArgFound := false
+			var loadOptions zarfPackager.LoadOptions
+			for _, call := range mockPackager.Calls {
+				if call.Method == "LoadPackage" {
+					loadOptions = call.Arguments[2].(zarfPackager.LoadOptions)
+					loadOptionsArgFound = true
+					break
+				}
+			}
+			assert.True(t, loadOptionsArgFound, "could not find LoadOptions in LoadPackage call")
+
+			if tc.wantVerifyOptsSet {
+				assert.NotNil(t, loadOptions.VerifyBlobOptions, "expected VerifyBlobOptions to be set")
+				assert.Equal(t, tc.identity, loadOptions.VerifyBlobOptions.CertVerify.CertIdentity)
+				assert.Equal(t, tc.issuer, loadOptions.VerifyBlobOptions.CertVerify.CertOidcIssuer)
+			}
+		})
+	}
+}
+
+func TestPackageResource_GetEffectiveSignatureVerification(t *testing.T) {
+	tests := []struct {
+		name       string
+		setupModel func() PackageResourceModel
+		expected   bool
+	}{
+		{
+			name:       "absent signature_verification block returns true",
+			setupModel: func() PackageResourceModel { return NewTestPackageResourceModel() },
+			expected:   true,
+		},
+		{
+			name: "signature_verification with enabled=true returns true",
+			setupModel: func() PackageResourceModel {
+				return NewTestPackageResourceModel(WithSignatureVerificationEnabled(true))
+			},
+			expected: true,
+		},
+		{
+			name: "signature_verification with enabled=false returns false",
+			setupModel: func() PackageResourceModel {
+				return NewTestPackageResourceModel(WithSignatureVerificationEnabled(false))
+			},
+			expected: false,
+		},
+		{
+			name: "signature_verification block present without explicit enabled defaults to true",
+			setupModel: func() PackageResourceModel {
+				sig := SignatureVerificationModel{
+					Verify:    types.BoolNull(),
+					PublicKey: types.StringNull(),
+					Keyless:   types.ObjectNull(keylessVerificationAttrTypes),
+				}
+				return NewTestPackageResourceModel(withSigVerification(sig))
+			},
+			expected: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			model := tc.setupModel()
+			result := getEffectiveSignatureVerification(context.Background(), model)
 			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+func TestHandleVerifyResult(t *testing.T) {
+	someErr := errors.New("signature check failed")
+
+	tests := []struct {
+		name     string
+		err      error
+		isSigned bool
+		enforce  bool
+		wantErr  bool
+	}{
+		{
+			name:     "no error returns nil",
+			err:      nil,
+			isSigned: true,
+			enforce:  true,
+			wantErr:  false,
+		},
+		{
+			name:     "unsigned package warns and returns nil",
+			err:      someErr,
+			isSigned: false,
+			enforce:  true,
+			wantErr:  false,
+		},
+		{
+			name:     "signed package with enforce=true returns error",
+			err:      someErr,
+			isSigned: true,
+			enforce:  true,
+			wantErr:  true,
+		},
+		{
+			name:     "signed package with enforce=false warns and returns nil",
+			err:      someErr,
+			isSigned: true,
+			enforce:  false,
+			wantErr:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := handleVerifyResult(context.Background(), tc.err, tc.isSigned, tc.enforce)
+			if tc.wantErr {
+				assert.Error(t, result)
+				assert.Equal(t, tc.err, result)
+			} else {
+				assert.NoError(t, result)
+			}
 		})
 	}
 }

@@ -15,6 +15,19 @@ import (
 // renovate: datasource=github-tags depName=zarf-dev/zarf
 const initPackageVersion = "v0.77.0"
 
+var testAccPackageResourceConfig = fmt.Sprintf(`
+resource "uds_package" "init" {
+  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
+  architecture = "%s"
+  signature_verification = {
+	keyless = {
+	  certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
+	}
+  }
+}
+`, initPackageVersion, runtime.GOARCH)
+
 func TestAccPackageResource(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
@@ -24,7 +37,7 @@ func TestAccPackageResource(t *testing.T) {
 			{
 				Config: testAccPackageResourceConfig,
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("uds_bundle_metadata.example_bundle", "version", "0.0.1"),
+					resource.TestCheckResourceAttr("uds_package.init", "id", "init"),
 					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", initPackageVersion),
 				),
 			},
@@ -33,62 +46,7 @@ func TestAccPackageResource(t *testing.T) {
 	})
 }
 
-var testAccPackageResourceConfig = fmt.Sprintf(`
-resource "uds_bundle_metadata" "example_bundle" {
-  version      = "0.0.1"
-  kind         = "UDSBundle"
-  description  = "A demo bundle for the init package"
-  architecture = "%s"
-}
-
-resource "uds_package" "init" {
-  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
-  architecture = uds_bundle_metadata.example_bundle.architecture
-}
-`, runtime.GOARCH, initPackageVersion)
-
-func TestInitPackage(t *testing.T) {
-	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		Steps: []resource.TestStep{
-			// Create and Read testing
-			{
-				Config: testAccInitPackageResourceConfig,
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", initPackageVersion),
-				),
-			},
-			// Delete testing automatically occurs in TestCase
-		},
-	})
-}
-
-var testAccInitPackageResourceConfig = fmt.Sprintf(`
-resource "uds_package" "init" {
-  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
-  architecture = "%s"
-}
-`, initPackageVersion, runtime.GOARCH)
-
-func TestNamespacedPackage(t *testing.T) {
-	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		Steps: []resource.TestStep{
-			// Create and Read testing
-			{
-				Config: testAccNamespacedPackageResourceConfig(t),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("uds_package.dos_games", "namespace", "demo"),
-				),
-			},
-			// Delete testing automatically occurs in TestCase
-		},
-	})
-}
-
-func testAccNamespacedPackageResourceConfig(t *testing.T) string {
+func testAccMultiplePackageResourcesConfig(t *testing.T) string {
 	t.Helper()
 	// terraform-plugin-testing runs Terraform from a temp directory, so file() requires
 	// an absolute path. We resolve it here relative to the test package directory.
@@ -100,6 +58,15 @@ func testAccNamespacedPackageResourceConfig(t *testing.T) string {
 resource "uds_package" "init" {
   source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
   architecture = "%s"
+  signature_verification = {
+	keyless = {
+	  certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
+	}
+  }
+  component {
+    name = "git-server"
+  }
 }
 
 resource "uds_package" "dos_games" {
@@ -107,8 +74,31 @@ resource "uds_package" "dos_games" {
   architecture = uds_package.init.architecture
   namespace    = "demo"
   depends_on   = [uds_package.init]
-
-  public_key = file("%s")
+  signature_verification = {
+  	public_key = file("%s")
+  }
 }
+
+# TODO: Add resource with local package reference
 `, initPackageVersion, runtime.GOARCH, pubKeyPath)
+}
+
+func TestAccMultiplePackageResources(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Create and Read testing
+			{
+				Config: testAccMultiplePackageResourcesConfig(t),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", initPackageVersion),
+					resource.TestCheckResourceAttr("uds_package.init", "id", "init"),
+					resource.TestCheckResourceAttr("uds_package.dos_games", "metadata.version", "1.2.0"),
+					resource.TestCheckResourceAttr("uds_package.dos_games", "id", "demo:dos-games"),
+				),
+			},
+			// Delete testing automatically occurs in TestCase
+		},
+	})
 }

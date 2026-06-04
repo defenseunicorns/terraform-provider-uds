@@ -21,6 +21,13 @@ resource "uds_bundle_metadata" "example_bundle" {
 resource "uds_package" "init" {
   source = "oci://ghcr.io/zarf-dev/packages/init:v0.74.0"
 
+  signature_verification = {
+    keyless = {
+      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
+    }
+  }
+
   # Install optional git-server
   component {
     name = "git-server"
@@ -150,8 +157,9 @@ resource "uds_package" "dos_games" {
   source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
   namespace  = "demo"
 
-  # Do not verify package signature if public key is not available. Otherwise set to true (or remove this attribute) and provide public key.
-  verify_signature = false
+  signature_verification = {
+    verify = false # Do not verify package signature if public key is not available. Otherwise set to true (or remove this attribute) and provide public key.
+  }
 
   # public_key can be set explicitly to the key value, or use file function to reference local file:
   #    curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub

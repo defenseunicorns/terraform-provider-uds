@@ -36,6 +36,13 @@ resource "uds_bundle_metadata" "example_bundle" {
 resource "uds_package" "init" {
   source = "oci://ghcr.io/zarf-dev/packages/init:v0.74.0"
 
+  signature_verification = {
+    keyless = {
+      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
+    }
+  }
+
   # Install optional git-server
   component {
     name = "git-server"
@@ -165,8 +172,9 @@ resource "uds_package" "dos_games" {
   source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
   namespace  = "demo"
 
-  # Do not verify package signature if public key is not available. Otherwise set to true (or remove this attribute) and provide public key.
-  verify_signature = false
+  signature_verification = {
+    verify = false # Do not verify package signature if public key is not available. Otherwise set to true (or remove this attribute) and provide public key.
+  }
 
   # public_key can be set explicitly to the key value, or use file function to reference local file:
   #    curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub
@@ -186,12 +194,10 @@ resource "uds_package" "dos_games" {
 - `architecture` (String) System architecture of the target cluster. Defaults to the provider default architecture.
 - `component` (Block Set) Component configuration to include/exclude in the UDS package deployment. (see [below for nested schema](#nestedblock--component))
 - `namespace` (String) [Alpha] Namespace in which to deploy the UDS package.
-- `public_key` (String) Raw public key value to validate against a signed UDS package.
 - `sensitive_vars` (Attributes Set) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))
-- `skip_signature_validation` (Boolean, Deprecated) Skip validating the signature of a signed UDS package.
+- `signature_verification` (Attributes) Signature verification configuration. Omit to use defaults (verification enabled, no key). (see [below for nested schema](#nestedatt--signature_verification))
 - `timeout` (String) Timeout for the deploy operation.
 - `vars` (Attributes Set) UDS package variables to set. (see [below for nested schema](#nestedatt--vars))
-- `verify_signature` (Boolean) Verify the signature of a UDS package. When enabled, a signed package with an invalid or missing signature will fail to deploy. When disabled, the package will continue to deploy with signature verification issues logged as warnings.
 
 ### Read-Only
 
@@ -253,6 +259,30 @@ Required:
 
 - `name` (String) Name of the variable to set.
 - `value` (String, Sensitive) Value for the variable to set.
+
+
+<a id="nestedatt--signature_verification"></a>
+### Nested Schema for `signature_verification`
+
+Optional:
+
+- `keyless` (Attributes) Keyless (Sigstore/OIDC) signature verification configuration. Mutually exclusive with `public_key`. (see [below for nested schema](#nestedatt--signature_verification--keyless))
+- `public_key` (String) Raw public key value to validate against a key-signed UDS package. Mutually exclusive with `keyless`.
+- `verify` (Boolean) When true, verify the signature of a signed UDS package. When false, skip package signature verification.
+
+<a id="nestedatt--signature_verification--keyless"></a>
+### Nested Schema for `signature_verification.keyless`
+
+Optional:
+
+- `certificate_identity` (String) Required identity claim in the signing certificate. Mutually exclusive with `certificate_identity_regexp`.
+- `certificate_identity_regexp` (String) Regex-based alternative to `certificateIdentity` for pattern matching.. Mutually exclusive with `certificate_identity`.
+- `certificate_oidc_issuer` (String) Required OIDC issuer claim in the signing certificate. Mutually exclusive with `certificate_oidc_issuer_regexp`.
+- `certificate_oidc_issuer_regexp` (String) Regex-based variant of `certificateOIDCIssuer`. Mutually exclusive with `certificate_oidc_issuer`.
+- `insecure_ignore_tlog` (Boolean) Skip Rekor transparency log inclusion verification. Set to true only for air-gapped or private Sigstore infrastructure.
+- `trusted_root` (String) Sigstore TrustedRoot JSON content for keyless signature verification. Omit to use Zarf's embedded TrustedRoot.
+- `use_signed_timestamps` (Boolean) Verify RFC3161 signed timestamps in the Sigstore verification bundle. Auto-enabled when the bundle contains TSA timestamp data.
+
 
 
 <a id="nestedatt--vars"></a>
