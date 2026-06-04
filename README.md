@@ -1,6 +1,6 @@
-# OpenTofu Provider for UDS (Unicorn Delivery Service)
+# OpenTofu Provider for UDS (Unified Defense Stack)
 
-The UDS (Unicorn Delivery Service) OpenTofu Provider enables declarative infrastructure-as-code capabilities to manage deployment of UDS packages and bundles using OpenTofu.
+The UDS (Unified Defense Stack) OpenTofu Provider enables declarative infrastructure-as-code capabilities to manage deployment of UDS zarf packages using OpenTofu.
 
 ## Quick Start
 
