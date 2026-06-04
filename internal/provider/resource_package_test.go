@@ -1559,6 +1559,77 @@ func TestPackageResource_Upsert_PublicKeyAndPackageSignatureVerification(t *test
 	}
 }
 
+func TestPackageResource_PlanTimeSignatureVerification(t *testing.T) {
+	tests := []struct {
+		name                string
+		modelOpts           []PackageResourceModelDataOption
+		loadPackageError    error
+		expectError         bool
+		expectLoadPackage   bool
+	}{
+		{
+			name:              "verify=true with load success passes",
+			modelOpts:         []PackageResourceModelDataOption{WithPublicKey("some-key")},
+			loadPackageError:  nil,
+			expectError:       false,
+			expectLoadPackage: true,
+		},
+		{
+			name:              "verify=true with load error returns error",
+			modelOpts:         []PackageResourceModelDataOption{WithPublicKey("some-key")},
+			loadPackageError:  fmt.Errorf("signature verification failed"),
+			expectError:       true,
+			expectLoadPackage: true,
+		},
+		{
+			name:              "verify=false skips verification entirely",
+			modelOpts:         []PackageResourceModelDataOption{WithSignatureVerificationEnabled(false)},
+			loadPackageError:  fmt.Errorf("should not be called"),
+			expectError:       false,
+			expectLoadPackage: false,
+		},
+		{
+			name: "unknown source skips verification",
+			modelOpts: []PackageResourceModelDataOption{func(m *PackageResourceModel) {
+				m.Source = types.StringUnknown()
+			}},
+			loadPackageError:  fmt.Errorf("should not be called"),
+			expectError:       false,
+			expectLoadPackage: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			if tc.expectLoadPackage {
+				if tc.loadPackageError == nil {
+					result := newValidLoadPackageResult()
+					mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(result.Layout, result.Error)
+				} else {
+					result := newErrorLoadPackageResult(tc.loadPackageError)
+					mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(result.Layout, result.Error)
+				}
+			}
+
+			packageResource := NewPackageResource(nil, mockPackager, nil, nil).(*PackageResource)
+			model := NewTestPackageResourceModel(tc.modelOpts...)
+			err := packageResource.planTimeSignatureVerification(context.Background(), model)
+
+			if tc.expectError {
+				assert.NotNil(t, err)
+			} else {
+				assert.Nil(t, err)
+			}
+			if tc.expectLoadPackage {
+				mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+			} else {
+				mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+			}
+		})
+	}
+}
+
 // Unit tests for upsert method architecture attribute
 func TestPackageResource_Upsert_Architecture(t *testing.T) {
 	tests := []struct {
