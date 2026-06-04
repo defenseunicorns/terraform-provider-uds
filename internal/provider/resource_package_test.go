@@ -1561,11 +1561,11 @@ func TestPackageResource_Upsert_PublicKeyAndPackageSignatureVerification(t *test
 
 func TestPackageResource_PlanTimeSignatureVerification(t *testing.T) {
 	tests := []struct {
-		name                string
-		modelOpts           []PackageResourceModelDataOption
-		loadPackageError    error
-		expectError         bool
-		expectLoadPackage   bool
+		name              string
+		modelOpts         []PackageResourceModelDataOption
+		loadPackageError  error
+		expectError       bool
+		expectLoadPackage bool
 	}{
 		{
 			name:              "verify=true with load success passes",
