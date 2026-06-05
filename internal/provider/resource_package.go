@@ -1091,7 +1091,9 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 		return plan, err
 	}
 	defer func() {
-		err = errors.Join(err, pkgLayout.Cleanup())
+		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
+			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
+		}
 	}()
 
 	packageNamespace := plan.Namespace.ValueString()
@@ -1151,7 +1153,9 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, err
 	}
 	defer func() {
-		err = errors.Join(err, pkgLayout.Cleanup())
+		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
+			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
+		}
 	}()
 
 	// Alpha: if optional_components is set, use it directly; otherwise fall back to component blocks.
