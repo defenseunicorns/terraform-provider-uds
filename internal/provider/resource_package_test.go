@@ -1572,7 +1572,7 @@ func TestPackageResource_Upsert_PublicKeyAndPackageSignatureVerification(t *test
 	}
 }
 
-func TestPackageResource_PlanTimeSignatureVerification(t *testing.T) {
+func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T) {
 	tests := []struct {
 		name              string
 		modelOpts         []PackageResourceModelDataOption
@@ -1625,14 +1625,14 @@ func TestPackageResource_PlanTimeSignatureVerification(t *testing.T) {
 				}
 			}
 
-			packageResource := NewPackageResource(&udsProviderConfig{VerifyPackageSignaturesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 			model := NewTestPackageResourceModel(tc.modelOpts...)
-			err := packageResource.planTimeSignatureVerification(context.Background(), model)
+			sigErr, _ := packageResource.runPackagePlanChecks(context.Background(), model)
 
 			if tc.expectError {
-				assert.NotNil(t, err)
+				assert.NotNil(t, sigErr)
 			} else {
-				assert.Nil(t, err)
+				assert.Nil(t, sigErr)
 			}
 			if tc.expectLoadPackage {
 				mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
@@ -2024,31 +2024,31 @@ func TestGetMissingOptionalComponents(t *testing.T) {
 		expected []string
 	}{
 		{
-			name:     "old has one optional, new is empty - returns old optional for removal",
+			name:     "returns old optional for removal when old has one optional and new is empty",
 			oldPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics"})),
 			newPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{})),
 			expected: []string{"metrics"},
 		},
 		{
-			name:     "old has two optionals, new keeps one - returns the removed one",
+			name:     "returns removed optional when old has two optionals and new keeps one",
 			oldPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics", "logging"})),
 			newPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{"logging"})),
 			expected: []string{"metrics"},
 		},
 		{
-			name:     "old and new identical - returns nothing",
+			name:     "returns nothing when old and new are identical",
 			oldPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics"})),
 			newPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics"})),
 			expected: nil,
 		},
 		{
-			name:     "old is null (legacy path) - skipped, returns nothing",
+			name:     "returns nothing when old is null on the legacy path",
 			oldPlan:  NewTestPackageResourceModel(),
 			newPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{})),
 			expected: nil,
 		},
 		{
-			name:     "new is null (legacy path) - skipped, returns nothing",
+			name:     "returns nothing when new is null on the legacy path",
 			oldPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics"})),
 			newPlan:  NewTestPackageResourceModel(),
 			expected: nil,
@@ -2139,6 +2139,72 @@ func TestUpdate_RemoveComponents(t *testing.T) {
 				mockCluster.AssertNotCalled(t, "NewWithWait")
 				mockPackager.AssertNotCalled(t, "GetPackageFromSourceOrCluster")
 				mockPackager.AssertNotCalled(t, "Remove")
+			}
+		})
+	}
+}
+
+func TestValidateOptionalComponentsAgainstPackage(t *testing.T) {
+	boolTrue := true
+	pkgComponents := []v1alpha1.ZarfComponent{
+		{Name: "required-comp", Required: &boolTrue},
+		{Name: "optional-a"},
+		{Name: "optional-b"},
+	}
+
+	tests := []struct {
+		name          string
+		requested     []string
+		pkgComponents []v1alpha1.ZarfComponent
+		expectError   bool
+		errorContains []string
+	}{
+		{
+			name:          "valid optional component passes",
+			requested:     []string{"optional-a"},
+			pkgComponents: pkgComponents,
+			expectError:   false,
+		},
+		{
+			name:          "unknown name errors and lists valid optionals",
+			requested:     []string{"does-not-exist"},
+			pkgComponents: pkgComponents,
+			expectError:   true,
+			errorContains: []string{`"does-not-exist"`, `"optional-a"`, `"optional-b"`},
+		},
+		{
+			name:          "required component name errors and lists valid optionals",
+			requested:     []string{"required-comp"},
+			pkgComponents: pkgComponents,
+			expectError:   true,
+			errorContains: []string{`"required-comp"`, `"optional-a"`, `"optional-b"`},
+		},
+		{
+			name:          "multiple invalid names all shown",
+			requested:     []string{"bad-one", "bad-two", "optional-a"},
+			pkgComponents: pkgComponents,
+			expectError:   true,
+			errorContains: []string{`"bad-one"`, `"bad-two"`},
+		},
+		{
+			name:          "package with no optionals reports specific message",
+			requested:     []string{"anything"},
+			pkgComponents: []v1alpha1.ZarfComponent{{Name: "only-required", Required: &boolTrue}},
+			expectError:   true,
+			errorContains: []string{"no optional components"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateOptionalComponentsAgainstPackage(tc.requested, tc.pkgComponents)
+			if tc.expectError {
+				assert.NotNil(t, err)
+				for _, s := range tc.errorContains {
+					assert.Contains(t, err.Error(), s)
+				}
+			} else {
+				assert.Nil(t, err)
 			}
 		})
 	}
@@ -4360,43 +4426,43 @@ func TestValidateOptionalComponentsNotWithComponentBlock(t *testing.T) {
 		expectError        bool
 	}{
 		{
-			name:               "null optional_components with component blocks - no error",
+			name:               "allows null optional_components with component blocks",
 			optionalComponents: types.SetNull(types.StringType),
 			components:         componentSet,
 			expectError:        false,
 		},
 		{
-			name:               "null optional_components without component blocks - no error",
+			name:               "allows null optional_components without component blocks",
 			optionalComponents: types.SetNull(types.StringType),
 			components:         emptyComponents,
 			expectError:        false,
 		},
 		{
-			name:               "non-empty optional_components without component blocks - no error",
+			name:               "allows non-empty optional_components without component blocks",
 			optionalComponents: optionalWithNames,
 			components:         emptyComponents,
 			expectError:        false,
 		},
 		{
-			name:               "empty optional_components without component blocks - no error",
+			name:               "allows empty optional_components without component blocks",
 			optionalComponents: emptyOptional,
 			components:         emptyComponents,
 			expectError:        false,
 		},
 		{
-			name:               "empty optional_components with component blocks - error",
+			name:               "errors on empty optional_components with component blocks",
 			optionalComponents: emptyOptional,
 			components:         componentSet,
 			expectError:        true,
 		},
 		{
-			name:               "non-empty optional_components with component blocks - error",
+			name:               "errors on non-empty optional_components with component blocks",
 			optionalComponents: optionalWithNames,
 			components:         componentSet,
 			expectError:        true,
 		},
 		{
-			name:               "unknown optional_components with component blocks - no error (defer validation)",
+			name:               "allows unknown optional_components with component blocks because validation is deferred",
 			optionalComponents: types.SetUnknown(types.StringType),
 			components:         componentSet,
 			expectError:        false,
@@ -4428,25 +4494,25 @@ func TestPackageResource_Upsert_OptionalComponents(t *testing.T) {
 		expectedFilteredNames []string
 	}{
 		{
-			name:                  "null optional_components uses component block path - no optional components selected",
+			name:                  "uses component block path with no selected optionals when optional_components is null",
 			optionalComponents:    nil,
 			components:            []ComponentModel{},
 			expectedFilteredNames: []string{},
 		},
 		{
-			name:                  "empty optional_components - filter called with no optional components",
+			name:                  "calls filter with no optional components when optional_components is empty",
 			optionalComponents:    &[]string{},
 			components:            []ComponentModel{},
 			expectedFilteredNames: []string{},
 		},
 		{
-			name:                  "single optional component - filter called with that name",
+			name:                  "calls filter with the selected single optional component",
 			optionalComponents:    &[]string{"test-optional-non-default-component-0"},
 			components:            []ComponentModel{},
 			expectedFilteredNames: []string{"test-optional-non-default-component-0"},
 		},
 		{
-			name:                  "multiple optional components - filter called with all names",
+			name:                  "calls filter with all selected optional components",
 			optionalComponents:    &[]string{"test-optional-non-default-component-0", "test-optional-non-default-component-1"},
 			components:            []ComponentModel{},
 			expectedFilteredNames: []string{"test-optional-non-default-component-0", "test-optional-non-default-component-1"},
@@ -4500,7 +4566,7 @@ func TestDeployedOptionalComponents(t *testing.T) {
 		expected           []string
 	}{
 		{
-			name: "only required components deployed - returns empty",
+			name: "returns empty when only required components are deployed",
 			deployedComponents: []zarfState.DeployedComponent{
 				{Name: "required-a"},
 				{Name: "required-b"},
@@ -4508,7 +4574,7 @@ func TestDeployedOptionalComponents(t *testing.T) {
 			expected: []string{},
 		},
 		{
-			name: "required and optional deployed - returns only optional",
+			name: "returns only optional components when required and optional components are deployed",
 			deployedComponents: []zarfState.DeployedComponent{
 				{Name: "required-a"},
 				{Name: "required-b"},
@@ -4526,7 +4592,7 @@ func TestDeployedOptionalComponents(t *testing.T) {
 			expected: []string{"optional-nil-required", "optional-false-required"},
 		},
 		{
-			name: "deployed component not in package definition - excluded",
+			name: "excludes deployed components that are not in the package definition",
 			deployedComponents: []zarfState.DeployedComponent{
 				{Name: "required-a"},
 				{Name: "unknown-component"},
@@ -4534,7 +4600,7 @@ func TestDeployedOptionalComponents(t *testing.T) {
 			expected: []string{},
 		},
 		{
-			name:               "no deployed components - returns empty",
+			name:               "returns empty when no components are deployed",
 			deployedComponents: []zarfState.DeployedComponent{},
 			expected:           []string{},
 		},

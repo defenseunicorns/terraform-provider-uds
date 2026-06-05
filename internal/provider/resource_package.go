@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -532,10 +533,12 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	var err error
 	plan, err = r.deployAsNew(ctx, plan)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error creating package",
-			"Could not create resource, unexpected error: "+err.Error(),
-		)
+		var optErr *optionalComponentsValidationError
+		if errors.As(err, &optErr) {
+			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", err.Error())
+		} else {
+			resp.Diagnostics.AddError("Error creating package", "Could not create resource, unexpected error: "+err.Error())
+		}
 		return
 	}
 
@@ -689,10 +692,12 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	var err error
 	plan, err = r.deployAsNewOrUpdate(ctx, plan, oldPlan, resp)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error updating package",
-			"Could not update package, unexpected error: "+err.Error(),
-		)
+		var optErr *optionalComponentsValidationError
+		if errors.As(err, &optErr) {
+			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", err.Error())
+		} else {
+			resp.Diagnostics.AddError("Error updating package", "Could not update package, unexpected error: "+err.Error())
+		}
 		return
 	}
 	if resp.Diagnostics.HasError() {
@@ -826,12 +831,21 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		plan.Architecture = types.StringValue(defaultArch)
 	}
 
-	if r.providerConfig == nil || r.providerConfig.VerifyPackageSignaturesOnPlan {
-		if err := r.planTimeSignatureVerification(ctx, plan); err != nil {
+	if r.providerConfig == nil || r.providerConfig.ValidatePackagesOnPlan {
+		sigErr, optErr := r.runPackagePlanChecks(ctx, plan)
+		if sigErr != nil {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("signature_verification"),
 				"Package signature verification failed",
-				err.Error(),
+				sigErr.Error(),
+			)
+			return
+		}
+		if optErr != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("optional_components"),
+				"Invalid optional components",
+				optErr.Error(),
 			)
 			return
 		}
@@ -1154,6 +1168,11 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if !plan.OptionalComponents.IsNull() && !plan.OptionalComponents.IsUnknown() {
 		if diags := plan.OptionalComponents.ElementsAs(ctx, &optionalComponents, false); diags.HasError() {
 			return plan, fmt.Errorf("failed to read optional_components: %v", diags)
+		}
+		if len(optionalComponents) > 0 {
+			if err := validateOptionalComponentsAgainstPackage(optionalComponents, pkgLayout.Pkg.Components); err != nil {
+				return plan, err
+			}
 		}
 	} else {
 		_, optionalComponents, err = getRequiredAndOptionalPackageComponentsNames(plan, pkgLayout)
@@ -1910,21 +1929,90 @@ func emptyConnectStringSet() types.Set {
 	)
 }
 
-// planTimeSignatureVerification loads the package and verifies its signature at plan time.
-// Skipped when source is unknown, verification is disabled, or resource is unconfigured.
-func (r *PackageResource) planTimeSignatureVerification(ctx context.Context, plan PackageResourceModel) error {
+// runPackagePlanChecks loads the package once and runs all plan-time validation checks.
+// Returns (sigOrLoadErr, optComponentsErr) so the caller can attribute each to the correct diagnostic path.
+// Skipped when source is unknown, packager/providerConfig are nil, or no checks are needed.
+func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel) (sigErr error, optComponentsErr error) {
 	if plan.Source.IsUnknown() || plan.Source.IsNull() {
-		return nil
+		return nil, nil
 	}
 	if r.packager == nil || r.providerConfig == nil {
-		return nil
+		return nil, nil
 	}
-	if !getEffectiveSignatureVerification(ctx, plan) {
-		return nil
+
+	needsSigVerification := getEffectiveSignatureVerification(ctx, plan)
+	var requestedOptionals []string
+	needsOptionalValidation := !plan.OptionalComponents.IsNull() && !plan.OptionalComponents.IsUnknown() && len(plan.OptionalComponents.Elements()) > 0
+	if needsOptionalValidation {
+		plan.OptionalComponents.ElementsAs(ctx, &requestedOptionals, false)
 	}
+
+	if !needsSigVerification && !needsOptionalValidation {
+		return nil, nil
+	}
+
 	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
 	if pkgLayout != nil {
 		defer pkgLayout.Cleanup()
 	}
-	return err
+	if err != nil {
+		return err, nil
+	}
+
+	if needsOptionalValidation {
+		optComponentsErr = validateOptionalComponentsAgainstPackage(requestedOptionals, pkgLayout.Pkg.Components)
+	}
+
+	return nil, optComponentsErr
+}
+
+// optionalComponentsValidationError is a sentinel type so callers can distinguish
+// optional_components validation failures and surface them as attribute-level diagnostics.
+type optionalComponentsValidationError struct{ msg string }
+
+func (e *optionalComponentsValidationError) Error() string { return e.msg }
+
+// packageOptionalComponentNames returns names of non-required package components, sorted.
+func packageOptionalComponentNames(pkgComponents []v1alpha1.ZarfComponent) []string {
+	names := make([]string, 0)
+	for _, c := range pkgComponents {
+		if !c.IsRequired() {
+			names = append(names, c.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// validateOptionalComponentsAgainstPackage checks that all requested names are valid optional
+// components in the package. Returns an error listing invalid names and available optional names.
+func validateOptionalComponentsAgainstPackage(requested []string, pkgComponents []v1alpha1.ZarfComponent) error {
+	available := packageOptionalComponentNames(pkgComponents)
+	availableSet := make(map[string]struct{}, len(available))
+	for _, name := range available {
+		availableSet[name] = struct{}{}
+	}
+	var invalid []string
+	for _, name := range requested {
+		if _, found := availableSet[name]; !found {
+			invalid = append(invalid, name)
+		}
+	}
+	if len(invalid) == 0 {
+		return nil
+	}
+	if len(available) == 0 {
+		return &optionalComponentsValidationError{msg: "this package defines no optional components"}
+	}
+	sort.Strings(invalid)
+	quotedInvalid := make([]string, len(invalid))
+	for i, name := range invalid {
+		quotedInvalid[i] = fmt.Sprintf("%q", name)
+	}
+	quotedAvailable := make([]string, len(available))
+	for i, name := range available {
+		quotedAvailable[i] = fmt.Sprintf("%q", name)
+	}
+	return &optionalComponentsValidationError{msg: fmt.Sprintf("invalid optional_components: %s; available: %s",
+		strings.Join(quotedInvalid, ", "), strings.Join(quotedAvailable, ", "))}
 }
