@@ -4716,3 +4716,56 @@ func TestDeployedOptionalComponents(t *testing.T) {
 		})
 	}
 }
+
+func TestRefreshOptionalComponentsFromDeployedPackage(t *testing.T) {
+	boolTrue := true
+	boolFalse := false
+
+	deployedPkg := zarfState.DeployedPackage{
+		DeployedComponents: []zarfState.DeployedComponent{
+			{Name: "required-a"},
+			{Name: "optional-nil-required"},
+		},
+		Data: v1alpha1.ZarfPackage{
+			Components: []v1alpha1.ZarfComponent{
+				{Name: "required-a", Required: &boolTrue},
+				{Name: "optional-nil-required", Required: nil},
+				{Name: "optional-false-required", Required: &boolFalse},
+			},
+		},
+	}
+
+	t.Run("null current returns null unchanged", func(t *testing.T) {
+		current := types.SetNull(types.StringType)
+		result, diags := refreshOptionalComponentsFromDeployedPackage(deployedPkg, current)
+		assert.False(t, diags.HasError())
+		assert.True(t, result.IsNull())
+	})
+
+	t.Run("unknown current returns unknown unchanged", func(t *testing.T) {
+		current := types.SetUnknown(types.StringType)
+		result, diags := refreshOptionalComponentsFromDeployedPackage(deployedPkg, current)
+		assert.False(t, diags.HasError())
+		assert.True(t, result.IsUnknown())
+	})
+
+	t.Run("returns deployed optional components from package metadata", func(t *testing.T) {
+		current := types.SetValueMust(types.StringType, []attr.Value{types.StringValue("optional-nil-required")})
+		result, diags := refreshOptionalComponentsFromDeployedPackage(deployedPkg, current)
+		assert.False(t, diags.HasError())
+		var names []string
+		result.ElementsAs(context.Background(), &names, false)
+		assert.ElementsMatch(t, []string{"optional-nil-required"}, names)
+	})
+
+	t.Run("no deployed optionals returns empty set", func(t *testing.T) {
+		pkgNoOptionals := zarfState.DeployedPackage{
+			DeployedComponents: []zarfState.DeployedComponent{{Name: "required-a"}},
+			Data:               v1alpha1.ZarfPackage{Components: []v1alpha1.ZarfComponent{{Name: "required-a", Required: &boolTrue}}},
+		}
+		current := types.SetValueMust(types.StringType, []attr.Value{})
+		result, diags := refreshOptionalComponentsFromDeployedPackage(pkgNoOptionals, current)
+		assert.False(t, diags.HasError())
+		assert.Equal(t, 0, len(result.Elements()))
+	})
+}

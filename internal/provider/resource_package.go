@@ -642,30 +642,13 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	data.ConnectStrings = connectStrings
 
 	// Bi-directional drift detection for optional_components (alpha):
-	// load package to determine which deployed components are optional, update state.
-	// Skipped for new resources (nothing deployed yet) and when optional_components is not in use.
-	if !data.OptionalComponents.IsNull() && !data.OptionalComponents.IsUnknown() {
-		if r.packager != nil && r.providerConfig != nil {
-			pkgLayout, err := r.getPackageLayoutFromSource(ctx, data)
-			if err != nil {
-				resp.Diagnostics.AddError("Error loading package for optional_components drift detection", err.Error())
-				return
-			}
-			defer pkgLayout.Cleanup()
-
-			optionals := deployedOptionalComponents(deployedPackage.DeployedComponents, pkgLayout.Pkg.Components)
-			optionalVals := make([]attr.Value, len(optionals))
-			for i, name := range optionals {
-				optionalVals[i] = types.StringValue(name)
-			}
-			updatedSet, diags := types.SetValue(types.StringType, optionalVals)
-			if diags.HasError() {
-				resp.Diagnostics.AddError("Error rebuilding optional_components in state", fmt.Sprintf("%v", diags))
-				return
-			}
-			data.OptionalComponents = updatedSet
-		}
+	// Use deployed package metadata to determine which deployed components are optional.
+	updatedOptionals, optDiags := refreshOptionalComponentsFromDeployedPackage(deployedPackage, data.OptionalComponents)
+	resp.Diagnostics.Append(optDiags...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
+	data.OptionalComponents = updatedOptionals
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -1929,6 +1912,20 @@ func deployedOptionalComponents(deployedComponents []zarfState.DeployedComponent
 		}
 	}
 	return optional
+}
+
+// refreshOptionalComponentsFromDeployedPackage computes the deployed optional components from cluster state.
+// Returns current unchanged when it is null or unknown. No package source download is performed.
+func refreshOptionalComponentsFromDeployedPackage(deployedPackage zarfState.DeployedPackage, current types.Set) (types.Set, diag.Diagnostics) {
+	if current.IsNull() || current.IsUnknown() {
+		return current, nil
+	}
+	optionals := deployedOptionalComponents(deployedPackage.DeployedComponents, deployedPackage.Data.Components)
+	optionalVals := make([]attr.Value, len(optionals))
+	for i, name := range optionals {
+		optionalVals[i] = types.StringValue(name)
+	}
+	return types.SetValue(types.StringType, optionalVals)
 }
 
 func emptyConnectStringSet() types.Set {
