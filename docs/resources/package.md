@@ -165,13 +165,14 @@ resource "uds_package" "dos_games" {
   source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
   namespace  = "demo"
 
+  # This package is signed with a key, but signature verification is disabled here with verify = false.
+  # To verify it, set verify = true or remove that attribute, then provide the public key directly
+  # or fetch it locally and reference it with the file function as shown below:
+  #   curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub
   signature_verification = {
-    verify = false # Do not verify package signature if public key is not available. Otherwise set to true (or remove this attribute) and provide public key.
+    verify = false
+    #public_key = file("dosgames.pub")
   }
-
-  # public_key can be set explicitly to the key value, or use file function to reference local file:
-  #    curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub
-  #public_key                = file("dosgames.pub") 
 }
 ```
 
@@ -185,8 +186,9 @@ resource "uds_package" "dos_games" {
 ### Optional
 
 - `architecture` (String) System architecture of the target cluster. Defaults to the provider default architecture.
-- `component` (Block Set) Component configuration to include/exclude in the UDS package deployment. (see [below for nested schema](#nestedblock--component))
+- `component` (Block Set) Selects an optional package component to install and configure helm chart overrides for it. Mutually exclusive with `optional_components`. When no `component` blocks are specified, only required package components are installed. (see [below for nested schema](#nestedblock--component))
 - `namespace` (String) [Alpha] Namespace in which to deploy the UDS package.
+- `optional_components` (Set of String) [Alpha] Set of optional package component names to install. Case-sensitive. Mutually exclusive with `component` blocks — specifying both is a validation error. When omitted or set to an empty list, only required package components are installed.
 - `sensitive_vars` (Attributes Set) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))
 - `signature_verification` (Attributes) Signature verification configuration. Omit to use defaults (verification enabled, no key). (see [below for nested schema](#nestedatt--signature_verification))
 - `timeout` (String) Timeout for the deploy operation.

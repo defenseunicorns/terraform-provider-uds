@@ -91,9 +91,25 @@ func (z *zarfPackageComponentFilter) ForRemove(optionalComponents []string) filt
 }
 
 func (z *zarfPackageComponentFilter) ForDeploy(optionalComponents []string) filters.ComponentFilterStrategy {
+	if len(optionalComponents) == 0 {
+		return &requiredOnlyComponentFilter{}
+	}
 	return filters.Combine(
 		filters.ForDeploy(strings.Join(optionalComponents, ","), false),
 	)
+}
+
+// requiredOnlyComponentFilter selects only required package components, excluding optional ones (including Zarf defaults).
+type requiredOnlyComponentFilter struct{}
+
+func (f *requiredOnlyComponentFilter) Apply(pkg v1alpha1.ZarfPackage) ([]v1alpha1.ZarfComponent, error) {
+	required := make([]v1alpha1.ZarfComponent, 0)
+	for _, c := range pkg.Components {
+		if c.IsRequired() {
+			required = append(required, c)
+		}
+	}
+	return required, nil
 }
 
 // NewPackageComponentFilter creates a new instance of the PackageComponentFilter interface.
