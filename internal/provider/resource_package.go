@@ -497,7 +497,7 @@ func (r *PackageResource) ValidateConfig(ctx context.Context, req resource.Valid
 	validateUniqueVarNames(model, resp)
 	validateSignatureVerificationAttributes(ctx, model, resp)
 	// TODO: remove when component block is removed
-	validateOptionalComponentsNotWithComponentBlock(model, resp)
+	validateComponentBlockOptionalComponentsMutualExclusivity(model, resp)
 }
 
 // Configure configures the resource with provider data.
@@ -1703,10 +1703,10 @@ func normalizeOptionalComponentsPlan(config, plan PackageResourceModel) PackageR
 	return plan
 }
 
-// validateOptionalComponentsNotWithComponentBlock errors when optional_components is
+// validateComponentBlockOptionalComponentsMutualExclusivity errors when optional_components is
 // set alongside component blocks. The two paradigms are mutually exclusive.
 // TODO: remove when component block is removed
-func validateOptionalComponentsNotWithComponentBlock(model PackageResourceModel, resp *resource.ValidateConfigResponse) {
+func validateComponentBlockOptionalComponentsMutualExclusivity(model PackageResourceModel, resp *resource.ValidateConfigResponse) {
 	if model.OptionalComponents.IsNull() || model.OptionalComponents.IsUnknown() {
 		return
 	}

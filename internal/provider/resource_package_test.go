@@ -4410,7 +4410,7 @@ func TestHandleVerifyResult(t *testing.T) {
 	}
 }
 
-func TestValidateOptionalComponentsNotWithComponentBlock(t *testing.T) {
+func TestValidateComponentBlockOptionalComponentsMutualExclusivity(t *testing.T) {
 	componentSet := componentSliceToSet([]ComponentModel{
 		{Name: types.StringValue("some-component")},
 	})
@@ -4476,7 +4476,7 @@ func TestValidateOptionalComponentsNotWithComponentBlock(t *testing.T) {
 				Components:         tc.components,
 			}
 			resp := &resource.ValidateConfigResponse{}
-			validateOptionalComponentsNotWithComponentBlock(model, resp)
+			validateComponentBlockOptionalComponentsMutualExclusivity(model, resp)
 			if tc.expectError {
 				assert.True(t, resp.Diagnostics.HasError(), "expected error but got none")
 			} else {
