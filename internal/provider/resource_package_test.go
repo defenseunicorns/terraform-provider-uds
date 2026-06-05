@@ -24,6 +24,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zarfCluster "github.com/zarf-dev/zarf/src/pkg/cluster"
 	"github.com/zarf-dev/zarf/src/pkg/packager"
@@ -32,6 +33,7 @@ import (
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
 	"github.com/zarf-dev/zarf/src/pkg/variables"
+	zarfZoci "github.com/zarf-dev/zarf/src/pkg/zoci"
 
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 )
@@ -1577,28 +1579,32 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 		name              string
 		modelOpts         []PackageResourceModelDataOption
 		loadPackageError  error
-		expectError       bool
+		expectLoadErr     bool
+		expectSigErr      bool
 		expectLoadPackage bool
 	}{
 		{
 			name:              "verify=true with load success passes",
 			modelOpts:         []PackageResourceModelDataOption{WithPublicKey("some-key")},
 			loadPackageError:  nil,
-			expectError:       false,
+			expectLoadErr:     false,
+			expectSigErr:      false,
 			expectLoadPackage: true,
 		},
 		{
-			name:              "verify=true with load error returns error",
+			name:              "verify=true with load error returns loadErr not sigErr",
 			modelOpts:         []PackageResourceModelDataOption{WithPublicKey("some-key")},
-			loadPackageError:  fmt.Errorf("signature verification failed"),
-			expectError:       true,
+			loadPackageError:  fmt.Errorf("network failure loading package"),
+			expectLoadErr:     true,
+			expectSigErr:      false,
 			expectLoadPackage: true,
 		},
 		{
 			name:              "verify=false skips verification entirely",
 			modelOpts:         []PackageResourceModelDataOption{WithSignatureVerificationEnabled(false)},
 			loadPackageError:  fmt.Errorf("should not be called"),
-			expectError:       false,
+			expectLoadErr:     false,
+			expectSigErr:      false,
 			expectLoadPackage: false,
 		},
 		{
@@ -1607,7 +1613,8 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 				m.Source = types.StringUnknown()
 			}},
 			loadPackageError:  fmt.Errorf("should not be called"),
-			expectError:       false,
+			expectLoadErr:     false,
+			expectSigErr:      false,
 			expectLoadPackage: false,
 		},
 	}
@@ -1627,18 +1634,114 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 
 			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 			model := NewTestPackageResourceModel(tc.modelOpts...)
-			sigErr, _ := packageResource.runPackagePlanChecks(context.Background(), model)
+			result := packageResource.runPackagePlanChecks(context.Background(), model)
 
-			if tc.expectError {
-				assert.NotNil(t, sigErr)
+			if tc.expectLoadErr {
+				assert.NotNil(t, result.LoadErr)
 			} else {
-				assert.Nil(t, sigErr)
+				assert.Nil(t, result.LoadErr)
+			}
+			if tc.expectSigErr {
+				assert.NotNil(t, result.SigErr)
+			} else {
+				assert.Nil(t, result.SigErr)
 			}
 			if tc.expectLoadPackage {
 				mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 			} else {
 				mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 			}
+		})
+	}
+}
+
+func TestPackageResource_RunPackagePlanChecks_ErrorRouting(t *testing.T) {
+	tests := []struct {
+		name             string
+		modelOpts        []PackageResourceModelDataOption
+		loadPackageError error
+		expectLoadErr    bool
+		expectSigErr     bool
+		expectOptErr     bool
+	}{
+		{
+			name: "load failure routes to loadErr not sigErr",
+			modelOpts: []PackageResourceModelDataOption{
+				WithSignatureVerificationEnabled(false),
+				WithOptionalComponents([]string{"test-optional-non-default-component-0"}),
+			},
+			loadPackageError: fmt.Errorf("connection refused"),
+			expectLoadErr:    true,
+			expectSigErr:     false,
+			expectOptErr:     false,
+		},
+		{
+			name: "verify=false with invalid optional_components validates optionals without sig path",
+			modelOpts: []PackageResourceModelDataOption{
+				WithSignatureVerificationEnabled(false),
+				WithOptionalComponents([]string{"nonexistent-component"}),
+			},
+			loadPackageError: nil,
+			expectLoadErr:    false,
+			expectSigErr:     false,
+			expectOptErr:     true,
+		},
+		{
+			name: "invalid optional_components routes to optErr not sigErr",
+			modelOpts: []PackageResourceModelDataOption{
+				WithPublicKey("some-key"),
+				WithOptionalComponents([]string{"nonexistent-component"}),
+			},
+			loadPackageError: nil,
+			expectLoadErr:    false,
+			expectSigErr:     false,
+			expectOptErr:     true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			if tc.loadPackageError == nil {
+				result := newValidLoadPackageResult()
+				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(result.Layout, result.Error)
+			} else {
+				result := newErrorLoadPackageResult(tc.loadPackageError)
+				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(result.Layout, result.Error)
+			}
+
+			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+			model := NewTestPackageResourceModel(tc.modelOpts...)
+			result := packageResource.runPackagePlanChecks(context.Background(), model)
+
+			if tc.expectLoadErr {
+				assert.NotNil(t, result.LoadErr, "expected LoadErr")
+			} else {
+				assert.Nil(t, result.LoadErr, "expected no LoadErr")
+			}
+			if tc.expectSigErr {
+				assert.NotNil(t, result.SigErr, "expected SigErr")
+			} else {
+				assert.Nil(t, result.SigErr, "expected no SigErr")
+			}
+			if tc.expectOptErr {
+				assert.NotNil(t, result.OptComponentsErr, "expected OptComponentsErr")
+			} else {
+				assert.Nil(t, result.OptComponentsErr, "expected no OptComponentsErr")
+			}
+
+			foundLoadPackageCall := false
+			var loadOpts zarfPackager.LoadOptions
+			for _, call := range mockPackager.Calls {
+				if call.Method == "LoadPackage" {
+					loadOpts = call.Arguments[2].(zarfPackager.LoadOptions)
+					foundLoadPackageCall = true
+					break
+				}
+			}
+			require.True(t, foundLoadPackageCall, "LoadPackage was not called")
+			assert.Equal(t, []zarfZoci.LayerType{zarfZoci.MetadataLayers}, loadOpts.LayerTypes,
+				"inspection load must request metadata layers only")
 		})
 	}
 }

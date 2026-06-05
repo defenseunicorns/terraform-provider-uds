@@ -43,6 +43,7 @@ import (
 	zarfLayout "github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfSigning "github.com/zarf-dev/zarf/src/pkg/signing"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
+	zarfZoci "github.com/zarf-dev/zarf/src/pkg/zoci"
 	zarfTypes "github.com/zarf-dev/zarf/src/types"
 )
 
@@ -832,20 +833,28 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	}
 
 	if r.providerConfig == nil || r.providerConfig.ValidatePackagesOnPlan {
-		sigErr, optErr := r.runPackagePlanChecks(ctx, plan)
-		if sigErr != nil {
+		checks := r.runPackagePlanChecks(ctx, plan)
+		if checks.LoadErr != nil {
 			resp.Diagnostics.AddAttributeError(
-				path.Root("signature_verification"),
-				"Package signature verification failed",
-				sigErr.Error(),
+				path.Root("source"),
+				"Failed to load package",
+				checks.LoadErr.Error(),
 			)
 			return
 		}
-		if optErr != nil {
+		if checks.SigErr != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("signature_verification"),
+				"Package signature verification failed",
+				checks.SigErr.Error(),
+			)
+			return
+		}
+		if checks.OptComponentsErr != nil {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("optional_components"),
 				"Invalid optional components",
-				optErr.Error(),
+				checks.OptComponentsErr.Error(),
 			)
 			return
 		}
@@ -1929,15 +1938,42 @@ func emptyConnectStringSet() types.Set {
 	)
 }
 
+// loadPackageLayoutForInspection loads the package for metadata inspection only, without signature verification.
+// Use when only component metadata is needed (e.g., optional_components validation).
+func (r *PackageResource) loadPackageLayoutForInspection(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
+	packageSource, err := getPackageSource(model, *r.providerConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	loadOpt := zarfPackager.LoadOptions{
+		Filter:               zarfFilters.Empty(),
+		Architecture:         getArchitecture(model, *r.providerConfig),
+		VerificationStrategy: layout.VerifyNever,
+		LayerTypes:           []zarfZoci.LayerType{zarfZoci.MetadataLayers},
+		RemoteOptions:        r.getRemoteOptions(),
+		CachePath:            r.providerConfig.ZarfCachePath,
+	}
+
+	return r.packager.LoadPackage(ctx, packageSource, loadOpt)
+}
+
+// packagePlanCheckResult holds per-check errors from runPackagePlanChecks so each can be
+// attributed to the correct diagnostic path without expanding the function signature.
+type packagePlanCheckResult struct {
+	LoadErr          error
+	SigErr           error
+	OptComponentsErr error
+}
+
 // runPackagePlanChecks loads the package once and runs all plan-time validation checks.
-// Returns (sigOrLoadErr, optComponentsErr) so the caller can attribute each to the correct diagnostic path.
 // Skipped when source is unknown, packager/providerConfig are nil, or no checks are needed.
-func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel) (sigErr error, optComponentsErr error) {
+func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel) packagePlanCheckResult {
 	if plan.Source.IsUnknown() || plan.Source.IsNull() {
-		return nil, nil
+		return packagePlanCheckResult{}
 	}
 	if r.packager == nil || r.providerConfig == nil {
-		return nil, nil
+		return packagePlanCheckResult{}
 	}
 
 	needsSigVerification := getEffectiveSignatureVerification(ctx, plan)
@@ -1948,22 +1984,44 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 	}
 
 	if !needsSigVerification && !needsOptionalValidation {
-		return nil, nil
+		return packagePlanCheckResult{}
 	}
 
-	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
+	pkgLayout, err := r.loadPackageLayoutForInspection(ctx, plan)
 	if pkgLayout != nil {
 		defer pkgLayout.Cleanup()
 	}
 	if err != nil {
-		return err, nil
+		return packagePlanCheckResult{LoadErr: err}
+	}
+
+	if needsSigVerification {
+		tmpDir, err := os.MkdirTemp("", "uds-package-verify-*")
+		if err != nil {
+			return packagePlanCheckResult{SigErr: fmt.Errorf("failed to create temp dir for package verification: %w", err)}
+		}
+		defer os.RemoveAll(tmpDir)
+
+		verifyBlobOpts, err := buildVerifyBlobOptions(ctx, plan, tmpDir)
+		if err != nil {
+			return packagePlanCheckResult{SigErr: err}
+		}
+
+		verifyOpts := zarfSigning.DefaultVerifyBlobOptions()
+		if verifyBlobOpts != nil {
+			verifyOpts = *verifyBlobOpts
+		}
+		verifyErr := pkgLayout.VerifyPackageSignature(ctx, verifyOpts)
+		if sigErr := handleVerifyResult(ctx, verifyErr, pkgLayout.IsSigned(), true); sigErr != nil {
+			return packagePlanCheckResult{SigErr: sigErr}
+		}
 	}
 
 	if needsOptionalValidation {
-		optComponentsErr = validateOptionalComponentsAgainstPackage(requestedOptionals, pkgLayout.Pkg.Components)
+		return packagePlanCheckResult{OptComponentsErr: validateOptionalComponentsAgainstPackage(requestedOptionals, pkgLayout.Pkg.Components)}
 	}
 
-	return nil, optComponentsErr
+	return packagePlanCheckResult{}
 }
 
 // optionalComponentsValidationError is a sentinel type so callers can distinguish
