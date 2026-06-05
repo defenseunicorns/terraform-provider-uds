@@ -1,0 +1,35 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+kind: ZarfPackageConfig
+metadata:
+  name: zarf-values
+  version: 0.1.0
+  description: Acceptance test package for UDS package values
+
+values:
+  files:
+    - values.yaml
+
+components:
+  - name: zarf-values
+    required: true
+    charts:
+      - name: zarf-values
+        releaseName: zarf-values
+        localPath: chart
+        version: 0.1.0
+        namespace: zarf-values
+        values:
+          - sourcePath: .config.annotations
+            targetPath: .config.annotations
+          - sourcePath: .config.settings
+            targetPath: .config.settings
+          - sourcePath: .config.enabled
+            targetPath: .config.enabled
+          - sourcePath: .config.items
+            targetPath: .config.items
+          - sourcePath: .config.labels
+            targetPath: .config.labels
+          - sourcePath: .config.replicas
+            targetPath: .config.replicas

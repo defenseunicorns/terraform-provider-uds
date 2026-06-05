@@ -1,0 +1,12 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+config:
+  annotations: {}
+  settings:
+    message: default
+    secret: default
+  enabled: false
+  items: []
+  labels: {}
+  replicas: 1

@@ -1,0 +1,23 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zarf-values
+  labels:
+{{- with .Values.config.labels }}
+{{ toYaml . | nindent 4 }}
+{{- end }}
+  annotations:
+{{- with .Values.config.annotations }}
+{{ toYaml . | nindent 4 }}
+{{- end }}
+data:
+  enabled: {{ .Values.config.enabled | quote }}
+  message: {{ .Values.config.settings.message | quote }}
+  replicas: {{ .Values.config.replicas | quote }}
+  secret: {{ .Values.config.settings.secret | quote }}
+{{- range $i, $item := .Values.config.items }}
+  item-{{ $i }}: {{ $item | quote }}
+{{- end }}
