@@ -21,6 +21,15 @@ provider "uds" {
 
   # Skip TLS verification when using custom or self-signed certificates
   insecure_skip_tls_verification = true
+
+  # Use a custom Zarf cache directory for package downloads and verification
+  zarf_cache_path = "~/.zarf-cache"
+
+  # Force Helm to take ownership of conflicting Server-Side Apply fields
+  force_helm_ssa_conflicts = false
+
+  # Validate package-dependent configuration during plan
+  validate_packages_on_plan = true
 }
 ```
 

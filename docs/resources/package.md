@@ -36,10 +36,8 @@ resource "uds_package" "init" {
     }
   }
 
-  # Install optional git-server
-  component {
-    name = "git-server"
-  }
+  # Install optional git-server via alpha optional_components
+  optional_components = ["git-server"]
 }
 
 # This zarf package example produces sensitive variables using zarf action setVariables sensitive: true. 
