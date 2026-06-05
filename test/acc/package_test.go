@@ -6,6 +6,7 @@ package acc
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"testing"
 
@@ -42,6 +43,62 @@ func TestAccPackageResource(t *testing.T) {
 				),
 			},
 			// Delete testing automatically occurs in TestCase
+		},
+	})
+}
+
+var testAccPackageResourceRemoteValuesInvalidPathConfig = fmt.Sprintf(`
+resource "uds_package" "init" {
+  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
+  architecture = "%s"
+  signature_verification = {
+    keyless = {
+      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
+    }
+  }
+
+  values = {
+    definitely_unexposed_by_zarf_init_values_test = "invalid"
+  }
+}
+`, initPackageVersion, runtime.GOARCH)
+
+var testAccPackageResourceRemoteValuesUnavailableConfig = fmt.Sprintf(`
+resource "uds_package" "init" {
+  source       = "oci://ghcr.io/zarf-dev/packages/init:values-test-missing"
+  architecture = "%s"
+  signature_verification = {
+    verify = false
+  }
+
+  values = {
+    definitely_unexposed_by_zarf_init_values_test = "deferred"
+  }
+}
+`, runtime.GOARCH)
+
+func TestAccPackageResourceRemoteValuesPlanValidation(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Zarf init is a remote package, but this published version does not expose
+			// values mappings. This still proves remote metadata is loaded during plan
+			// and configured value paths are rejected when not exposed by that package.
+			// Add a positive remote values test once a published package exposes values.
+			{
+				Config:      testAccPackageResourceRemoteValuesInvalidPathConfig,
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile(`value path "definitely_unexposed_by_zarf_init_values_test" does not match any`),
+			},
+			// If remote metadata cannot be loaded during plan, values sourcePath
+			// validation should defer to apply instead of blocking the plan.
+			{
+				Config:             testAccPackageResourceRemoteValuesUnavailableConfig,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
 		},
 	})
 }

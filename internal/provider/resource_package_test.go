@@ -5016,6 +5016,47 @@ func TestPackageResource_ValidatePackageValuesConfig_DefersRootUnknowns(t *testi
 	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 
+func TestPackageResource_ValidatePackageValuesConfig_DefersWhenPackageLoadFails(t *testing.T) {
+	mockPackager := &MockPackager{}
+	model := NewTestPackageResourceModel(
+		WithValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{
+				"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
+					"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
+						"test": types.StringType,
+					}},
+				}},
+			},
+			map[string]attr.Value{
+				"pod": types.ObjectValueMust(
+					map[string]attr.Type{
+						"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
+							"test": types.StringType,
+						}},
+					},
+					map[string]attr.Value{
+						"annotations": types.ObjectValueMust(
+							map[string]attr.Type{"test": types.StringType},
+							map[string]attr.Value{"test": types.StringValue("value")},
+						),
+					},
+				),
+			},
+		))),
+	)
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+		&layout.PackageLayout{Pkg: v1alpha1.ZarfPackage{}},
+		fmt.Errorf("package metadata unavailable"),
+	)
+	packageResource := NewPackageResource(nil, mockPackager, nil, nil).(*PackageResource)
+	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
+
+	packageResource.validatePackageValuesConfig(context.Background(), model, resp)
+
+	assert.False(t, resp.Diagnostics.HasError(), "expected package load failure to defer validation, got: %v", resp.Diagnostics.Errors())
+	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+}
+
 func TestValidateNoValueConflicts(t *testing.T) {
 	tests := []struct {
 		name            string
