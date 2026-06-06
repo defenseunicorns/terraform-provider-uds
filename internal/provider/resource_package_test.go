@@ -4688,7 +4688,7 @@ func TestDynamicToValues(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			actual, configured, err := dynamicToValues(context.Background(), "values", tc.input)
+			actual, configured, err := dynamicToValues("values", tc.input)
 
 			if tc.errorText != "" {
 				assert.Error(t, err)

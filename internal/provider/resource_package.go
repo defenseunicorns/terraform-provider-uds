@@ -1210,11 +1210,11 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if err != nil {
 		return plan, err
 	}
-	values, _, err := dynamicToValues(ctx, "values", plan.Values)
+	values, _, err := dynamicToValues("values", plan.Values)
 	if err != nil {
 		return plan, err
 	}
-	sensitiveValues, _, err := dynamicToValues(ctx, "sensitive_values", plan.SensitiveValues)
+	sensitiveValues, _, err := dynamicToValues("sensitive_values", plan.SensitiveValues)
 	if err != nil {
 		return plan, err
 	}
@@ -1435,7 +1435,7 @@ func flattenComponentOverrides(ctx context.Context, components []ComponentModel)
 	return result, nil
 }
 
-func dynamicToValues(_ context.Context, attrName string, value types.Dynamic) (zarfValue.Values, bool, error) {
+func dynamicToValues(attrName string, value types.Dynamic) (zarfValue.Values, bool, error) {
 	if value.IsNull() || value.IsUnderlyingValueNull() {
 		return zarfValue.Values{}, false, nil
 	}
@@ -1590,12 +1590,12 @@ func (r *PackageResource) validatePackageValuesConfig(ctx context.Context, model
 	}
 
 	if !containsUnknown {
-		values, _, err := dynamicToValues(ctx, "values", model.Values)
+		values, _, err := dynamicToValues("values", model.Values)
 		if err != nil {
 			resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
 			return
 		}
-		sensitiveValues, _, err := dynamicToValues(ctx, "sensitive_values", model.SensitiveValues)
+		sensitiveValues, _, err := dynamicToValues("sensitive_values", model.SensitiveValues)
 		if err != nil {
 			resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
 			return
@@ -1685,6 +1685,10 @@ type dynamicValuePathResult struct {
 	validRoot  bool
 }
 
+// collectDynamicValuePaths returns the configured leaf paths that can be validated
+// against Zarf chart value source paths during plan. Root unknowns expose no paths,
+// so validation defers; nested unknowns still expose their configured path; and
+// collections are treated as leaf values because source paths do not address items.
 func collectDynamicValuePaths(value types.Dynamic, attrName string) ([]string, bool, error) {
 	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
 		return []string{}, true, nil
