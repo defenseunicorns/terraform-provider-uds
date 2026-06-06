@@ -397,11 +397,11 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Sensitive:           true,
 			},
 			"values": schema.DynamicAttribute{
-				MarkdownDescription: "[Alpha] Package values to apply at deploy time. Values must correspond to value mappings exposed by the package.",
+				MarkdownDescription: "[Alpha] Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package. Cannot be used with component blocks.",
 				Optional:            true,
 			},
 			"sensitive_values": schema.DynamicAttribute{
-				MarkdownDescription: "[Alpha] Sensitive package values to apply at deploy time. Values must correspond to value mappings exposed by the package and are redacted from Terraform output.",
+				MarkdownDescription: "[Alpha] Sensitive Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package. Cannot be used with component blocks.",
 				Optional:            true,
 				Sensitive:           true,
 			},
