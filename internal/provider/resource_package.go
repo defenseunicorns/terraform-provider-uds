@@ -896,19 +896,8 @@ func (r *PackageResource) getRemoteOptions() zarfTypes.RemoteOptions {
 	}
 }
 
-func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
+func (r *PackageResource) loadPackageLayoutFromSource(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
 	packageSource, err := getPackageSource(model, *r.providerConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	tmpDir, err := os.MkdirTemp("", "uds-package-verify-*")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp dir for package verification: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	verifyBlobOpts, err := buildVerifyBlobOptions(ctx, model, tmpDir)
 	if err != nil {
 		return nil, err
 	}
@@ -917,7 +906,6 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 	loadOpt := zarfPackager.LoadOptions{
 		Filter:               zarfFilters.Empty(),
 		Architecture:         getArchitecture(model, *r.providerConfig),
-		VerifyBlobOptions:    verifyBlobOpts,
 		VerificationStrategy: layout.VerifyNever,
 		RemoteOptions:        r.getRemoteOptions(),
 		CachePath:            r.providerConfig.ZarfCachePath,
@@ -928,18 +916,32 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 		return nil, err
 	}
 
-	// Verify package signature
+	return pkgLayout, nil
+}
+
+func (r *PackageResource) verifyPackageSignature(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) error {
 	enforceSignatureVerification := getEffectiveSignatureVerification(ctx, model)
+	if !enforceSignatureVerification {
+		return nil
+	}
+
+	tmpDir, err := os.MkdirTemp("", "uds-package-verify-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir for package verification: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	verifyBlobOpts, err := buildVerifyBlobOptions(ctx, model, tmpDir)
+	if err != nil {
+		return err
+	}
+
 	verifyOpts := zarfSigning.DefaultVerifyBlobOptions()
 	if verifyBlobOpts != nil {
 		verifyOpts = *verifyBlobOpts
 	}
 	verifyErr := pkgLayout.VerifyPackageSignature(ctx, verifyOpts)
-	if err := handleVerifyResult(ctx, verifyErr, pkgLayout.IsSigned(), enforceSignatureVerification); err != nil {
-		return nil, err
-	}
-
-	return pkgLayout, nil
+	return handleVerifyResult(ctx, verifyErr, pkgLayout.IsSigned(), enforceSignatureVerification)
 }
 
 // handleVerifyResult interprets the error from VerifyPackageSignature and either
@@ -1106,7 +1108,7 @@ func (r *PackageResource) getDeployedPackage(ctx context.Context, name string, n
 
 func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
 	// Get the package name from the source package metadata
-	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
+	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
 	if err != nil {
 		return plan, err
 	}
@@ -1115,6 +1117,9 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
 		}
 	}()
+	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
+		return plan, err
+	}
 
 	packageNamespace := plan.Namespace.ValueString()
 	packageName := pkgLayout.Pkg.Metadata.Name
@@ -1171,7 +1176,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, err
 	}
 
-	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
+	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
 	if err != nil {
 		return plan, err
 	}
@@ -1180,6 +1185,9 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
 		}
 	}()
+	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
+		return plan, err
+	}
 
 	// Alpha: if optional_components is set, use it directly; otherwise fall back to component blocks.
 	// TODO: remove branch when component block is removed; always use optional_components.
@@ -1606,7 +1614,7 @@ func (r *PackageResource) validatePackageValuesConfig(ctx context.Context, model
 		}
 	}
 
-	pkgLayout, err := r.getPackageLayoutFromSource(ctx, model)
+	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, model)
 	if err != nil {
 		// Package metadata may be unavailable during planning, especially for remote sources.
 		// Defer this validation to apply where package loading is already required.
@@ -2508,23 +2516,7 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 	}
 
 	if needsSigVerification {
-		tmpDir, err := os.MkdirTemp("", "uds-package-verify-*")
-		if err != nil {
-			return packagePlanCheckResult{SigErr: fmt.Errorf("failed to create temp dir for package verification: %w", err)}
-		}
-		defer os.RemoveAll(tmpDir)
-
-		verifyBlobOpts, err := buildVerifyBlobOptions(ctx, plan, tmpDir)
-		if err != nil {
-			return packagePlanCheckResult{SigErr: err}
-		}
-
-		verifyOpts := zarfSigning.DefaultVerifyBlobOptions()
-		if verifyBlobOpts != nil {
-			verifyOpts = *verifyBlobOpts
-		}
-		verifyErr := pkgLayout.VerifyPackageSignature(ctx, verifyOpts)
-		if sigErr := handleVerifyResult(ctx, verifyErr, pkgLayout.IsSigned(), true); sigErr != nil {
+		if sigErr := r.verifyPackageSignature(ctx, plan, pkgLayout); sigErr != nil {
 			return packagePlanCheckResult{SigErr: sigErr}
 		}
 	}

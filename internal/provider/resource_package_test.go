@@ -1678,103 +1678,6 @@ func TestPackageResource_Upsert_NamespaceOverride(t *testing.T) {
 	}
 }
 
-func TestPackageResource_Upsert_PublicKeyAndPackageSignatureVerification(t *testing.T) {
-	tests := []struct {
-		name                                         string
-		publicKey                                    string
-		zarfPackagerLoadPackageError                 error
-		expectedLoadPackageWithPublicKeyPathProvided bool
-		expectedCallToDeploy                         bool
-	}{
-		{
-			name:                         "no public key loads without key file",
-			publicKey:                    "",
-			zarfPackagerLoadPackageError: nil,
-			expectedLoadPackageWithPublicKeyPathProvided: false,
-			expectedCallToDeploy:                         true,
-		},
-		{
-			name:                         "public key loads with key file",
-			publicKey:                    "test-public-key",
-			zarfPackagerLoadPackageError: nil,
-			expectedLoadPackageWithPublicKeyPathProvided: true,
-			expectedCallToDeploy:                         true,
-		},
-		{
-			name:                         "load error without key returns error",
-			publicKey:                    "",
-			zarfPackagerLoadPackageError: fmt.Errorf("package is signed but no key was provided"),
-			expectedLoadPackageWithPublicKeyPathProvided: false,
-			expectedCallToDeploy:                         false,
-		},
-		{
-			name:                         "load error with key returns error",
-			publicKey:                    "test-public-key",
-			zarfPackagerLoadPackageError: fmt.Errorf("a key was provided but the package is not signed"),
-			expectedLoadPackageWithPublicKeyPathProvided: true,
-			expectedCallToDeploy:                         false,
-		},
-		{
-			name:                         "mismatched key returns error",
-			publicKey:                    "mismatched-or-malformed-public-key",
-			zarfPackagerLoadPackageError: fmt.Errorf("any error regarding mismatched or malformed key"),
-			expectedLoadPackageWithPublicKeyPathProvided: true,
-			expectedCallToDeploy:                         false,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			mockPackager := &MockPackager{}
-			mockPackageComponentFilter := &MockPackageComponentFilter{}
-			if tc.zarfPackagerLoadPackageError == nil {
-				validLoadPackageResult := newValidLoadPackageResult()
-				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
-					validLoadPackageResult.Layout,
-					validLoadPackageResult.Error,
-				)
-				mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
-				mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
-			} else {
-				errorLoadPackageResult := newErrorLoadPackageResult(tc.zarfPackagerLoadPackageError)
-				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
-					errorLoadPackageResult.Layout,
-					errorLoadPackageResult.Error,
-				)
-			}
-
-			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
-			testModel := NewTestPackageResourceModel(WithPublicKey(tc.publicKey))
-			_, err := packageResource.upsert(context.Background(), testModel)
-
-			mockPackageComponentFilter.AssertExpectations(t)
-			if tc.zarfPackagerLoadPackageError != nil {
-				assert.NotNil(t, err)
-				assert.Equal(t, tc.zarfPackagerLoadPackageError, err)
-			}
-
-			loadOptionsArgFound := false
-			var loadOptions zarfPackager.LoadOptions
-			for _, call := range mockPackager.Calls {
-				if call.Method == "LoadPackage" {
-					loadOptions = call.Arguments[2].(zarfPackager.LoadOptions)
-					loadOptionsArgFound = true
-					break
-				}
-			}
-			assert.True(t, loadOptionsArgFound, "Could not find LoadOptions argument in LoadPackage call")
-			publicKeyPathProvided := loadOptions.VerifyBlobOptions != nil && loadOptions.VerifyBlobOptions.Key != ""
-			if tc.expectedLoadPackageWithPublicKeyPathProvided {
-				assert.True(t, publicKeyPathProvided,
-					"Expected verify blob options with key to be provided but it was not.")
-			} else {
-				assert.False(t, publicKeyPathProvided,
-					"Expected verify blob options with key to not be provided but it was.")
-			}
-		})
-	}
-}
-
 func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T) {
 	tests := []struct {
 		name              string
@@ -2057,6 +1960,59 @@ func TestComponentBlocksMayBePresent(t *testing.T) {
 			assert.Equal(t, tc.expected, componentBlocksMayBePresent(tc.components))
 		})
 	}
+}
+
+func TestPackageResource_LoadPackageLayoutFromSource_LoadsPackageMetadataOnly(t *testing.T) {
+	mockPackager := &MockPackager{}
+	validLoadPackageResult := newValidLoadPackageResult()
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+		validLoadPackageResult.Layout,
+		validLoadPackageResult.Error,
+	)
+	packageResource := NewPackageResource(nil, mockPackager, nil, nil).(*PackageResource)
+	model := NewTestPackageResourceModel(WithPublicKey("test-public-key"))
+
+	pkgLayout, err := packageResource.loadPackageLayoutFromSource(context.Background(), model)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, pkgLayout)
+	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+	loadOptions := mockPackager.Calls[0].Arguments[2].(zarfPackager.LoadOptions)
+	assert.Nil(t, loadOptions.VerifyBlobOptions)
+	assert.Equal(t, layout.VerifyNever, loadOptions.VerificationStrategy)
+}
+
+func TestPackageResource_VerifyPackageSignature_SkipsWhenVerificationDisabled(t *testing.T) {
+	packageResource := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+	model := NewTestPackageResourceModel(WithSignatureVerificationEnabled(false))
+	pkgLayout := &layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{Build: v1alpha1.ZarfBuildData{Signed: helpers.BoolPtr(true)}},
+	}
+
+	err := packageResource.verifyPackageSignature(context.Background(), model, pkgLayout)
+
+	assert.NoError(t, err)
+}
+
+func TestPackageResource_Upsert_SkipsSignatureVerificationWhenDisabled(t *testing.T) {
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+	validLoadPackageResult := newValidLoadPackageResult()
+	validLoadPackageResult.Layout.Pkg.Build.Signed = helpers.BoolPtr(true)
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+		validLoadPackageResult.Layout,
+		validLoadPackageResult.Error,
+	)
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+	model := NewTestPackageResourceModel(WithSignatureVerificationEnabled(false))
+
+	_, err := packageResource.upsert(context.Background(), model)
+
+	assert.NoError(t, err)
+	mockPackageComponentFilter.AssertExpectations(t)
+	mockPackager.AssertCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
 }
 
 // Unit tests for upsert method architecture attribute
@@ -5370,77 +5326,6 @@ func TestBuildVerifyBlobOptions(t *testing.T) {
 			if tc.wantTrustedRootFile {
 				assert.NotEmpty(t, opts.CommonVerifyOptions.TrustedRootPath)
 				assert.FileExists(t, opts.CommonVerifyOptions.TrustedRootPath)
-			}
-		})
-	}
-}
-
-func TestPackageResource_Upsert_KeylessVerification(t *testing.T) {
-	tests := []struct {
-		name                       string
-		identity                   string
-		issuer                     string
-		zarfPackagerLoadPackageErr error
-		wantVerifyOptsSet          bool
-		wantCallToDeploy           bool
-	}{
-		{
-			name:              "keyless opts passed to LoadPackage",
-			identity:          "user@example.com",
-			issuer:            "https://token.actions.githubusercontent.com",
-			wantVerifyOptsSet: true,
-			wantCallToDeploy:  true,
-		},
-		{
-			name:                       "LoadPackage error with keyless opts returns error without deploying",
-			identity:                   "user@example.com",
-			issuer:                     "https://token.actions.githubusercontent.com",
-			zarfPackagerLoadPackageErr: fmt.Errorf("signature verification failed"),
-			wantVerifyOptsSet:          true,
-			wantCallToDeploy:           false,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			mockPackager := &MockPackager{}
-			mockPackageComponentFilter := &MockPackageComponentFilter{}
-
-			if tc.zarfPackagerLoadPackageErr == nil {
-				validResult := newValidLoadPackageResult()
-				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(validResult.Layout, validResult.Error)
-				mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
-				mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
-			} else {
-				errResult := newErrorLoadPackageResult(tc.zarfPackagerLoadPackageErr)
-				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(errResult.Layout, errResult.Error)
-			}
-
-			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
-			testModel := NewTestPackageResourceModel(
-				WithKeylessVerification(tc.identity, tc.issuer),
-			)
-			_, err := packageResource.upsert(context.Background(), testModel)
-
-			if tc.zarfPackagerLoadPackageErr != nil {
-				assert.NotNil(t, err)
-			}
-
-			loadOptionsArgFound := false
-			var loadOptions zarfPackager.LoadOptions
-			for _, call := range mockPackager.Calls {
-				if call.Method == "LoadPackage" {
-					loadOptions = call.Arguments[2].(zarfPackager.LoadOptions)
-					loadOptionsArgFound = true
-					break
-				}
-			}
-			assert.True(t, loadOptionsArgFound, "could not find LoadOptions in LoadPackage call")
-
-			if tc.wantVerifyOptsSet {
-				assert.NotNil(t, loadOptions.VerifyBlobOptions, "expected VerifyBlobOptions to be set")
-				assert.Equal(t, tc.identity, loadOptions.VerifyBlobOptions.CertVerify.CertIdentity)
-				assert.Equal(t, tc.issuer, loadOptions.VerifyBlobOptions.CertVerify.CertOidcIssuer)
 			}
 		})
 	}
