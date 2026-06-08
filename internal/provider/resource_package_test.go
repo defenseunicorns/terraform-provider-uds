@@ -32,6 +32,7 @@ import (
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
+	zarfSigning "github.com/zarf-dev/zarf/src/pkg/signing"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
 	zarfValue "github.com/zarf-dev/zarf/src/pkg/value"
 	"github.com/zarf-dev/zarf/src/pkg/variables"
@@ -1984,6 +1985,10 @@ func TestPackageResource_LoadPackageLayoutFromSource_LoadsPackageMetadataOnly(t 
 
 func TestPackageResource_VerifyPackageSignature_SkipsWhenVerificationDisabled(t *testing.T) {
 	packageResource := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+	packageResource.verifyPackageSignatureFunc = func(context.Context, *layout.PackageLayout, zarfSigning.VerifyBlobOptions) error {
+		assert.Fail(t, "signature verification should not be called when signature_verification.verify is false")
+		return nil
+	}
 	model := NewTestPackageResourceModel(WithSignatureVerificationEnabled(false))
 	pkgLayout := &layout.PackageLayout{
 		Pkg: v1alpha1.ZarfPackage{Build: v1alpha1.ZarfBuildData{Signed: helpers.BoolPtr(true)}},
@@ -1992,6 +1997,51 @@ func TestPackageResource_VerifyPackageSignature_SkipsWhenVerificationDisabled(t 
 	err := packageResource.verifyPackageSignature(context.Background(), model, pkgLayout)
 
 	assert.NoError(t, err)
+}
+
+func TestPackageResource_VerifyPackageSignature_CallsVerifierWithPublicKey(t *testing.T) {
+	packageResource := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+	var called bool
+	var publicKeyContent string
+	packageResource.verifyPackageSignatureFunc = func(_ context.Context, _ *layout.PackageLayout, opts zarfSigning.VerifyBlobOptions) error {
+		called = true
+		keyContent, err := os.ReadFile(opts.Key)
+		assert.NoError(t, err)
+		publicKeyContent = string(keyContent)
+		return nil
+	}
+	model := NewTestPackageResourceModel(WithPublicKey("test-public-key"))
+	pkgLayout := &layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{Build: v1alpha1.ZarfBuildData{Signed: helpers.BoolPtr(true)}},
+	}
+
+	err := packageResource.verifyPackageSignature(context.Background(), model, pkgLayout)
+
+	assert.NoError(t, err)
+	assert.True(t, called)
+	assert.Equal(t, "test-public-key", publicKeyContent)
+}
+
+func TestPackageResource_VerifyPackageSignature_CallsVerifierWithKeylessOptions(t *testing.T) {
+	packageResource := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+	var called bool
+	var capturedOptions zarfSigning.VerifyBlobOptions
+	packageResource.verifyPackageSignatureFunc = func(_ context.Context, _ *layout.PackageLayout, opts zarfSigning.VerifyBlobOptions) error {
+		called = true
+		capturedOptions = opts
+		return nil
+	}
+	model := NewTestPackageResourceModel(WithKeylessVerification("test@example.com", "https://token.actions.githubusercontent.com"))
+	pkgLayout := &layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{Build: v1alpha1.ZarfBuildData{Signed: helpers.BoolPtr(true)}},
+	}
+
+	err := packageResource.verifyPackageSignature(context.Background(), model, pkgLayout)
+
+	assert.NoError(t, err)
+	assert.True(t, called)
+	assert.Equal(t, "test@example.com", capturedOptions.CertVerify.CertIdentity)
+	assert.Equal(t, "https://token.actions.githubusercontent.com", capturedOptions.CertVerify.CertOidcIssuer)
 }
 
 func TestPackageResource_Upsert_SkipsSignatureVerificationWhenDisabled(t *testing.T) {
@@ -2011,6 +2061,52 @@ func TestPackageResource_Upsert_SkipsSignatureVerificationWhenDisabled(t *testin
 	_, err := packageResource.upsert(context.Background(), model)
 
 	assert.NoError(t, err)
+	mockPackageComponentFilter.AssertExpectations(t)
+	mockPackager.AssertCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestPackageResource_Upsert_DoesNotDeployWhenSignatureVerificationFails(t *testing.T) {
+	mockPackager := &MockPackager{}
+	validLoadPackageResult := newValidLoadPackageResult()
+	validLoadPackageResult.Layout.Pkg.Build.Signed = helpers.BoolPtr(true)
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+		validLoadPackageResult.Layout,
+		validLoadPackageResult.Error,
+	)
+	packageResource := NewPackageResource(nil, mockPackager, nil, nil).(*PackageResource)
+	packageResource.verifyPackageSignatureFunc = func(context.Context, *layout.PackageLayout, zarfSigning.VerifyBlobOptions) error {
+		return errors.New("signature verification failed")
+	}
+
+	_, err := packageResource.upsert(context.Background(), NewTestPackageResourceModel())
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "signature verification failed")
+	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestPackageResource_Upsert_DeploysWhenSignatureVerificationSucceeds(t *testing.T) {
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+	validLoadPackageResult := newValidLoadPackageResult()
+	validLoadPackageResult.Layout.Pkg.Build.Signed = helpers.BoolPtr(true)
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+		validLoadPackageResult.Layout,
+		validLoadPackageResult.Error,
+	)
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+	var called bool
+	packageResource.verifyPackageSignatureFunc = func(context.Context, *layout.PackageLayout, zarfSigning.VerifyBlobOptions) error {
+		called = true
+		return nil
+	}
+
+	_, err := packageResource.upsert(context.Background(), NewTestPackageResourceModel())
+
+	assert.NoError(t, err)
+	assert.True(t, called)
 	mockPackageComponentFilter.AssertExpectations(t)
 	mockPackager.AssertCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
 }

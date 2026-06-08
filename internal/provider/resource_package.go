@@ -62,6 +62,8 @@ const (
 	defaultPackageTimeout = "15m"
 )
 
+type packageSignatureVerifier func(context.Context, *zarfLayout.PackageLayout, zarfSigning.VerifyBlobOptions) error
+
 // NewPackageResource creates a new instance of the package resource.
 func NewPackageResource(providerConfig *udsProviderConfig, packager udsPackager.Packager, packageComponentFilter udsPackager.PackageComponentFilter, cluster udsCluster.Cluster) resource.Resource {
 	if providerConfig == nil {
@@ -77,11 +79,16 @@ func NewPackageResource(providerConfig *udsProviderConfig, packager udsPackager.
 		cluster = udsCluster.NewCluster()
 	}
 	return &PackageResource{
-		providerConfig: providerConfig,
-		packager:       packager,
-		packageFilter:  packageComponentFilter,
-		cluster:        cluster,
+		providerConfig:             providerConfig,
+		packager:                   packager,
+		packageFilter:              packageComponentFilter,
+		cluster:                    cluster,
+		verifyPackageSignatureFunc: defaultPackageSignatureVerifier,
 	}
+}
+
+func defaultPackageSignatureVerifier(ctx context.Context, pkgLayout *zarfLayout.PackageLayout, opts zarfSigning.VerifyBlobOptions) error {
+	return pkgLayout.VerifyPackageSignature(ctx, opts)
 }
 
 // PackageResourceModel describes the resource data model.
@@ -495,10 +502,11 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 
 // PackageResource defines the resource implementation.
 type PackageResource struct {
-	providerConfig *udsProviderConfig
-	packager       udsPackager.Packager
-	cluster        udsCluster.Cluster
-	packageFilter  udsPackager.PackageComponentFilter
+	providerConfig             *udsProviderConfig
+	packager                   udsPackager.Packager
+	cluster                    udsCluster.Cluster
+	packageFilter              udsPackager.PackageComponentFilter
+	verifyPackageSignatureFunc packageSignatureVerifier
 }
 
 // ValidateConfig ensures validation between interdependant fields within a PackageResourceModel.
@@ -940,7 +948,11 @@ func (r *PackageResource) verifyPackageSignature(ctx context.Context, model Pack
 	if verifyBlobOpts != nil {
 		verifyOpts = *verifyBlobOpts
 	}
-	verifyErr := pkgLayout.VerifyPackageSignature(ctx, verifyOpts)
+	verifyPackageSignatureFunc := r.verifyPackageSignatureFunc
+	if verifyPackageSignatureFunc == nil {
+		verifyPackageSignatureFunc = defaultPackageSignatureVerifier
+	}
+	verifyErr := verifyPackageSignatureFunc(ctx, pkgLayout, verifyOpts)
 	return handleVerifyResult(ctx, verifyErr, pkgLayout.IsSigned(), enforceSignatureVerification)
 }
 
