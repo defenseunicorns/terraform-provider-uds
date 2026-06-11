@@ -1985,12 +1985,15 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 
 	needsSigVerification := getEffectiveSignatureVerification(ctx, plan)
 	var requestedOptionals []string
-	needsOptionalValidation := !plan.OptionalComponents.IsNull() && !plan.OptionalComponents.IsUnknown() && len(plan.OptionalComponents.Elements()) > 0
-	if needsOptionalValidation {
+	// Unknown values are explicitly configured but cannot be validated until apply,
+	// when upsert receives their resolved component names.
+	canValidateOptionalComponents := !plan.OptionalComponents.IsNull() &&
+		!plan.OptionalComponents.IsUnknown() && len(plan.OptionalComponents.Elements()) > 0
+	if canValidateOptionalComponents {
 		plan.OptionalComponents.ElementsAs(ctx, &requestedOptionals, false)
 	}
 
-	if !needsSigVerification && !needsOptionalValidation {
+	if !needsSigVerification && !canValidateOptionalComponents {
 		return packagePlanCheckResult{}
 	}
 
@@ -2024,7 +2027,7 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 		}
 	}
 
-	if needsOptionalValidation {
+	if canValidateOptionalComponents {
 		return packagePlanCheckResult{OptComponentsErr: validateOptionalComponentsAgainstPackage(requestedOptionals, pkgLayout.Pkg.Components)}
 	}
 

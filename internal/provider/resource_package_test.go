@@ -1608,6 +1608,19 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 			expectLoadPackage: false,
 		},
 		{
+			name: "unknown optional_components defers validation until apply",
+			modelOpts: []PackageResourceModelDataOption{
+				WithSignatureVerificationEnabled(false),
+				func(m *PackageResourceModel) {
+					m.OptionalComponents = types.SetUnknown(types.StringType)
+				},
+			},
+			loadPackageError:  fmt.Errorf("should not be called"),
+			expectLoadErr:     false,
+			expectSigErr:      false,
+			expectLoadPackage: false,
+		},
+		{
 			name: "unknown source skips verification",
 			modelOpts: []PackageResourceModelDataOption{func(m *PackageResourceModel) {
 				m.Source = types.StringUnknown()
