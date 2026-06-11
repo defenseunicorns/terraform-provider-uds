@@ -1579,6 +1579,7 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 		name              string
 		modelOpts         []PackageResourceModelDataOption
 		loadPackageError  error
+		packageSigned     bool
 		expectLoadErr     bool
 		expectSigErr      bool
 		expectLoadPackage bool
@@ -1589,6 +1590,14 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 			loadPackageError:  nil,
 			expectLoadErr:     false,
 			expectSigErr:      false,
+			expectLoadPackage: true,
+		},
+		{
+			name:              "signed package verification failure returns sigErr",
+			modelOpts:         []PackageResourceModelDataOption{WithPublicKey("invalid-key")},
+			packageSigned:     true,
+			expectLoadErr:     false,
+			expectSigErr:      true,
 			expectLoadPackage: true,
 		},
 		{
@@ -1638,6 +1647,9 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 			if tc.expectLoadPackage {
 				if tc.loadPackageError == nil {
 					result := newValidLoadPackageResult()
+					if tc.packageSigned {
+						result.Layout.Pkg.Build.Signed = helpers.BoolPtr(true)
+					}
 					mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(result.Layout, result.Error)
 				} else {
 					result := newErrorLoadPackageResult(tc.loadPackageError)
