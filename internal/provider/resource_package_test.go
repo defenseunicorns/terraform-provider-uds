@@ -5374,6 +5374,29 @@ func TestDelete_ZarfHandoffUsesRemainingBudget(t *testing.T) {
 	}
 }
 
+func TestDelete_ExhaustedBudgetSkipsPackageRemoval(t *testing.T) {
+	mockCluster := &MockCluster{}
+	mockPackager := &MockPackager{}
+	mockFilter := &MockPackageComponentFilter{}
+
+	mockCluster.On("NewWithWait", mock.Anything).Return((*zarfCluster.Cluster)(nil), nil)
+	mockFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
+	mockPackager.On("GetPackageFromSourceOrCluster",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(v1alpha1.ZarfPackage{}, nil)
+
+	r := NewPackageResource(nil, mockPackager, mockFilter, mockCluster).(*PackageResource)
+	model := NewTestPackageResourceModel(WithTimeout("1ns"), WithDeployedState())
+	state := buildTestState(t, r, model)
+
+	var resp resource.DeleteResponse
+	r.Delete(context.Background(), resource.DeleteRequest{State: state}, &resp)
+
+	require.True(t, resp.Diagnostics.HasError())
+	assert.Equal(t, "Package removal could not start", resp.Diagnostics[0].Summary())
+	mockPackager.AssertNotCalled(t, "Remove")
+}
+
 // TestRead_DirectDeadlinePropagatedToCluster verifies that Read passes its full readTimeout
 // context to getDeployedPackage without a child cap (unlike Delete's 5m cluster sub-context).
 func TestRead_DirectDeadlinePropagatedToCluster(t *testing.T) {

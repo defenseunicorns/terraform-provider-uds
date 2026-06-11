@@ -798,7 +798,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	zarfTimeout, err := zarfOperationTimeout(timeoutCtx)
 	if err != nil {
 		resp.Diagnostics.AddError(
-			"Error removing package",
+			"Package removal could not start",
 			lifecycleErrorDetail("delete", err, timeoutCtx),
 		)
 		return
