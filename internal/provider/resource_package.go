@@ -1702,7 +1702,7 @@ func normalizeOptionalComponentsPlan(config, plan PackageResourceModel) PackageR
 // set alongside component blocks. The two paradigms are mutually exclusive.
 // TODO: remove when component block is removed
 func validateComponentBlockOptionalComponentsMutualExclusivity(model PackageResourceModel, resp *resource.ValidateConfigResponse) {
-	if model.OptionalComponents.IsNull() || model.OptionalComponents.IsUnknown() {
+	if model.OptionalComponents.IsNull() {
 		return
 	}
 	if !componentBlocksMayBePresent(model.Components) {

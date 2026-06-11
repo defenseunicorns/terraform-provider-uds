@@ -4611,10 +4611,10 @@ func TestValidateComponentBlockOptionalComponentsMutualExclusivity(t *testing.T)
 			expectError:        true,
 		},
 		{
-			name:               "allows unknown optional_components with component blocks because validation is deferred",
+			name:               "errors on unknown optional_components with component blocks",
 			optionalComponents: types.SetUnknown(types.StringType),
 			components:         componentSet,
-			expectError:        false,
+			expectError:        true,
 		},
 		{
 			name:               "errors on optional_components with unknown component blocks",
