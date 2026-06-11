@@ -1711,7 +1711,7 @@ func validateComponentBlockOptionalComponentsMutualExclusivity(model PackageReso
 	resp.Diagnostics.AddAttributeError(
 		path.Root("optional_components"),
 		"Conflicting configuration",
-		"`optional_components` cannot be specified together with `component` blocks. Use `optional_components` to select optional components instead.",
+		"`optional_components` cannot be used together with `component` blocks. Use `optional_components` for component selection without overrides, or use `component` blocks when overrides are required.",
 	)
 }
 
