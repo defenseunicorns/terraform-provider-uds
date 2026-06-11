@@ -1477,7 +1477,6 @@ func withClusterTimeout(ctx context.Context) (context.Context, context.CancelFun
 	return context.WithTimeout(ctx, clusterTimeoutMinutes*time.Minute)
 }
 
-// TODO: remove when component block is removed
 // zarfOperationTimeout derives the time budget for a Zarf Deploy or Remove call
 // from the remaining context deadline, minus a small reserve to allow cleanup.
 // Reserve is clamped to 5% of remaining time, between 1s and 30s.
