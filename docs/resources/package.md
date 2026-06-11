@@ -184,7 +184,7 @@ resource "uds_package" "dos_games" {
 ### Optional
 
 - `architecture` (String) System architecture of the target cluster. Defaults to the provider default architecture.
-- `component` (Block Set) Selects an optional package component to install and configure helm chart overrides for it. Mutually exclusive with `optional_components`. When no `component` blocks are specified, only required package components are installed. (see [below for nested schema](#nestedblock--component))
+- `component` (Block Set) Configures a required or optional package component, including Helm chart overrides. Configuring an optional component also selects it for deployment. Mutually exclusive with `optional_components`. If no `component` blocks are specified, only required package components are installed using default settings. (see [below for nested schema](#nestedblock--component))
 - `namespace` (String) [Alpha] Namespace in which to deploy the UDS package.
 - `optional_components` (Set of String) [Alpha] Set of optional package component names to install. Case-sensitive. Mutually exclusive with `component` blocks — specifying both is a validation error. When omitted or set to an empty list, only required package components are installed.
 - `sensitive_vars` (Attributes Set) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))

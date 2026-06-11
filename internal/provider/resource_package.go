@@ -394,7 +394,7 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 		Blocks: map[string]schema.Block{
 			// TODO: remove when component block is removed
 			"component": schema.SetNestedBlock{
-				MarkdownDescription: "Selects an optional package component to install and configure helm chart overrides for it. Mutually exclusive with `optional_components`. When no `component` blocks are specified, only required package components are installed.",
+				MarkdownDescription: "Configures a required or optional package component, including Helm chart overrides. Configuring an optional component also selects it for deployment. Mutually exclusive with `optional_components`. If no `component` blocks are specified, only required package components are installed using default settings.",
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
