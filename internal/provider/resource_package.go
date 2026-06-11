@@ -536,7 +536,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	if err != nil {
 		var optErr *optionalComponentsValidationError
 		if errors.As(err, &optErr) {
-			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", err.Error())
+			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", optErr.Error())
 		} else {
 			resp.Diagnostics.AddError("Error creating package", "Could not create resource, unexpected error: "+err.Error())
 		}
@@ -678,7 +678,7 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	if err != nil {
 		var optErr *optionalComponentsValidationError
 		if errors.As(err, &optErr) {
-			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", err.Error())
+			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", optErr.Error())
 		} else {
 			resp.Diagnostics.AddError("Error updating package", "Could not update package, unexpected error: "+err.Error())
 		}
