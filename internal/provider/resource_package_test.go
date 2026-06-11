@@ -2227,6 +2227,26 @@ func TestGetMissingOptionalComponents(t *testing.T) {
 			newPlan:  NewTestPackageResourceModel(),
 			expected: nil,
 		},
+		{
+			name: "returns nothing when old optional_components is unknown",
+			oldPlan: func() PackageResourceModel {
+				model := NewTestPackageResourceModel()
+				model.OptionalComponents = types.SetUnknown(types.StringType)
+				return model
+			}(),
+			newPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{})),
+			expected: nil,
+		},
+		{
+			name:    "returns nothing when new optional_components is unknown",
+			oldPlan: NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics"})),
+			newPlan: func() PackageResourceModel {
+				model := NewTestPackageResourceModel()
+				model.OptionalComponents = types.SetUnknown(types.StringType)
+				return model
+			}(),
+			expected: nil,
+		},
 	}
 
 	for _, tc := range tests {

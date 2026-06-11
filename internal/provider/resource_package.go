@@ -1431,7 +1431,7 @@ func getMissingComponents(plan PackageResourceModel, oldPlan PackageResourceMode
 }
 
 // getMissingOptionalComponents returns optional components present in oldPlan but absent from plan.
-// Returns nil when either model has null/unknown optional_components (legacy component block path).
+// Returns nil for null optional_components or when either value is unknown and cannot be compared.
 func getMissingOptionalComponents(plan, oldPlan PackageResourceModel) []string {
 	if oldPlan.OptionalComponents.IsNull() || oldPlan.OptionalComponents.IsUnknown() {
 		return nil
