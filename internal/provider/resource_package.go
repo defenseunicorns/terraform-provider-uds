@@ -1555,11 +1555,11 @@ func zarfOperationTimeout(ctx context.Context) (time.Duration, error) {
 	if reserve > 30*time.Second {
 		reserve = 30 * time.Second
 	}
-	helmTimeout := remaining - reserve
-	if helmTimeout <= 0 {
+	zarfTimeout := remaining - reserve
+	if zarfTimeout <= 0 {
 		return 0, fmt.Errorf("operation deadline exceeded before Zarf call")
 	}
-	return helmTimeout, nil
+	return zarfTimeout, nil
 }
 
 // lifecycleErrorDetail returns a detail string for CRUD operation errors,
