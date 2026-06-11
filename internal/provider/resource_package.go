@@ -1142,6 +1142,10 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 }
 
 func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
+	if plan.OptionalComponents.IsUnknown() {
+		return plan, fmt.Errorf("optional_components must be known before apply")
+	}
+
 	// convert the terraform timeout to a time.Duration
 	timeout, err := time.ParseDuration(plan.Timeout.ValueString())
 	if err != nil {
@@ -1161,7 +1165,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	// Alpha: if optional_components is set, use it directly; otherwise fall back to component blocks.
 	// TODO: remove branch when component block is removed; always use optional_components.
 	var optionalComponents []string
-	if !plan.OptionalComponents.IsNull() && !plan.OptionalComponents.IsUnknown() {
+	if !plan.OptionalComponents.IsNull() {
 		if diags := plan.OptionalComponents.ElementsAs(ctx, &optionalComponents, false); diags.HasError() {
 			return plan, fmt.Errorf("failed to read optional_components: %v", diags)
 		}

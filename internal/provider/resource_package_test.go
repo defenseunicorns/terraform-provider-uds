@@ -4749,6 +4749,22 @@ func TestPackageResource_Upsert_OptionalComponents(t *testing.T) {
 	}
 }
 
+func TestPackageResource_Upsert_UnknownOptionalComponents(t *testing.T) {
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+	model := NewTestPackageResourceModel(func(model *PackageResourceModel) {
+		model.OptionalComponents = types.SetUnknown(types.StringType)
+	})
+
+	_, err := packageResource.upsert(context.Background(), model)
+	require.EqualError(t, err, "optional_components must be known before apply")
+	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+	mockPackageComponentFilter.AssertNotCalled(t, "ForDeploy", mock.Anything)
+	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+}
+
 func TestDeployedOptionalComponents(t *testing.T) {
 	boolTrue := true
 	boolFalse := false
