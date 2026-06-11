@@ -21,6 +21,15 @@ provider "uds" {
 
   # Skip TLS verification when using custom or self-signed certificates
   insecure_skip_tls_verification = true
+
+  # Use a custom Zarf cache directory for package downloads and verification
+  zarf_cache_path = "~/.zarf-cache"
+
+  # Force Helm to take ownership of conflicting Server-Side Apply fields
+  force_helm_ssa_conflicts = false
+
+  # Validate package-dependent configuration during plan
+  validate_packages_on_plan = true
 }
 ```
 
@@ -33,5 +42,5 @@ provider "uds" {
 - `force_helm_ssa_conflicts` (Boolean) Force Helm to take ownership of conflicting fields during Server-Side Apply operations during package deployment. Use when external tools (kubectl, HPAs, etc.) have modified resources. Defaults to `false`. Can also be configured with the `UDS_FORCE_HELM_SSA_CONFLICTS` environment variable.
 - `insecure_force_http` (Boolean) Force remote package fetching over HTTP instead of HTTPS. Defaults to `false`. Can also be configured with the `UDS_INSECURE_FORCE_HTTP` environment variable.
 - `insecure_skip_tls_verification` (Boolean) Skip TLS certificate verification when fetching remote packages over HTTPS. Defaults to `false`. Can also be configured with the `UDS_INSECURE_SKIP_TLS_VERIFICATION` environment variable.
-- `verify_package_signatures_on_plan` (Boolean) Verify package signatures during Terraform/Tofu plan operations. Defaults to `true`. Can also be configured with the `UDS_VERIFY_PACKAGE_SIGNATURES_ON_PLAN` environment variable.
+- `validate_packages_on_plan` (Boolean) Whether to validate UDS packages during planning. When enabled, the provider may load packages during plan to catch package-dependent configuration errors early, such as invalid optional component names or signature verification failures. Disable this to avoid plan-time package downloads or expensive validation. These checks are still enforced during apply. Defaults to `true`. Can also be configured with the `UDS_VALIDATE_PACKAGES_ON_PLAN` environment variable.
 - `zarf_cache_path` (String) Filesystem path to the local Zarf cache directory. Defaults to `~/.zarf-cache`. Can also be configured with the `UDS_ZARF_CACHE_PATH` environment variable.

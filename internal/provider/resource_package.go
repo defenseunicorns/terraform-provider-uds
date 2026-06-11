@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -42,6 +43,7 @@ import (
 	zarfLayout "github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfSigning "github.com/zarf-dev/zarf/src/pkg/signing"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
+	zarfZoci "github.com/zarf-dev/zarf/src/pkg/zoci"
 	zarfTypes "github.com/zarf-dev/zarf/src/types"
 )
 
@@ -88,9 +90,10 @@ type PackageResourceModel struct {
 	SignatureVerification types.Object `tfsdk:"signature_verification"`
 	Namespace             types.String `tfsdk:"namespace"`
 
-	Components    types.Set `tfsdk:"component"`      // Set of ComponentModel objects
-	Vars          types.Set `tfsdk:"vars"`           // Set of VariableModel objects
-	SensitiveVars types.Set `tfsdk:"sensitive_vars"` // Set of VariableModel objects
+	Components         types.Set `tfsdk:"component"`           // Set of ComponentModel objects (TODO: remove when component block is removed)
+	OptionalComponents types.Set `tfsdk:"optional_components"` // Set of string component names (alpha)
+	Vars               types.Set `tfsdk:"vars"`                // Set of VariableModel objects
+	SensitiveVars      types.Set `tfsdk:"sensitive_vars"`      // Set of VariableModel objects
 
 	// readonly metadata
 	Name           types.String `tfsdk:"name"`
@@ -107,12 +110,14 @@ type PackageResourceModel struct {
 }
 
 // ComponentModel represents a UDS package component configuration.
+// TODO: remove when component block is removed
 type ComponentModel struct {
 	Name      types.String `tfsdk:"name"`
 	Overrides types.Set    `tfsdk:"override"` // Set of ComponentChartValuesModel objects
 }
 
 // ComponentChartValuesModel represents a helm chart override values configuration for a package component.
+// TODO: remove when component block is removed
 type ComponentChartValuesModel struct {
 	ChartName       types.String `tfsdk:"chart_name"`
 	Values          types.Set    `tfsdk:"values"`           // Set of HelmChartPathValueModel objects
@@ -120,6 +125,7 @@ type ComponentChartValuesModel struct {
 }
 
 // HelmChartPathValueModel represents a path/value pair for setting helm chart values
+// TODO: remove when component block is removed
 type HelmChartPathValueModel struct {
 	Path  types.String `tfsdk:"path"`
 	Value types.String `tfsdk:"value"`
@@ -163,6 +169,11 @@ var signatureVerificationAttrTypes = map[string]attr.Type{
 	"verify":     types.BoolType,
 	"public_key": types.StringType,
 	"keyless":    types.ObjectType{AttrTypes: keylessVerificationAttrTypes},
+}
+
+var connectStringAttrTypes = map[string]attr.Type{
+	"name":        types.StringType,
+	"description": types.StringType,
 }
 
 var defaultSignatureVerification = types.ObjectValueMust(
@@ -351,6 +362,12 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
+			"optional_components": schema.SetAttribute{
+				MarkdownDescription: "[Alpha] Set of optional package component names to install. Case-sensitive. Mutually exclusive with `component` blocks — specifying both is a validation error. When omitted or set to an empty list, only required package components are installed.",
+				Optional:            true,
+				Computed:            true,
+				ElementType:         types.StringType,
+			},
 			"connect_strings": schema.SetNestedAttribute{
 				Computed:            true,
 				MarkdownDescription: "Connect strings for connecting to services deployed by the package.",
@@ -375,8 +392,9 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 		},
 		Blocks: map[string]schema.Block{
+			// TODO: remove when component block is removed
 			"component": schema.SetNestedBlock{
-				MarkdownDescription: "Component configuration to include/exclude in the UDS package deployment.",
+				MarkdownDescription: "Component configuration to include/exclude in the UDS package deployment. Mutually exclusive with `optional_components`.",
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
@@ -479,6 +497,8 @@ func (r *PackageResource) ValidateConfig(ctx context.Context, req resource.Valid
 	}
 	validateUniqueVarNames(model, resp)
 	validateSignatureVerificationAttributes(ctx, model, resp)
+	// TODO: remove when component block is removed
+	validateComponentBlockOptionalComponentsMutualExclusivity(model, resp)
 }
 
 // Configure configures the resource with provider data.
@@ -514,10 +534,12 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	var err error
 	plan, err = r.deployAsNew(ctx, plan)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error creating package",
-			"Could not create resource, unexpected error: "+err.Error(),
-		)
+		var optErr *optionalComponentsValidationError
+		if errors.As(err, &optErr) {
+			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", optErr.Error())
+		} else {
+			resp.Diagnostics.AddError("Error creating package", "Could not create resource, unexpected error: "+err.Error())
+		}
 		return
 	}
 
@@ -530,6 +552,10 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 }
 
 func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	if req.State.Raw.IsNull() {
+		return
+	}
+
 	var data PackageResourceModel
 
 	// Read Terraform prior state data into the model
@@ -615,6 +641,15 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	}
 	data.ConnectStrings = connectStrings
 
+	// Bi-directional drift detection for optional_components (alpha):
+	// Use deployed package metadata to determine which deployed components are optional.
+	updatedOptionals, optDiags := refreshOptionalComponentsFromDeployedPackage(deployedPackage, data.OptionalComponents)
+	resp.Diagnostics.Append(optDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	data.OptionalComponents = updatedOptionals
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -641,10 +676,15 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	var err error
 	plan, err = r.deployAsNewOrUpdate(ctx, plan, oldPlan, resp)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error updating package",
-			"Could not update package, unexpected error: "+err.Error(),
-		)
+		var optErr *optionalComponentsValidationError
+		if errors.As(err, &optErr) {
+			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", optErr.Error())
+		} else {
+			resp.Diagnostics.AddError("Error updating package", "Could not update package, unexpected error: "+err.Error())
+		}
+		return
+	}
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
@@ -775,14 +815,48 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		plan.Architecture = types.StringValue(defaultArch)
 	}
 
-	if r.providerConfig == nil || r.providerConfig.VerifyPackageSignaturesOnPlan {
-		if err := r.planTimeSignatureVerification(ctx, plan); err != nil {
+	if r.providerConfig == nil || r.providerConfig.ValidatePackagesOnPlan {
+		checks := r.runPackagePlanChecks(ctx, plan)
+		if checks.LoadErr != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("source"),
+				"Failed to load package",
+				checks.LoadErr.Error(),
+			)
+			return
+		}
+		if checks.SigErr != nil {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("signature_verification"),
 				"Package signature verification failed",
-				err.Error(),
+				checks.SigErr.Error(),
 			)
 			return
+		}
+		if checks.OptComponentsErr != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("optional_components"),
+				"Invalid optional components",
+				checks.OptComponentsErr.Error(),
+			)
+			return
+		}
+	}
+
+	plan = normalizeOptionalComponentsPlan(config, plan)
+
+	// When component selection changes, mark deployment-derived computed outputs as unknown
+	// so Terraform doesn't hold the provider to prior known values that may change after apply.
+	if !req.State.Raw.IsNull() {
+		var state PackageResourceModel
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if !plan.OptionalComponents.Equal(state.OptionalComponents) ||
+			!plan.Components.Equal(state.Components) {
+			plan.ConnectStrings = types.SetUnknown(types.ObjectType{AttrTypes: connectStringAttrTypes})
+			plan.SetVariables = types.MapUnknown(types.StringType)
 		}
 	}
 
@@ -1017,7 +1091,9 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 		return plan, err
 	}
 	defer func() {
-		err = errors.Join(err, pkgLayout.Cleanup())
+		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
+			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
+		}
 	}()
 
 	packageNamespace := plan.Namespace.ValueString()
@@ -1042,18 +1118,34 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel, resp *resource.UpdateResponse) (PackageResourceModel, error) {
 
 	// TODO(erickson): Need to revisit this logic. If deploy errors, can we recover?
-	// Generate list of components to remove after the update is complete
-	// These components are components that were defined in the old plan but not present in the current plan
-	// We are removing them after the 'update' because if a 'required' component is removed it removes the entire package
-	componentsToRemove := getMissingComponents(plan, oldPlan)
+	// Generate list of components to remove after the update is complete.
+	// Combines legacy component-block removals with optional_components removals.
+	// Removal happens before upsert because removing a required component removes the entire package.
+	componentsToRemove := getMissingComponents(plan, oldPlan) // TODO: remove when component block is removed
+	seen := make(map[string]struct{}, len(componentsToRemove))
+	for _, name := range componentsToRemove {
+		seen[name] = struct{}{}
+	}
+	for _, name := range getMissingOptionalComponents(plan, oldPlan) {
+		if _, found := seen[name]; !found {
+			componentsToRemove = append(componentsToRemove, name)
+		}
+	}
 	if len(componentsToRemove) > 0 {
 		r.removeComponents(ctx, plan, componentsToRemove, resp)
+		if resp.Diagnostics.HasError() {
+			return plan, nil
+		}
 	}
 
 	return r.upsert(ctx, plan)
 }
 
 func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
+	if plan.OptionalComponents.IsUnknown() {
+		return plan, fmt.Errorf("optional_components must be known before apply")
+	}
+
 	// convert the terraform timeout to a time.Duration
 	timeout, err := time.ParseDuration(plan.Timeout.ValueString())
 	if err != nil {
@@ -1065,14 +1157,31 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, err
 	}
 	defer func() {
-		err = errors.Join(err, pkgLayout.Cleanup())
+		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
+			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
+		}
 	}()
 
-	_, optionalComponents, err := getRequiredAndOptionalPackageComponentsNames(plan, pkgLayout)
-	if err != nil {
-		return plan, err
+	// Alpha: if optional_components is set, use it directly; otherwise fall back to component blocks.
+	// TODO: remove branch when component block is removed; always use optional_components.
+	var optionalComponents []string
+	if !plan.OptionalComponents.IsNull() {
+		if diags := plan.OptionalComponents.ElementsAs(ctx, &optionalComponents, false); diags.HasError() {
+			return plan, fmt.Errorf("failed to read optional_components: %v", diags)
+		}
+		if len(optionalComponents) > 0 {
+			if err := validateOptionalComponentsAgainstPackage(optionalComponents, pkgLayout.Pkg.Components); err != nil {
+				return plan, err
+			}
+		}
+	} else {
+		_, optionalComponents, err = getRequiredAndOptionalPackageComponentsNames(plan, pkgLayout)
+		if err != nil {
+			return plan, err
+		}
 	}
 
+	// TODO: remove when component block is removed (components extraction, flattenComponentOverrides, and ValuesOverridesMap)
 	var components []ComponentModel
 	if !plan.Components.IsNull() && !plan.Components.IsUnknown() {
 		plan.Components.ElementsAs(ctx, &components, false)
@@ -1101,6 +1210,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		ForceConflicts: r.providerConfig.ForceHelmSSAConflicts,
 	}
 
+	originalPkgComponents := pkgLayout.Pkg.Components
 	filter := r.packageFilter.ForDeploy(optionalComponents)
 	pkgLayout.Pkg.Components, err = filter.Apply(pkgLayout.Pkg)
 	if err != nil {
@@ -1155,6 +1265,20 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 	plan.Metadata = pkgMetaData
 
+	// Record actually deployed optional components in state when optional_components is in use.
+	// Skipped for the component block path (null), which does not track optional_components in state.
+	if !plan.OptionalComponents.IsNull() {
+		optionals := deployedOptionalComponents(deployResult.DeployedComponents, originalPkgComponents)
+		optionalVals := make([]attr.Value, len(optionals))
+		for i, name := range optionals {
+			optionalVals[i] = types.StringValue(name)
+		}
+		plan.OptionalComponents, d = types.SetValue(types.StringType, optionalVals)
+		if d.HasError() {
+			return plan, fmt.Errorf("failed to set optional_components from deployed components: %v", d)
+		}
+	}
+
 	return plan, err
 }
 
@@ -1175,6 +1299,7 @@ func convertYAMLToJSONCompatible(o any) any {
 	return o
 }
 
+// TODO: remove when component block is removed
 // convertPathValuesToOverridesMap converts helm chart path values from the Terraform model to the overrides map structure
 func convertPathValuesToOverridesMap(ctx context.Context, pathValues types.Set, chartMap map[string]any, seenPaths map[string]bool, componentName, chartName, valueType string) error {
 	if pathValues.IsNull() || pathValues.IsUnknown() {
@@ -1209,6 +1334,7 @@ func convertPathValuesToOverridesMap(ctx context.Context, pathValues types.Set, 
 	return nil
 }
 
+// TODO: remove when component block is removed
 func flattenComponentOverrides(ctx context.Context, components []ComponentModel) (map[string]map[string]map[string]any, error) {
 	seen := make(map[string]map[string]map[string]bool)
 	result := make(map[string]map[string]map[string]any)
@@ -1276,6 +1402,7 @@ func flattenComponentOverrides(ctx context.Context, components []ComponentModel)
 
 // getMissingComponents compares two Package plans and returns a list of components that was specified in the
 // 'oldPlan' but not specified in the newer plan.
+// TODO: remove when component block is removed; use getMissingOptionalComponents exclusively
 func getMissingComponents(plan PackageResourceModel, oldPlan PackageResourceModel) []string {
 	var componentsToRemove []string
 
@@ -1307,11 +1434,42 @@ func getMissingComponents(plan PackageResourceModel, oldPlan PackageResourceMode
 	return componentsToRemove
 }
 
+// getMissingOptionalComponents returns optional components present in oldPlan but absent from plan.
+// Returns nil for null optional_components or when either value is unknown and cannot be compared.
+func getMissingOptionalComponents(plan, oldPlan PackageResourceModel) []string {
+	if oldPlan.OptionalComponents.IsNull() || oldPlan.OptionalComponents.IsUnknown() {
+		return nil
+	}
+	if plan.OptionalComponents.IsNull() || plan.OptionalComponents.IsUnknown() {
+		return nil
+	}
+
+	var newOptionals []string
+	plan.OptionalComponents.ElementsAs(context.Background(), &newOptionals, false)
+
+	var oldOptionals []string
+	oldPlan.OptionalComponents.ElementsAs(context.Background(), &oldOptionals, false)
+
+	newSet := make(map[string]struct{}, len(newOptionals))
+	for _, name := range newOptionals {
+		newSet[name] = struct{}{}
+	}
+
+	var toRemove []string
+	for _, name := range oldOptionals {
+		if _, found := newSet[name]; !found {
+			toRemove = append(toRemove, name)
+		}
+	}
+	return toRemove
+}
+
 // withClusterTimeout returns a context with a timeout
 func withClusterTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, clusterTimeoutMinutes*time.Minute)
 }
 
+// TODO: remove when component block is removed
 // Inserts a nested value based on the dot-separated path
 func insertNestedValue(root map[string]any, path string, value any) {
 	parts := strings.Split(path, ".")
@@ -1529,6 +1687,45 @@ func validateSignatureVerificationAttributes(ctx context.Context, model PackageR
 	}
 }
 
+// normalizeOptionalComponentsPlan sets plan.OptionalComponents based on what is in config:
+// - Null config + no component blocks: empty set, enabling drift tracking in required-only mode.
+// - Null config + component blocks present: null (legacy path; optional_components not tracked).
+// - Non-null config: unchanged (config value drives the plan).
+func normalizeOptionalComponentsPlan(config, plan PackageResourceModel) PackageResourceModel {
+	if config.OptionalComponents.IsNull() {
+		if !componentBlocksMayBePresent(config.Components) {
+			plan.OptionalComponents = types.SetValueMust(types.StringType, []attr.Value{})
+		} else {
+			plan.OptionalComponents = types.SetNull(types.StringType) // TODO: remove branch when component block is removed
+		}
+	}
+	return plan
+}
+
+// validateComponentBlockOptionalComponentsMutualExclusivity errors when optional_components is
+// set alongside component blocks. The two paradigms are mutually exclusive.
+// TODO: remove when component block is removed
+func validateComponentBlockOptionalComponentsMutualExclusivity(model PackageResourceModel, resp *resource.ValidateConfigResponse) {
+	if model.OptionalComponents.IsNull() {
+		return
+	}
+	if !componentBlocksMayBePresent(model.Components) {
+		return
+	}
+	resp.Diagnostics.AddAttributeError(
+		path.Root("optional_components"),
+		"Conflicting configuration",
+		"`optional_components` cannot be used together with `component` blocks. Use `optional_components` for component selection without overrides, or use `component` blocks when overrides are required.",
+	)
+}
+
+// componentBlocksMayBePresent reports whether component blocks are present or
+// may resolve to present once an unknown dynamic block becomes known.
+// TODO: remove when component block is removed
+func componentBlocksMayBePresent(components types.Set) bool {
+	return !components.IsNull() && (components.IsUnknown() || len(components.Elements()) > 0)
+}
+
 // buildVerifyBlobOptions constructs signing.VerifyBlobOptions from the model.
 // Writes any inline key or trusted-root content to files under tmpDir (caller owns cleanup).
 // Returns nil when no verification material is configured.
@@ -1605,6 +1802,7 @@ func buildSetVariableMap(model PackageResourceModel) map[string]string {
 	return setVariables
 }
 
+// TODO: remove when component block is removed
 func getRequiredAndOptionalPackageComponentsNames(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) (required []string, optional []string, err error) {
 	var componentErrors []error
 	requiredComponents := []string{}
@@ -1685,20 +1883,12 @@ func buildConnectStringsSet(connectStrings map[string]string) (types.Set, error)
 		return emptyConnectStringSet(), nil
 	}
 
-	connectStringObjType := types.ObjectType{
-		AttrTypes: map[string]attr.Type{
-			"name":        types.StringType,
-			"description": types.StringType,
-		},
-	}
+	connectStringObjType := types.ObjectType{AttrTypes: connectStringAttrTypes}
 
 	connectStringList := make([]attr.Value, 0, len(connectStrings))
 	for name, description := range connectStrings {
 		obj, diags := types.ObjectValue(
-			map[string]attr.Type{
-				"name":        types.StringType,
-				"description": types.StringType,
-			},
+			connectStringAttrTypes,
 			map[string]attr.Value{
 				"name":        types.StringValue(name),
 				"description": types.StringValue(description),
@@ -1725,33 +1915,176 @@ func buildConnectStringsSet(connectStrings map[string]string) (types.Set, error)
 	return setValue, nil
 }
 
+// deployedOptionalComponents returns deployed component names that are not required
+// in the package definition. Used for bi-directional drift detection in Read.
+func deployedOptionalComponents(deployedComponents []zarfState.DeployedComponent, pkgComponents []v1alpha1.ZarfComponent) []string {
+	optional := make([]string, 0)
+	for _, dc := range deployedComponents {
+		pkgComponent, found := findPackageComponent(pkgComponents, dc.Name)
+		if found && (pkgComponent.Required == nil || !*pkgComponent.Required) {
+			optional = append(optional, dc.Name)
+		}
+	}
+	return optional
+}
+
+// refreshOptionalComponentsFromDeployedPackage computes the deployed optional components from cluster state.
+// Returns current unchanged when optional_components is null. No package source download is performed.
+func refreshOptionalComponentsFromDeployedPackage(deployedPackage zarfState.DeployedPackage, current types.Set) (types.Set, diag.Diagnostics) {
+	if current.IsNull() {
+		return current, nil
+	}
+	optionals := deployedOptionalComponents(deployedPackage.DeployedComponents, deployedPackage.Data.Components)
+	optionalVals := make([]attr.Value, len(optionals))
+	for i, name := range optionals {
+		optionalVals[i] = types.StringValue(name)
+	}
+	return types.SetValue(types.StringType, optionalVals)
+}
+
 func emptyConnectStringSet() types.Set {
 	return types.SetValueMust(
-		types.ObjectType{
-			AttrTypes: map[string]attr.Type{
-				"name":        types.StringType,
-				"description": types.StringType,
-			},
-		},
-		[]attr.Value{}, // empty slice
+		types.ObjectType{AttrTypes: connectStringAttrTypes},
+		[]attr.Value{},
 	)
 }
 
-// planTimeSignatureVerification loads the package and verifies its signature at plan time.
-// Skipped when source is unknown, verification is disabled, or resource is unconfigured.
-func (r *PackageResource) planTimeSignatureVerification(ctx context.Context, plan PackageResourceModel) error {
+// loadPackageLayoutForInspection loads the package for metadata inspection only, without signature verification.
+// Use when only component metadata is needed (e.g., optional_components validation).
+func (r *PackageResource) loadPackageLayoutForInspection(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
+	packageSource, err := getPackageSource(model, *r.providerConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	loadOpt := zarfPackager.LoadOptions{
+		Filter:               zarfFilters.Empty(),
+		Architecture:         getArchitecture(model, *r.providerConfig),
+		VerificationStrategy: layout.VerifyNever,
+		LayerTypes:           []zarfZoci.LayerType{zarfZoci.MetadataLayers},
+		RemoteOptions:        r.getRemoteOptions(),
+		CachePath:            r.providerConfig.ZarfCachePath,
+	}
+
+	return r.packager.LoadPackage(ctx, packageSource, loadOpt)
+}
+
+// packagePlanCheckResult holds per-check errors from runPackagePlanChecks so each can be
+// attributed to the correct diagnostic path without expanding the function signature.
+type packagePlanCheckResult struct {
+	LoadErr          error
+	SigErr           error
+	OptComponentsErr error
+}
+
+// runPackagePlanChecks loads the package once and runs all plan-time validation checks.
+// Skipped when source is unknown, packager/providerConfig are nil, or no checks are needed.
+func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel) packagePlanCheckResult {
 	if plan.Source.IsUnknown() || plan.Source.IsNull() {
-		return nil
+		return packagePlanCheckResult{}
 	}
 	if r.packager == nil || r.providerConfig == nil {
-		return nil
+		return packagePlanCheckResult{}
 	}
-	if !getEffectiveSignatureVerification(ctx, plan) {
-		return nil
+
+	needsSigVerification := getEffectiveSignatureVerification(ctx, plan)
+	var requestedOptionals []string
+	// Unknown values are explicitly configured but cannot be validated until apply,
+	// when upsert receives their resolved component names.
+	canValidateOptionalComponents := !plan.OptionalComponents.IsNull() &&
+		!plan.OptionalComponents.IsUnknown() && len(plan.OptionalComponents.Elements()) > 0
+	if canValidateOptionalComponents {
+		plan.OptionalComponents.ElementsAs(ctx, &requestedOptionals, false)
 	}
-	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
+
+	if !needsSigVerification && !canValidateOptionalComponents {
+		return packagePlanCheckResult{}
+	}
+
+	pkgLayout, err := r.loadPackageLayoutForInspection(ctx, plan)
 	if pkgLayout != nil {
 		defer pkgLayout.Cleanup()
 	}
-	return err
+	if err != nil {
+		return packagePlanCheckResult{LoadErr: err}
+	}
+
+	if needsSigVerification {
+		tmpDir, err := os.MkdirTemp("", "uds-package-verify-*")
+		if err != nil {
+			return packagePlanCheckResult{SigErr: fmt.Errorf("failed to create temp dir for package verification: %w", err)}
+		}
+		defer os.RemoveAll(tmpDir)
+
+		verifyBlobOpts, err := buildVerifyBlobOptions(ctx, plan, tmpDir)
+		if err != nil {
+			return packagePlanCheckResult{SigErr: err}
+		}
+
+		verifyOpts := zarfSigning.DefaultVerifyBlobOptions()
+		if verifyBlobOpts != nil {
+			verifyOpts = *verifyBlobOpts
+		}
+		verifyErr := pkgLayout.VerifyPackageSignature(ctx, verifyOpts)
+		if sigErr := handleVerifyResult(ctx, verifyErr, pkgLayout.IsSigned(), true); sigErr != nil {
+			return packagePlanCheckResult{SigErr: sigErr}
+		}
+	}
+
+	if canValidateOptionalComponents {
+		return packagePlanCheckResult{OptComponentsErr: validateOptionalComponentsAgainstPackage(requestedOptionals, pkgLayout.Pkg.Components)}
+	}
+
+	return packagePlanCheckResult{}
+}
+
+// optionalComponentsValidationError is a sentinel type so callers can distinguish
+// optional_components validation failures and surface them as attribute-level diagnostics.
+type optionalComponentsValidationError struct{ msg string }
+
+func (e *optionalComponentsValidationError) Error() string { return e.msg }
+
+// packageOptionalComponentNames returns names of non-required package components, sorted.
+func packageOptionalComponentNames(pkgComponents []v1alpha1.ZarfComponent) []string {
+	names := make([]string, 0)
+	for _, c := range pkgComponents {
+		if !c.IsRequired() {
+			names = append(names, c.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// validateOptionalComponentsAgainstPackage checks that all requested names are valid optional
+// components in the package. Returns an error listing invalid names and available optional names.
+func validateOptionalComponentsAgainstPackage(requested []string, pkgComponents []v1alpha1.ZarfComponent) error {
+	available := packageOptionalComponentNames(pkgComponents)
+	availableSet := make(map[string]struct{}, len(available))
+	for _, name := range available {
+		availableSet[name] = struct{}{}
+	}
+	var invalid []string
+	for _, name := range requested {
+		if _, found := availableSet[name]; !found {
+			invalid = append(invalid, name)
+		}
+	}
+	if len(invalid) == 0 {
+		return nil
+	}
+	if len(available) == 0 {
+		return &optionalComponentsValidationError{msg: "this package defines no optional components"}
+	}
+	sort.Strings(invalid)
+	quotedInvalid := make([]string, len(invalid))
+	for i, name := range invalid {
+		quotedInvalid[i] = fmt.Sprintf("%q", name)
+	}
+	quotedAvailable := make([]string, len(available))
+	for i, name := range available {
+		quotedAvailable[i] = fmt.Sprintf("%q", name)
+	}
+	return &optionalComponentsValidationError{msg: fmt.Sprintf("invalid optional_components: %s; available: %s",
+		strings.Join(quotedInvalid, ", "), strings.Join(quotedAvailable, ", "))}
 }

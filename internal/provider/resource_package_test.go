@@ -24,6 +24,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zarfCluster "github.com/zarf-dev/zarf/src/pkg/cluster"
 	"github.com/zarf-dev/zarf/src/pkg/packager"
@@ -32,6 +33,7 @@ import (
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
 	"github.com/zarf-dev/zarf/src/pkg/variables"
+	zarfZoci "github.com/zarf-dev/zarf/src/pkg/zoci"
 
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 )
@@ -181,6 +183,18 @@ func WithSensitiveVars(sensitiveVars []VariableModel) PackageResourceModelDataOp
 	}
 }
 
+// WithOptionalComponents sets optional_components to an explicit set of names.
+// Pass an empty slice to set an empty (non-null) set.
+func WithOptionalComponents(names []string) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		vals := make([]attr.Value, len(names))
+		for i, name := range names {
+			vals[i] = types.StringValue(name)
+		}
+		model.OptionalComponents = types.SetValueMust(types.StringType, vals)
+	}
+}
+
 // NewTestPackageResourceModel creates a PackageResourceModel with default values and applies data options
 func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) PackageResourceModel {
 	model := PackageResourceModel{
@@ -190,6 +204,7 @@ func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) Pack
 		Timeout:               types.StringValue("10m"),
 		Namespace:             types.StringValue(""),
 		Components:            componentSliceToSet([]ComponentModel{}),
+		OptionalComponents:    types.SetNull(types.StringType),
 		Vars:                  variableSliceToSet([]VariableModel{}),
 		SensitiveVars:         variableSliceToSet([]VariableModel{}),
 	}
@@ -1559,33 +1574,59 @@ func TestPackageResource_Upsert_PublicKeyAndPackageSignatureVerification(t *test
 	}
 }
 
-func TestPackageResource_PlanTimeSignatureVerification(t *testing.T) {
+func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T) {
 	tests := []struct {
 		name              string
 		modelOpts         []PackageResourceModelDataOption
 		loadPackageError  error
-		expectError       bool
+		packageSigned     bool
+		expectLoadErr     bool
+		expectSigErr      bool
 		expectLoadPackage bool
 	}{
 		{
 			name:              "verify=true with load success passes",
 			modelOpts:         []PackageResourceModelDataOption{WithPublicKey("some-key")},
 			loadPackageError:  nil,
-			expectError:       false,
+			expectLoadErr:     false,
+			expectSigErr:      false,
 			expectLoadPackage: true,
 		},
 		{
-			name:              "verify=true with load error returns error",
+			name:              "signed package verification failure returns sigErr",
+			modelOpts:         []PackageResourceModelDataOption{WithPublicKey("invalid-key")},
+			packageSigned:     true,
+			expectLoadErr:     false,
+			expectSigErr:      true,
+			expectLoadPackage: true,
+		},
+		{
+			name:              "verify=true with load error returns loadErr not sigErr",
 			modelOpts:         []PackageResourceModelDataOption{WithPublicKey("some-key")},
-			loadPackageError:  fmt.Errorf("signature verification failed"),
-			expectError:       true,
+			loadPackageError:  fmt.Errorf("network failure loading package"),
+			expectLoadErr:     true,
+			expectSigErr:      false,
 			expectLoadPackage: true,
 		},
 		{
 			name:              "verify=false skips verification entirely",
 			modelOpts:         []PackageResourceModelDataOption{WithSignatureVerificationEnabled(false)},
 			loadPackageError:  fmt.Errorf("should not be called"),
-			expectError:       false,
+			expectLoadErr:     false,
+			expectSigErr:      false,
+			expectLoadPackage: false,
+		},
+		{
+			name: "unknown optional_components defers validation until apply",
+			modelOpts: []PackageResourceModelDataOption{
+				WithSignatureVerificationEnabled(false),
+				func(m *PackageResourceModel) {
+					m.OptionalComponents = types.SetUnknown(types.StringType)
+				},
+			},
+			loadPackageError:  fmt.Errorf("should not be called"),
+			expectLoadErr:     false,
+			expectSigErr:      false,
 			expectLoadPackage: false,
 		},
 		{
@@ -1594,7 +1635,8 @@ func TestPackageResource_PlanTimeSignatureVerification(t *testing.T) {
 				m.Source = types.StringUnknown()
 			}},
 			loadPackageError:  fmt.Errorf("should not be called"),
-			expectError:       false,
+			expectLoadErr:     false,
+			expectSigErr:      false,
 			expectLoadPackage: false,
 		},
 	}
@@ -1605,6 +1647,9 @@ func TestPackageResource_PlanTimeSignatureVerification(t *testing.T) {
 			if tc.expectLoadPackage {
 				if tc.loadPackageError == nil {
 					result := newValidLoadPackageResult()
+					if tc.packageSigned {
+						result.Layout.Pkg.Build.Signed = helpers.BoolPtr(true)
+					}
 					mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(result.Layout, result.Error)
 				} else {
 					result := newErrorLoadPackageResult(tc.loadPackageError)
@@ -1612,20 +1657,203 @@ func TestPackageResource_PlanTimeSignatureVerification(t *testing.T) {
 				}
 			}
 
-			packageResource := NewPackageResource(&udsProviderConfig{VerifyPackageSignaturesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 			model := NewTestPackageResourceModel(tc.modelOpts...)
-			err := packageResource.planTimeSignatureVerification(context.Background(), model)
+			result := packageResource.runPackagePlanChecks(context.Background(), model)
 
-			if tc.expectError {
-				assert.NotNil(t, err)
+			if tc.expectLoadErr {
+				assert.NotNil(t, result.LoadErr)
 			} else {
-				assert.Nil(t, err)
+				assert.Nil(t, result.LoadErr)
+			}
+			if tc.expectSigErr {
+				assert.NotNil(t, result.SigErr)
+			} else {
+				assert.Nil(t, result.SigErr)
 			}
 			if tc.expectLoadPackage {
 				mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 			} else {
 				mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 			}
+		})
+	}
+}
+
+func TestPackageResource_RunPackagePlanChecks_ErrorRouting(t *testing.T) {
+	tests := []struct {
+		name             string
+		modelOpts        []PackageResourceModelDataOption
+		loadPackageError error
+		expectLoadErr    bool
+		expectSigErr     bool
+		expectOptErr     bool
+	}{
+		{
+			name: "load failure routes to loadErr not sigErr",
+			modelOpts: []PackageResourceModelDataOption{
+				WithSignatureVerificationEnabled(false),
+				WithOptionalComponents([]string{"test-optional-non-default-component-0"}),
+			},
+			loadPackageError: fmt.Errorf("connection refused"),
+			expectLoadErr:    true,
+			expectSigErr:     false,
+			expectOptErr:     false,
+		},
+		{
+			name: "verify=false with invalid optional_components validates optionals without sig path",
+			modelOpts: []PackageResourceModelDataOption{
+				WithSignatureVerificationEnabled(false),
+				WithOptionalComponents([]string{"nonexistent-component"}),
+			},
+			loadPackageError: nil,
+			expectLoadErr:    false,
+			expectSigErr:     false,
+			expectOptErr:     true,
+		},
+		{
+			name: "invalid optional_components routes to optErr not sigErr",
+			modelOpts: []PackageResourceModelDataOption{
+				WithPublicKey("some-key"),
+				WithOptionalComponents([]string{"nonexistent-component"}),
+			},
+			loadPackageError: nil,
+			expectLoadErr:    false,
+			expectSigErr:     false,
+			expectOptErr:     true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			if tc.loadPackageError == nil {
+				result := newValidLoadPackageResult()
+				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(result.Layout, result.Error)
+			} else {
+				result := newErrorLoadPackageResult(tc.loadPackageError)
+				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(result.Layout, result.Error)
+			}
+
+			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+			model := NewTestPackageResourceModel(tc.modelOpts...)
+			result := packageResource.runPackagePlanChecks(context.Background(), model)
+
+			if tc.expectLoadErr {
+				assert.NotNil(t, result.LoadErr, "expected LoadErr")
+			} else {
+				assert.Nil(t, result.LoadErr, "expected no LoadErr")
+			}
+			if tc.expectSigErr {
+				assert.NotNil(t, result.SigErr, "expected SigErr")
+			} else {
+				assert.Nil(t, result.SigErr, "expected no SigErr")
+			}
+			if tc.expectOptErr {
+				assert.NotNil(t, result.OptComponentsErr, "expected OptComponentsErr")
+			} else {
+				assert.Nil(t, result.OptComponentsErr, "expected no OptComponentsErr")
+			}
+
+			foundLoadPackageCall := false
+			var loadOpts zarfPackager.LoadOptions
+			for _, call := range mockPackager.Calls {
+				if call.Method == "LoadPackage" {
+					loadOpts = call.Arguments[2].(zarfPackager.LoadOptions)
+					foundLoadPackageCall = true
+					break
+				}
+			}
+			require.True(t, foundLoadPackageCall, "LoadPackage was not called")
+			assert.Equal(t, []zarfZoci.LayerType{zarfZoci.MetadataLayers}, loadOpts.LayerTypes,
+				"inspection load must request metadata layers only")
+		})
+	}
+}
+
+func TestNormalizeOptionalComponentsPlan(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   PackageResourceModel
+		plan     PackageResourceModel // framework pre-populates plan from config for non-null optional_components
+		expected types.Set
+	}{
+		{
+			name:     "null optional_components with no component blocks normalizes to empty set",
+			config:   NewTestPackageResourceModel(),
+			plan:     NewTestPackageResourceModel(),
+			expected: types.SetValueMust(types.StringType, []attr.Value{}),
+		},
+		{
+			name:     "null optional_components with component blocks stays null",
+			config:   NewTestPackageResourceModel(WithComponents(NewComponentModelsFromNames([]string{"comp-a"}))),
+			plan:     NewTestPackageResourceModel(WithComponents(NewComponentModelsFromNames([]string{"comp-a"}))),
+			expected: types.SetNull(types.StringType),
+		},
+		{
+			name: "null optional_components with unknown component blocks stays null",
+			config: func() PackageResourceModel {
+				model := NewTestPackageResourceModel()
+				model.Components = types.SetUnknown(model.Components.ElementType(context.Background()))
+				return model
+			}(),
+			plan:     NewTestPackageResourceModel(),
+			expected: types.SetNull(types.StringType),
+		},
+		{
+			name:     "explicit empty optional_components unchanged",
+			config:   NewTestPackageResourceModel(WithOptionalComponents([]string{})),
+			plan:     NewTestPackageResourceModel(WithOptionalComponents([]string{})),
+			expected: types.SetValueMust(types.StringType, []attr.Value{}),
+		},
+		{
+			name:     "explicit optional_components unchanged",
+			config:   NewTestPackageResourceModel(WithOptionalComponents([]string{"comp-a", "comp-b"})),
+			plan:     NewTestPackageResourceModel(WithOptionalComponents([]string{"comp-a", "comp-b"})),
+			expected: types.SetValueMust(types.StringType, []attr.Value{types.StringValue("comp-a"), types.StringValue("comp-b")}),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := normalizeOptionalComponentsPlan(tc.config, tc.plan)
+			assert.Equal(t, tc.expected, result.OptionalComponents)
+		})
+	}
+}
+
+func TestComponentBlocksMayBePresent(t *testing.T) {
+	componentSet := componentSliceToSet(NewComponentModelsFromNames([]string{"comp-a"}))
+	tests := []struct {
+		name       string
+		components types.Set
+		expected   bool
+	}{
+		{
+			name:       "null set",
+			components: types.SetNull(componentSet.ElementType(context.Background())),
+			expected:   false,
+		},
+		{
+			name:       "empty set",
+			components: componentSliceToSet([]ComponentModel{}),
+			expected:   false,
+		},
+		{
+			name:       "unknown set",
+			components: types.SetUnknown(componentSet.ElementType(context.Background())),
+			expected:   true,
+		},
+		{
+			name:       "non-empty set",
+			components: componentSet,
+			expected:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, componentBlocksMayBePresent(tc.components))
 		})
 	}
 }
@@ -1962,6 +2190,73 @@ func TestGetOptionalComponentsToRemove(t *testing.T) {
 	}
 }
 
+func TestGetMissingOptionalComponents(t *testing.T) {
+	tests := []struct {
+		name     string
+		oldPlan  PackageResourceModel
+		newPlan  PackageResourceModel
+		expected []string
+	}{
+		{
+			name:     "returns old optional for removal when old has one optional and new is empty",
+			oldPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics"})),
+			newPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{})),
+			expected: []string{"metrics"},
+		},
+		{
+			name:     "returns removed optional when old has two optionals and new keeps one",
+			oldPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics", "logging"})),
+			newPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{"logging"})),
+			expected: []string{"metrics"},
+		},
+		{
+			name:     "returns nothing when old and new are identical",
+			oldPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics"})),
+			newPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics"})),
+			expected: nil,
+		},
+		{
+			name:     "returns nothing when old is null on the legacy path",
+			oldPlan:  NewTestPackageResourceModel(),
+			newPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{})),
+			expected: nil,
+		},
+		{
+			name:     "returns nothing when new is null on the legacy path",
+			oldPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics"})),
+			newPlan:  NewTestPackageResourceModel(),
+			expected: nil,
+		},
+		{
+			name: "returns nothing when old optional_components is unknown",
+			oldPlan: func() PackageResourceModel {
+				model := NewTestPackageResourceModel()
+				model.OptionalComponents = types.SetUnknown(types.StringType)
+				return model
+			}(),
+			newPlan:  NewTestPackageResourceModel(WithOptionalComponents([]string{})),
+			expected: nil,
+		},
+		{
+			name:    "returns nothing when new optional_components is unknown",
+			oldPlan: NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics"})),
+			newPlan: func() PackageResourceModel {
+				model := NewTestPackageResourceModel()
+				model.OptionalComponents = types.SetUnknown(types.StringType)
+				return model
+			}(),
+			expected: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := getMissingOptionalComponents(tc.newPlan, tc.oldPlan)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
 func TestUpdate_RemoveComponents(t *testing.T) {
 	tests := []struct {
 		name               string
@@ -2041,6 +2336,147 @@ func TestUpdate_RemoveComponents(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateOptionalComponentsAgainstPackage(t *testing.T) {
+	boolTrue := true
+	pkgComponents := []v1alpha1.ZarfComponent{
+		{Name: "required-comp", Required: &boolTrue},
+		{Name: "optional-a"},
+		{Name: "optional-b"},
+	}
+
+	tests := []struct {
+		name          string
+		requested     []string
+		pkgComponents []v1alpha1.ZarfComponent
+		expectError   bool
+		errorContains []string
+	}{
+		{
+			name:          "valid optional component passes",
+			requested:     []string{"optional-a"},
+			pkgComponents: pkgComponents,
+			expectError:   false,
+		},
+		{
+			name:          "unknown name errors and lists valid optionals",
+			requested:     []string{"does-not-exist"},
+			pkgComponents: pkgComponents,
+			expectError:   true,
+			errorContains: []string{`"does-not-exist"`, `"optional-a"`, `"optional-b"`},
+		},
+		{
+			name:          "required component name errors and lists valid optionals",
+			requested:     []string{"required-comp"},
+			pkgComponents: pkgComponents,
+			expectError:   true,
+			errorContains: []string{`"required-comp"`, `"optional-a"`, `"optional-b"`},
+		},
+		{
+			name:          "multiple invalid names all shown",
+			requested:     []string{"bad-one", "bad-two", "optional-a"},
+			pkgComponents: pkgComponents,
+			expectError:   true,
+			errorContains: []string{`"bad-one"`, `"bad-two"`},
+		},
+		{
+			name:          "package with no optionals reports specific message",
+			requested:     []string{"anything"},
+			pkgComponents: []v1alpha1.ZarfComponent{{Name: "only-required", Required: &boolTrue}},
+			expectError:   true,
+			errorContains: []string{"no optional components"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateOptionalComponentsAgainstPackage(tc.requested, tc.pkgComponents)
+			if tc.expectError {
+				assert.NotNil(t, err)
+				for _, s := range tc.errorContains {
+					assert.Contains(t, err.Error(), s)
+				}
+			} else {
+				assert.Nil(t, err)
+			}
+		})
+	}
+}
+
+func TestDeployAsNewOrUpdate_OptionalComponentRemoval(t *testing.T) {
+	boolFalse := false
+	zarfPkg := v1alpha1.ZarfPackage{
+		Components: []v1alpha1.ZarfComponent{
+			{Name: "metrics", Required: &boolFalse},
+		},
+	}
+
+	mockCluster := MockCluster{}
+	zarfClusterInst := zarfCluster.Cluster{}
+	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfClusterInst, nil)
+
+	mockPackager := &MockPackager{}
+	mockPackager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(zarfPkg, nil)
+	mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	validResult := newValidLoadPackageResult()
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(validResult.Layout, nil)
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+	mockPackageComponentFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	oldPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics"}))
+	newPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{}))
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, &mockCluster).(*PackageResource)
+	resp := resource.UpdateResponse{}
+	_, err := packageResource.deployAsNewOrUpdate(context.Background(), newPlan, oldPlan, &resp)
+
+	assert.NoError(t, err)
+	assert.False(t, resp.Diagnostics.HasError(), resp.Diagnostics.Errors())
+
+	var forRemoveArgs []string
+	for _, call := range mockPackageComponentFilter.Calls {
+		if call.Method == "ForRemove" {
+			forRemoveArgs = call.Arguments[0].([]string)
+		}
+	}
+	assert.Equal(t, []string{"metrics"}, forRemoveArgs, "ForRemove should be called with the removed optional component")
+	mockPackager.AssertCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestDeployAsNewOrUpdate_RemovalFailureSkipsUpsert(t *testing.T) {
+	boolFalse := false
+	zarfPkg := v1alpha1.ZarfPackage{
+		Components: []v1alpha1.ZarfComponent{
+			{Name: "metrics", Required: &boolFalse},
+		},
+	}
+
+	mockCluster := MockCluster{}
+	zarfClusterInst := zarfCluster.Cluster{}
+	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfClusterInst, nil)
+
+	mockPackager := &MockPackager{}
+	mockPackager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(zarfPkg, nil)
+	mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).Return(fmt.Errorf("remove failed"))
+
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+	mockPackageComponentFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
+
+	oldPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics"}))
+	newPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{}))
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, &mockCluster).(*PackageResource)
+	resp := resource.UpdateResponse{}
+	_, err := packageResource.deployAsNewOrUpdate(context.Background(), newPlan, oldPlan, &resp)
+
+	assert.NoError(t, err)
+	assert.True(t, resp.Diagnostics.HasError(), "diagnostics should have error from failed removal")
+	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 
 // Helper function to convert a slice of HelmChartPathValueModel to types.Set
@@ -4166,4 +4602,285 @@ func TestHandleVerifyResult(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateComponentBlockOptionalComponentsMutualExclusivity(t *testing.T) {
+	componentSet := componentSliceToSet([]ComponentModel{
+		{Name: types.StringValue("some-component")},
+	})
+	emptyComponents := componentSliceToSet([]ComponentModel{})
+
+	optionalWithNames := types.SetValueMust(types.StringType, []attr.Value{types.StringValue("metrics")})
+	emptyOptional := types.SetValueMust(types.StringType, []attr.Value{})
+
+	tests := []struct {
+		name               string
+		optionalComponents types.Set
+		components         types.Set
+		expectError        bool
+	}{
+		{
+			name:               "allows null optional_components with component blocks",
+			optionalComponents: types.SetNull(types.StringType),
+			components:         componentSet,
+			expectError:        false,
+		},
+		{
+			name:               "allows null optional_components without component blocks",
+			optionalComponents: types.SetNull(types.StringType),
+			components:         emptyComponents,
+			expectError:        false,
+		},
+		{
+			name:               "allows non-empty optional_components without component blocks",
+			optionalComponents: optionalWithNames,
+			components:         emptyComponents,
+			expectError:        false,
+		},
+		{
+			name:               "allows empty optional_components without component blocks",
+			optionalComponents: emptyOptional,
+			components:         emptyComponents,
+			expectError:        false,
+		},
+		{
+			name:               "errors on empty optional_components with component blocks",
+			optionalComponents: emptyOptional,
+			components:         componentSet,
+			expectError:        true,
+		},
+		{
+			name:               "errors on non-empty optional_components with component blocks",
+			optionalComponents: optionalWithNames,
+			components:         componentSet,
+			expectError:        true,
+		},
+		{
+			name:               "errors on unknown optional_components with component blocks",
+			optionalComponents: types.SetUnknown(types.StringType),
+			components:         componentSet,
+			expectError:        true,
+		},
+		{
+			name:               "errors on optional_components with unknown component blocks",
+			optionalComponents: optionalWithNames,
+			components:         types.SetUnknown(componentSet.ElementType(context.Background())),
+			expectError:        true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			model := PackageResourceModel{
+				OptionalComponents: tc.optionalComponents,
+				Components:         tc.components,
+			}
+			resp := &resource.ValidateConfigResponse{}
+			validateComponentBlockOptionalComponentsMutualExclusivity(model, resp)
+			if tc.expectError {
+				assert.True(t, resp.Diagnostics.HasError(), "expected error but got none")
+			} else {
+				assert.False(t, resp.Diagnostics.HasError(), "expected no error but got: %v", resp.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestPackageResource_Upsert_OptionalComponents(t *testing.T) {
+	tests := []struct {
+		name                  string
+		optionalComponents    *[]string // nil = null (component block path)
+		components            []ComponentModel
+		expectedFilteredNames []string
+	}{
+		{
+			name:                  "uses component block path with no selected optionals when optional_components is null",
+			optionalComponents:    nil,
+			components:            []ComponentModel{},
+			expectedFilteredNames: []string{},
+		},
+		{
+			name:                  "calls filter with no optional components when optional_components is empty",
+			optionalComponents:    &[]string{},
+			components:            []ComponentModel{},
+			expectedFilteredNames: []string{},
+		},
+		{
+			name:                  "calls filter with the selected single optional component",
+			optionalComponents:    &[]string{"test-optional-non-default-component-0"},
+			components:            []ComponentModel{},
+			expectedFilteredNames: []string{"test-optional-non-default-component-0"},
+		},
+		{
+			name:                  "calls filter with all selected optional components",
+			optionalComponents:    &[]string{"test-optional-non-default-component-0", "test-optional-non-default-component-1"},
+			components:            []ComponentModel{},
+			expectedFilteredNames: []string{"test-optional-non-default-component-0", "test-optional-non-default-component-1"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			validLoadPackageResult := newValidLoadPackageResult()
+			mockPackager := &MockPackager{}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(validLoadPackageResult.Layout, nil)
+			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+			opts := []PackageResourceModelDataOption{WithComponents(tc.components)}
+			if tc.optionalComponents != nil {
+				opts = append(opts, WithOptionalComponents(*tc.optionalComponents))
+			}
+
+			_, err := packageResource.upsert(context.Background(), NewTestPackageResourceModel(opts...))
+			assert.NoError(t, err)
+
+			mockPackageComponentFilter.AssertCalled(t, "ForDeploy", mock.Anything)
+			for _, call := range mockPackageComponentFilter.Calls {
+				if call.Method == "ForDeploy" {
+					got, _ := call.Arguments[0].([]string)
+					assert.ElementsMatch(t, tc.expectedFilteredNames, got)
+				}
+			}
+		})
+	}
+}
+
+func TestPackageResource_Upsert_UnknownOptionalComponents(t *testing.T) {
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+	model := NewTestPackageResourceModel(func(model *PackageResourceModel) {
+		model.OptionalComponents = types.SetUnknown(types.StringType)
+	})
+
+	_, err := packageResource.upsert(context.Background(), model)
+	require.EqualError(t, err, "optional_components must be known before apply")
+	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+	mockPackageComponentFilter.AssertNotCalled(t, "ForDeploy", mock.Anything)
+	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestDeployedOptionalComponents(t *testing.T) {
+	boolTrue := true
+	boolFalse := false
+
+	pkgComponents := []v1alpha1.ZarfComponent{
+		{Name: "required-a", Required: &boolTrue},
+		{Name: "required-b", Required: &boolTrue},
+		{Name: "optional-nil-required", Required: nil},
+		{Name: "optional-false-required", Required: &boolFalse},
+	}
+
+	tests := []struct {
+		name               string
+		deployedComponents []zarfState.DeployedComponent
+		expected           []string
+	}{
+		{
+			name: "returns empty when only required components are deployed",
+			deployedComponents: []zarfState.DeployedComponent{
+				{Name: "required-a"},
+				{Name: "required-b"},
+			},
+			expected: []string{},
+		},
+		{
+			name: "returns only optional components when required and optional components are deployed",
+			deployedComponents: []zarfState.DeployedComponent{
+				{Name: "required-a"},
+				{Name: "required-b"},
+				{Name: "optional-nil-required"},
+			},
+			expected: []string{"optional-nil-required"},
+		},
+		{
+			name: "multiple optional components deployed",
+			deployedComponents: []zarfState.DeployedComponent{
+				{Name: "required-a"},
+				{Name: "optional-nil-required"},
+				{Name: "optional-false-required"},
+			},
+			expected: []string{"optional-nil-required", "optional-false-required"},
+		},
+		{
+			name: "excludes deployed components that are not in the package definition",
+			deployedComponents: []zarfState.DeployedComponent{
+				{Name: "required-a"},
+				{Name: "unknown-component"},
+			},
+			expected: []string{},
+		},
+		{
+			name:               "returns empty when no components are deployed",
+			deployedComponents: []zarfState.DeployedComponent{},
+			expected:           []string{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := deployedOptionalComponents(tc.deployedComponents, pkgComponents)
+			assert.ElementsMatch(t, tc.expected, result)
+		})
+	}
+}
+
+func TestRefreshOptionalComponentsFromDeployedPackage(t *testing.T) {
+	boolTrue := true
+	boolFalse := false
+
+	deployedPkg := zarfState.DeployedPackage{
+		DeployedComponents: []zarfState.DeployedComponent{
+			{Name: "required-a"},
+			{Name: "optional-nil-required"},
+		},
+		Data: v1alpha1.ZarfPackage{
+			Components: []v1alpha1.ZarfComponent{
+				{Name: "required-a", Required: &boolTrue},
+				{Name: "optional-nil-required", Required: nil},
+				{Name: "optional-false-required", Required: &boolFalse},
+			},
+		},
+	}
+
+	t.Run("null current returns null unchanged", func(t *testing.T) {
+		current := types.SetNull(types.StringType)
+		result, diags := refreshOptionalComponentsFromDeployedPackage(deployedPkg, current)
+		assert.False(t, diags.HasError())
+		assert.True(t, result.IsNull())
+	})
+
+	t.Run("unknown current resolves deployed optional components", func(t *testing.T) {
+		current := types.SetUnknown(types.StringType)
+		result, diags := refreshOptionalComponentsFromDeployedPackage(deployedPkg, current)
+		assert.False(t, diags.HasError())
+		var names []string
+		result.ElementsAs(context.Background(), &names, false)
+		assert.ElementsMatch(t, []string{"optional-nil-required"}, names)
+	})
+
+	t.Run("returns deployed optional components from package metadata", func(t *testing.T) {
+		current := types.SetValueMust(types.StringType, []attr.Value{types.StringValue("optional-nil-required")})
+		result, diags := refreshOptionalComponentsFromDeployedPackage(deployedPkg, current)
+		assert.False(t, diags.HasError())
+		var names []string
+		result.ElementsAs(context.Background(), &names, false)
+		assert.ElementsMatch(t, []string{"optional-nil-required"}, names)
+	})
+
+	t.Run("no deployed optionals returns empty set", func(t *testing.T) {
+		pkgNoOptionals := zarfState.DeployedPackage{
+			DeployedComponents: []zarfState.DeployedComponent{{Name: "required-a"}},
+			Data:               v1alpha1.ZarfPackage{Components: []v1alpha1.ZarfComponent{{Name: "required-a", Required: &boolTrue}}},
+		}
+		current := types.SetValueMust(types.StringType, []attr.Value{})
+		result, diags := refreshOptionalComponentsFromDeployedPackage(pkgNoOptionals, current)
+		assert.False(t, diags.HasError())
+		assert.Equal(t, 0, len(result.Elements()))
+	})
 }
