@@ -1580,6 +1580,10 @@ func joinValuePath(prefix string, key string) string {
 	return prefix + "." + key
 }
 
+// collectAndValidatePackageValuePaths performs package values validation that does
+// not require loading the package and returns configured value paths for later
+// sourcePath validation. Unknown root values return no paths so package-dependent
+// validation can defer until apply.
 func collectAndValidatePackageValuePaths(model PackageResourceModel, resp *resource.ModifyPlanResponse) []string {
 	valuePaths, valuesContainUnknown, err := collectDynamicValuePaths(model.Values, "values")
 	if err != nil {
@@ -1805,7 +1809,7 @@ func collectValuePathsAtPath(values map[string]any, prefix string, paths *[]stri
 }
 
 func (r *PackageResource) getPlannedComponentValueSourcePaths(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) ([]string, error) {
-	optionalComponents, err := getOptionalComponentsAttributeForDeploy(context.Background(), model.OptionalComponents, pkgLayout.Pkg.Components)
+	optionalComponents, err := getOptionalComponentsFromAttribute(context.Background(), model.OptionalComponents, pkgLayout.Pkg.Components)
 	if err != nil {
 		return []string{}, err
 	}
@@ -1831,13 +1835,13 @@ func getOptionalComponentsForDeploy(ctx context.Context, model PackageResourceMo
 	// Alpha: if optional_components is set, use it directly; otherwise fall back to component blocks.
 	// TODO: remove branch when component block is removed; always use optional_components.
 	if !model.OptionalComponents.IsNull() {
-		return getOptionalComponentsAttributeForDeploy(ctx, model.OptionalComponents, pkgLayout.Pkg.Components)
+		return getOptionalComponentsFromAttribute(ctx, model.OptionalComponents, pkgLayout.Pkg.Components)
 	}
 
 	return getComponentBlockOptionalComponentsForDeploy(ctx, model.Components, pkgLayout.Pkg.Components)
 }
 
-func getOptionalComponentsAttributeForDeploy(ctx context.Context, optionalComponentsSet types.Set, pkgComponents []v1alpha1.ZarfComponent) ([]string, error) {
+func getOptionalComponentsFromAttribute(ctx context.Context, optionalComponentsSet types.Set, pkgComponents []v1alpha1.ZarfComponent) ([]string, error) {
 	if optionalComponentsSet.IsUnknown() {
 		return nil, fmt.Errorf("optional_components must be known")
 	}
@@ -1854,6 +1858,9 @@ func getOptionalComponentsAttributeForDeploy(ctx context.Context, optionalCompon
 	return optionalComponents, nil
 }
 
+// getComponentBlockOptionalComponentsForDeploy returns optional component names
+// selected through legacy component blocks. Required component names are ignored
+// because Zarf deploy includes required components automatically.
 // TODO: remove when component block is removed
 func getComponentBlockOptionalComponentsForDeploy(ctx context.Context, componentsSet types.Set, pkgComponents []v1alpha1.ZarfComponent) ([]string, error) {
 	if componentsSet.IsUnknown() {
@@ -2468,8 +2475,9 @@ func emptyConnectStringSet() types.Set {
 	)
 }
 
-// loadPackageLayoutForInspection loads the package for metadata inspection only, without signature verification.
-// Use when only component metadata is needed (e.g., optional_components validation).
+// loadPackageLayoutForInspection loads the package for metadata inspection only,
+// without signature verification. Use when package metadata is needed for plan
+// checks such as optional_components or values sourcePath validation.
 func (r *PackageResource) loadPackageLayoutForInspection(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
 	packageSource, err := getPackageSource(model, *r.providerConfig)
 	if err != nil {
@@ -2497,7 +2505,9 @@ type packagePlanCheckResult struct {
 	ValuePathsErr    error
 }
 
-// runPackagePlanChecks loads the package once and runs all plan-time validation checks.
+// runPackagePlanChecks loads the package once and runs package-dependent plan
+// checks. If valuePaths is non-empty, those paths are validated against chart
+// value sourcePaths for the components planned for deployment.
 // Skipped when source is unknown, packager/providerConfig are nil, or no checks are needed.
 func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel, valuePaths []string) packagePlanCheckResult {
 	if plan.Source.IsUnknown() || plan.Source.IsNull() {
