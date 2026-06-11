@@ -262,6 +262,17 @@ func buildTestState(t *testing.T, r *PackageResource, model PackageResourceModel
 	return state
 }
 
+func buildTestPlan(t *testing.T, r *PackageResource, model PackageResourceModel) tfsdk.Plan {
+	t.Helper()
+	ctx := context.Background()
+	var schemaResp resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &schemaResp)
+	plan := tfsdk.Plan{Schema: schemaResp.Schema}
+	diags := plan.Set(ctx, &model)
+	require.False(t, diags.HasError(), "buildTestPlan: %v", diags)
+	return plan
+}
+
 func WithNamespace(namespace string) PackageResourceModelDataOption {
 	return func(model *PackageResourceModel) {
 		model.Namespace = types.StringValue(namespace)
@@ -2438,6 +2449,67 @@ func TestUpdate_RemoveComponents(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUpdate_TimeoutOnlyChangeSkipsPackageOperations(t *testing.T) {
+	mockCluster := &MockCluster{}
+	mockPackager := &MockPackager{}
+	mockFilter := &MockPackageComponentFilter{}
+	r := NewPackageResource(nil, mockPackager, mockFilter, mockCluster).(*PackageResource)
+
+	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
+	planModel := stateModel
+	WithTimeout("45m")(&planModel)
+	planModel.ID = types.StringUnknown()
+	planModel.Name = types.StringUnknown()
+	planModel.Kind = types.StringUnknown()
+	planModel.Version = types.StringUnknown()
+	planModel.Metadata = types.ObjectUnknown(map[string]attr.Type{
+		"name":        types.StringType,
+		"description": types.StringType,
+		"version":     types.StringType,
+	})
+	planModel.ConnectStrings = types.SetUnknown(types.ObjectType{AttrTypes: connectStringAttrTypes})
+	planModel.SetVariables = types.MapUnknown(types.StringType)
+
+	plan := buildTestPlan(t, r, planModel)
+	state := buildTestState(t, r, stateModel)
+	resp := resource.UpdateResponse{State: tfsdk.State{Schema: plan.Schema}}
+	r.Update(context.Background(), resource.UpdateRequest{Plan: plan, State: state}, &resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "expected no error: %v", resp.Diagnostics)
+	mockCluster.AssertNotCalled(t, "NewWithWait")
+	mockPackager.AssertNotCalled(t, "LoadPackage")
+	mockPackager.AssertNotCalled(t, "GetPackageFromSourceOrCluster")
+	mockPackager.AssertNotCalled(t, "Deploy")
+	mockPackager.AssertNotCalled(t, "Remove")
+	mockFilter.AssertNotCalled(t, "ForDeploy")
+	mockFilter.AssertNotCalled(t, "ForRemove")
+
+	var updated PackageResourceModel
+	resp.Diagnostics.Append(resp.State.Get(context.Background(), &updated)...)
+	require.False(t, resp.Diagnostics.HasError(), "failed to read updated state: %v", resp.Diagnostics)
+	assert.True(t, updated.Timeouts.Equal(planModel.Timeouts))
+	assert.Equal(t, stateModel.Name, updated.Name)
+	assert.Equal(t, stateModel.Metadata, updated.Metadata)
+	assert.Equal(t, stateModel.ConnectStrings, updated.ConnectStrings)
+	assert.Equal(t, stateModel.SetVariables, updated.SetVariables)
+}
+
+func TestIsStateOnlyUpdate_RejectsNonAllowlistedChange(t *testing.T) {
+	r := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
+	planModel := stateModel
+	WithTimeout("45m")(&planModel)
+	WithNamespace("changed")(&planModel)
+
+	stateOnly, err := isStateOnlyUpdate(resource.UpdateRequest{
+		Plan:  buildTestPlan(t, r, planModel),
+		State: buildTestState(t, r, stateModel),
+	})
+
+	require.NoError(t, err)
+	assert.False(t, stateOnly)
 }
 
 func TestValidateOptionalComponentsAgainstPackage(t *testing.T) {

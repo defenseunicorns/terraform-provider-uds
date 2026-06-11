@@ -29,6 +29,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"gopkg.in/yaml.v2"
 
@@ -686,6 +687,17 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
+	stateOnlyUpdate, err := isStateOnlyUpdate(req)
+	if err != nil {
+		resp.Diagnostics.AddError("Error comparing update changes", err.Error())
+		return
+	}
+	if stateOnlyUpdate {
+		oldPlan.Timeouts = plan.Timeouts
+		resp.Diagnostics.Append(resp.State.Set(ctx, oldPlan)...)
+		return
+	}
+
 	updateTimeout, timeoutDiags := plan.Timeouts.Update(ctx, 30*time.Minute)
 	resp.Diagnostics.Append(timeoutDiags...)
 	if resp.Diagnostics.HasError() {
@@ -695,7 +707,6 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	timeoutCtx, cancel := context.WithTimeout(ctx, updateTimeout)
 	defer cancel()
 
-	var err error
 	plan, err = r.deployAsNewOrUpdate(timeoutCtx, plan, oldPlan)
 	if err != nil {
 		var optErr *optionalComponentsValidationError
@@ -1475,6 +1486,45 @@ func getMissingOptionalComponents(plan, oldPlan PackageResourceModel) []string {
 		}
 	}
 	return toRemove
+}
+
+// isStateOnlyUpdate reports whether every configurable change is explicitly
+// allowlisted as state-only. New configurable attributes default to requiring
+// a package update, while computed-only differences are ignored.
+func isStateOnlyUpdate(req resource.UpdateRequest) (bool, error) {
+	diffs, err := req.Plan.Raw.Diff(req.State.Raw)
+	if err != nil {
+		return false, fmt.Errorf("could not compare planned and prior state: %w", err)
+	}
+
+	stateOnlyAttributes := map[string]struct{}{
+		"timeouts": {},
+	}
+	attributes := req.Plan.Schema.GetAttributes()
+	foundStateOnlyChange := false
+
+	for _, diff := range diffs {
+		steps := diff.Path.Steps()
+		if len(steps) == 0 {
+			continue
+		}
+		name, ok := steps[0].(tftypes.AttributeName)
+		if !ok {
+			return false, fmt.Errorf("unexpected update path: %s", diff.Path)
+		}
+		attributeName := string(name)
+		if _, ok := stateOnlyAttributes[attributeName]; ok {
+			foundStateOnlyChange = true
+			continue
+		}
+		attribute, ok := attributes[attributeName]
+		if ok && attribute.IsComputed() && !attribute.IsOptional() && !attribute.IsRequired() {
+			continue
+		}
+		return false, nil
+	}
+
+	return foundStateOnlyChange, nil
 }
 
 // withClusterTimeout returns a context with a timeout
