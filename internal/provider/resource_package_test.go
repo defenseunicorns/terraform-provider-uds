@@ -5383,10 +5383,11 @@ func TestDelete_ExhaustedBudgetSkipsPackageRemoval(t *testing.T) {
 	mockFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
 	mockPackager.On("GetPackageFromSourceOrCluster",
 		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) { <-args.Get(0).(context.Context).Done() }).
 		Return(v1alpha1.ZarfPackage{}, nil)
 
 	r := NewPackageResource(nil, mockPackager, mockFilter, mockCluster).(*PackageResource)
-	model := NewTestPackageResourceModel(WithTimeout("1ns"), WithDeployedState())
+	model := NewTestPackageResourceModel(WithTimeout("10ms"), WithDeployedState())
 	state := buildTestState(t, r, model)
 
 	var resp resource.DeleteResponse

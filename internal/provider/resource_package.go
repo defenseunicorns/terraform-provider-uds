@@ -548,7 +548,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		} else {
 			resp.Diagnostics.AddError(
 				"Error creating package",
-				lifecycleErrorDetail("create", err, timeoutCtx),
+				lifecycleErrorDetail(timeoutCtx, "create", err),
 			)
 		}
 		return
@@ -597,7 +597,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error getting deployed package",
-			lifecycleErrorDetail("read", err, timeoutCtx),
+			lifecycleErrorDetail(timeoutCtx, "read", err),
 		)
 		return
 	}
@@ -704,7 +704,7 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 		} else {
 			resp.Diagnostics.AddError(
 				"Error updating package",
-				lifecycleErrorDetail("update", err, timeoutCtx),
+				lifecycleErrorDetail(timeoutCtx, "update", err),
 			)
 		}
 		return
@@ -746,7 +746,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Could not connect to cluster",
-			lifecycleErrorDetail("delete", err, timeoutCtx),
+			lifecycleErrorDetail(timeoutCtx, "delete", err),
 		)
 		return
 	}
@@ -790,7 +790,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error loading package",
-			lifecycleErrorDetail("delete", err, timeoutCtx),
+			lifecycleErrorDetail(timeoutCtx, "delete", err),
 		)
 		return
 	}
@@ -799,7 +799,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Package removal could not start",
-			lifecycleErrorDetail("delete", err, timeoutCtx),
+			lifecycleErrorDetail(timeoutCtx, "delete", err),
 		)
 		return
 	}
@@ -811,7 +811,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	if err := r.packager.Remove(timeoutCtx, pkg, removeOpt); err != nil {
 		resp.Diagnostics.AddError(
 			"Error removing package",
-			lifecycleErrorDetail("delete", err, timeoutCtx),
+			lifecycleErrorDetail(timeoutCtx, "delete", err),
 		)
 		return
 	}
@@ -897,6 +897,11 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 // ImportState imports the resource state from an external system.
 func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// ConfigValidators returns resource-level validators run before CRUD operations.
+func (r *PackageResource) ConfigValidators(_ context.Context) []resource.ConfigValidator {
+	return []resource.ConfigValidator{timeoutPositiveValidator{}}
 }
 
 func (r *PackageResource) getRemoteOptions() zarfTypes.RemoteOptions {
@@ -1509,7 +1514,7 @@ func zarfOperationTimeout(ctx context.Context) (time.Duration, error) {
 
 // lifecycleErrorDetail returns a detail string for CRUD operation errors,
 // distinguishing timeout from cancellation from unexpected failures.
-func lifecycleErrorDetail(op string, err error, ctx context.Context) string {
+func lifecycleErrorDetail(ctx context.Context, op string, err error) string {
 	switch ctx.Err() {
 	case context.DeadlineExceeded:
 		return fmt.Sprintf("package %s timed out: %s", op, err)
@@ -2003,11 +2008,6 @@ func emptyConnectStringSet() types.Set {
 		types.ObjectType{AttrTypes: connectStringAttrTypes},
 		[]attr.Value{},
 	)
-}
-
-// ConfigValidators returns resource-level validators run before CRUD operations.
-func (r *PackageResource) ConfigValidators(_ context.Context) []resource.ConfigValidator {
-	return []resource.ConfigValidator{timeoutPositiveValidator{}}
 }
 
 type timeoutPositiveValidator struct{}
