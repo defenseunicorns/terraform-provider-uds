@@ -4819,11 +4819,13 @@ func TestRefreshOptionalComponentsFromDeployedPackage(t *testing.T) {
 		assert.True(t, result.IsNull())
 	})
 
-	t.Run("unknown current returns unknown unchanged", func(t *testing.T) {
+	t.Run("unknown current resolves deployed optional components", func(t *testing.T) {
 		current := types.SetUnknown(types.StringType)
 		result, diags := refreshOptionalComponentsFromDeployedPackage(deployedPkg, current)
 		assert.False(t, diags.HasError())
-		assert.True(t, result.IsUnknown())
+		var names []string
+		result.ElementsAs(context.Background(), &names, false)
+		assert.ElementsMatch(t, []string{"optional-nil-required"}, names)
 	})
 
 	t.Run("returns deployed optional components from package metadata", func(t *testing.T) {

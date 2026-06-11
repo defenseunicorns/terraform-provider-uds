@@ -1925,9 +1925,9 @@ func deployedOptionalComponents(deployedComponents []zarfState.DeployedComponent
 }
 
 // refreshOptionalComponentsFromDeployedPackage computes the deployed optional components from cluster state.
-// Returns current unchanged when it is null or unknown. No package source download is performed.
+// Returns current unchanged when optional_components is null. No package source download is performed.
 func refreshOptionalComponentsFromDeployedPackage(deployedPackage zarfState.DeployedPackage, current types.Set) (types.Set, diag.Diagnostics) {
-	if current.IsNull() || current.IsUnknown() {
+	if current.IsNull() {
 		return current, nil
 	}
 	optionals := deployedOptionalComponents(deployedPackage.DeployedComponents, deployedPackage.Data.Components)
