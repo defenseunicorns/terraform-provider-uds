@@ -107,13 +107,15 @@ resource "uds_package" "init" {
 }
 `, initPackageVersion, runtime.GOARCH)
 
-var testAccPackageResourceRemoteValuesUnavailableConfig = fmt.Sprintf(`
+var testAccPackageResourcePlanValidationDisabledConfig = fmt.Sprintf(`
+provider "uds" {
+  validate_packages_on_plan = false
+}
+
 resource "uds_package" "init" {
   source       = "oci://ghcr.io/zarf-dev/packages/init:values-test-missing"
   architecture = "%s"
-  signature_verification = {
-    verify = false
-  }
+  optional_components = ["definitely-not-a-component"]
 
   values = {
     definitely_unexposed_by_zarf_init_values_test = "deferred"
@@ -121,7 +123,7 @@ resource "uds_package" "init" {
 }
 `, runtime.GOARCH)
 
-func TestAccPackageResourceRemoteValuesPlanValidation(t *testing.T) {
+func TestAccPackageResourcePlanValidation(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
@@ -135,10 +137,11 @@ func TestAccPackageResourceRemoteValuesPlanValidation(t *testing.T) {
 				PlanOnly:    true,
 				ExpectError: regexp.MustCompile(`value path "definitely_unexposed_by_zarf_init_values_test" does not match any`),
 			},
-			// If remote metadata cannot be loaded during plan, values sourcePath
-			// validation should defer to apply instead of blocking the plan.
+			// Disabling package validation on plan skips package-dependent checks.
+			// This unavailable source would otherwise fail package loading, signature
+			// verification, optional_components validation, and values sourcePath validation.
 			{
-				Config:             testAccPackageResourceRemoteValuesUnavailableConfig,
+				Config:             testAccPackageResourcePlanValidationDisabledConfig,
 				PlanOnly:           true,
 				ExpectNonEmptyPlan: true,
 			},

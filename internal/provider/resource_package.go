@@ -839,8 +839,15 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		plan.Architecture = types.StringValue(defaultArch)
 	}
 
+	valuePaths := collectAndValidatePackageValuePaths(plan, resp)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	plan = normalizeOptionalComponentsPlan(config, plan)
+
 	if r.providerConfig == nil || r.providerConfig.ValidatePackagesOnPlan {
-		checks := r.runPackagePlanChecks(ctx, plan)
+		checks := r.runPackagePlanChecks(ctx, plan, valuePaths)
 		if checks.LoadErr != nil {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("source"),
@@ -865,9 +872,11 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 			)
 			return
 		}
+		if checks.ValuePathsErr != nil {
+			resp.Diagnostics.AddError("Invalid package value", checks.ValuePathsErr.Error())
+			return
+		}
 	}
-
-	plan = normalizeOptionalComponentsPlan(config, plan)
 
 	// When component selection changes, mark deployment-derived computed outputs as unknown
 	// so Terraform doesn't hold the provider to prior known values that may change after apply.
@@ -882,11 +891,6 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 			plan.ConnectStrings = types.SetUnknown(types.ObjectType{AttrTypes: connectStringAttrTypes})
 			plan.SetVariables = types.MapUnknown(types.StringType)
 		}
-	}
-
-	r.validatePackageValuesConfig(ctx, plan, resp)
-	if resp.Diagnostics.HasError() {
-		return
 	}
 
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
@@ -1201,23 +1205,9 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		return plan, err
 	}
 
-	// Alpha: if optional_components is set, use it directly; otherwise fall back to component blocks.
-	// TODO: remove branch when component block is removed; always use optional_components.
-	var optionalComponents []string
-	if !plan.OptionalComponents.IsNull() {
-		if diags := plan.OptionalComponents.ElementsAs(ctx, &optionalComponents, false); diags.HasError() {
-			return plan, fmt.Errorf("failed to read optional_components: %v", diags)
-		}
-		if len(optionalComponents) > 0 {
-			if err := validateOptionalComponentsAgainstPackage(optionalComponents, pkgLayout.Pkg.Components); err != nil {
-				return plan, err
-			}
-		}
-	} else {
-		_, optionalComponents, err = getRequiredAndOptionalPackageComponentsNames(plan, pkgLayout)
-		if err != nil {
-			return plan, err
-		}
+	optionalComponents, err := getOptionalComponentsForDeploy(ctx, plan, pkgLayout)
+	if err != nil {
+		return plan, err
 	}
 
 	// TODO: remove when component block is removed (components extraction, flattenComponentOverrides, and ValuesOverridesMap)
@@ -1590,58 +1580,43 @@ func joinValuePath(prefix string, key string) string {
 	return prefix + "." + key
 }
 
-func (r *PackageResource) validatePackageValuesConfig(ctx context.Context, model PackageResourceModel, resp *resource.ModifyPlanResponse) {
+func collectAndValidatePackageValuePaths(model PackageResourceModel, resp *resource.ModifyPlanResponse) []string {
 	valuePaths, valuesContainUnknown, err := collectDynamicValuePaths(model.Values, "values")
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
-		return
+		return nil
 	}
 	sensitiveValuePaths, sensitiveValuesContainUnknown, err := collectDynamicValuePaths(model.SensitiveValues, "sensitive_values")
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
-		return
+		return nil
 	}
 
 	allValuePaths := slices.Concat(valuePaths, sensitiveValuePaths)
 	containsUnknown := valuesContainUnknown || sensitiveValuesContainUnknown
 
 	if len(allValuePaths) == 0 {
-		return
+		return nil
 	}
 
 	if !containsUnknown {
 		values, _, err := dynamicToValues("values", model.Values)
 		if err != nil {
 			resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
-			return
+			return nil
 		}
 		sensitiveValues, _, err := dynamicToValues("sensitive_values", model.SensitiveValues)
 		if err != nil {
 			resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
-			return
+			return nil
 		}
 		if _, err := mergePackageValues(values, sensitiveValues); err != nil {
 			resp.Diagnostics.AddError("Conflicting package values", err.Error())
-			return
+			return nil
 		}
 	}
 
-	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, model)
-	if err != nil {
-		// Package metadata may be unavailable during planning, especially for remote sources.
-		// Defer this validation to apply where package loading is already required.
-		tflog.Debug(ctx, "deferred package values validation because package could not be loaded", map[string]any{"error": err.Error()})
-		return
-	}
-	defer func() {
-		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
-			tflog.Warn(ctx, "failed to clean up package layout after values validation", map[string]any{"error": cleanupErr.Error()})
-		}
-	}()
-
-	if err := r.validatePackageValuePathsAgainstSourcePaths(model, pkgLayout, allValuePaths); err != nil {
-		resp.Diagnostics.AddError("Invalid package value", err.Error())
-	}
+	return allValuePaths
 }
 
 func dynamicContainsUnknown(value types.Dynamic) bool {
@@ -1830,7 +1805,7 @@ func collectValuePathsAtPath(values map[string]any, prefix string, paths *[]stri
 }
 
 func (r *PackageResource) getPlannedComponentValueSourcePaths(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) ([]string, error) {
-	_, optionalComponents, err := getRequiredAndOptionalPackageComponentsNames(model, pkgLayout)
+	optionalComponents, err := getOptionalComponentsAttributeForDeploy(context.Background(), model.OptionalComponents, pkgLayout.Pkg.Components)
 	if err != nil {
 		return []string{}, err
 	}
@@ -1850,6 +1825,64 @@ func (r *PackageResource) getPlannedComponentValueSourcePaths(model PackageResou
 		}
 	}
 	return paths, nil
+}
+
+func getOptionalComponentsForDeploy(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) ([]string, error) {
+	// Alpha: if optional_components is set, use it directly; otherwise fall back to component blocks.
+	// TODO: remove branch when component block is removed; always use optional_components.
+	if !model.OptionalComponents.IsNull() {
+		return getOptionalComponentsAttributeForDeploy(ctx, model.OptionalComponents, pkgLayout.Pkg.Components)
+	}
+
+	return getComponentBlockOptionalComponentsForDeploy(ctx, model.Components, pkgLayout.Pkg.Components)
+}
+
+func getOptionalComponentsAttributeForDeploy(ctx context.Context, optionalComponentsSet types.Set, pkgComponents []v1alpha1.ZarfComponent) ([]string, error) {
+	if optionalComponentsSet.IsUnknown() {
+		return nil, fmt.Errorf("optional_components must be known")
+	}
+
+	var optionalComponents []string
+	if diags := optionalComponentsSet.ElementsAs(ctx, &optionalComponents, false); diags.HasError() {
+		return nil, fmt.Errorf("failed to read optional_components: %v", diags)
+	}
+	if len(optionalComponents) > 0 {
+		if err := validateOptionalComponentsAgainstPackage(optionalComponents, pkgComponents); err != nil {
+			return nil, err
+		}
+	}
+	return optionalComponents, nil
+}
+
+// TODO: remove when component block is removed
+func getComponentBlockOptionalComponentsForDeploy(ctx context.Context, componentsSet types.Set, pkgComponents []v1alpha1.ZarfComponent) ([]string, error) {
+	if componentsSet.IsUnknown() {
+		return nil, fmt.Errorf("component blocks must be known")
+	}
+
+	var components []ComponentModel
+	if !componentsSet.IsNull() {
+		componentsSet.ElementsAs(ctx, &components, false)
+	}
+
+	var componentErrors []error
+	optionalComponents := []string{}
+	for _, component := range components {
+		pkgComponent, found := findPackageComponent(pkgComponents, component.Name.ValueString())
+		if !found {
+			componentErrors = append(componentErrors, fmt.Errorf("unknown package component %s", component.Name.ValueString()))
+			continue
+		}
+		if pkgComponent.Required == nil || !*pkgComponent.Required {
+			optionalComponents = append(optionalComponents, component.Name.ValueString())
+		}
+	}
+
+	if len(componentErrors) > 0 {
+		return []string{}, errors.Join(componentErrors...)
+	}
+
+	return optionalComponents, nil
 }
 
 func (r *PackageResource) validatePackageValuesAgainstSourcePaths(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, values zarfValue.Values) error {
@@ -2320,38 +2353,6 @@ func buildSetVariableMap(model PackageResourceModel) map[string]string {
 	return setVariables
 }
 
-// TODO: remove when component block is removed
-func getRequiredAndOptionalPackageComponentsNames(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) (required []string, optional []string, err error) {
-	var componentErrors []error
-	requiredComponents := []string{}
-	optionalComponents := []string{}
-
-	// Extract components from Set
-	var components []ComponentModel
-	if !model.Components.IsNull() && !model.Components.IsUnknown() {
-		model.Components.ElementsAs(context.Background(), &components, false)
-	}
-
-	for _, component := range components {
-		pkgComponent, found := findPackageComponent(pkgLayout.Pkg.Components, component.Name.ValueString())
-		if !found {
-			componentErrors = append(componentErrors, fmt.Errorf("unknown package component %s", component.Name.ValueString()))
-			continue
-		}
-		if pkgComponent.Required == nil || !*pkgComponent.Required {
-			optionalComponents = append(optionalComponents, component.Name.ValueString())
-		} else {
-			requiredComponents = append(requiredComponents, component.Name.ValueString())
-		}
-	}
-
-	if len(componentErrors) > 0 {
-		return []string{}, []string{}, errors.Join(componentErrors...)
-	}
-
-	return requiredComponents, optionalComponents, nil
-}
-
 func newPackageMetadata(pkgLayout *zarfLayout.PackageLayout) (types.Object, error) {
 	elementTypes := map[string]attr.Type{
 		"name":        types.StringType,
@@ -2493,11 +2494,12 @@ type packagePlanCheckResult struct {
 	LoadErr          error
 	SigErr           error
 	OptComponentsErr error
+	ValuePathsErr    error
 }
 
 // runPackagePlanChecks loads the package once and runs all plan-time validation checks.
 // Skipped when source is unknown, packager/providerConfig are nil, or no checks are needed.
-func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel) packagePlanCheckResult {
+func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel, valuePaths []string) packagePlanCheckResult {
 	if plan.Source.IsUnknown() || plan.Source.IsNull() {
 		return packagePlanCheckResult{}
 	}
@@ -2514,8 +2516,9 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 	if canValidateOptionalComponents {
 		plan.OptionalComponents.ElementsAs(ctx, &requestedOptionals, false)
 	}
+	canValidateValuePaths := len(valuePaths) > 0 && !plan.OptionalComponents.IsNull() && !plan.OptionalComponents.IsUnknown()
 
-	if !needsSigVerification && !canValidateOptionalComponents {
+	if !needsSigVerification && !canValidateOptionalComponents && !canValidateValuePaths {
 		return packagePlanCheckResult{}
 	}
 
@@ -2534,7 +2537,15 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 	}
 
 	if canValidateOptionalComponents {
-		return packagePlanCheckResult{OptComponentsErr: validateOptionalComponentsAgainstPackage(requestedOptionals, pkgLayout.Pkg.Components)}
+		if err := validateOptionalComponentsAgainstPackage(requestedOptionals, pkgLayout.Pkg.Components); err != nil {
+			return packagePlanCheckResult{OptComponentsErr: err}
+		}
+	}
+
+	if canValidateValuePaths {
+		if err := r.validatePackageValuePathsAgainstSourcePaths(plan, pkgLayout, valuePaths); err != nil {
+			return packagePlanCheckResult{ValuePathsErr: err}
+		}
 	}
 
 	return packagePlanCheckResult{}

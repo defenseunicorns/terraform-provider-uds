@@ -1764,7 +1764,7 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 
 			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 			model := NewTestPackageResourceModel(tc.modelOpts...)
-			result := packageResource.runPackagePlanChecks(context.Background(), model)
+			result := packageResource.runPackagePlanChecks(context.Background(), model, nil)
 
 			if tc.expectLoadErr {
 				assert.NotNil(t, result.LoadErr)
@@ -1842,7 +1842,7 @@ func TestPackageResource_RunPackagePlanChecks_ErrorRouting(t *testing.T) {
 
 			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 			model := NewTestPackageResourceModel(tc.modelOpts...)
-			result := packageResource.runPackagePlanChecks(context.Background(), model)
+			result := packageResource.runPackagePlanChecks(context.Background(), model, nil)
 
 			if tc.expectLoadErr {
 				assert.NotNil(t, result.LoadErr, "expected LoadErr")
@@ -4936,9 +4936,10 @@ func TestCollectDynamicValuePaths(t *testing.T) {
 	}
 }
 
-func TestPackageResource_ValidatePackageValuesConfig_NestedUnknownsValidateKnownPaths(t *testing.T) {
+func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesValidateKnownPaths(t *testing.T) {
 	mockPackager := &MockPackager{}
 	model := NewTestPackageResourceModel(
+		WithOptionalComponents([]string{}),
 		WithValues(types.DynamicValue(types.ObjectValueMust(
 			map[string]attr.Type{
 				"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
@@ -4983,18 +4984,22 @@ func TestPackageResource_ValidatePackageValuesConfig_NestedUnknownsValidateKnown
 		},
 	}
 	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil)
-	packageResource := NewPackageResource(nil, mockPackager, nil, nil).(*PackageResource)
+	packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
 
-	packageResource.validatePackageValuesConfig(context.Background(), model, resp)
+	valuePaths := collectAndValidatePackageValuePaths(model, resp)
+	result := packageResource.runPackagePlanChecks(context.Background(), model, valuePaths)
 
 	assert.False(t, resp.Diagnostics.HasError(), "expected nested unknown values with exposed paths to pass, got: %v", resp.Diagnostics.Errors())
+	assert.Nil(t, result.LoadErr)
+	assert.Nil(t, result.ValuePathsErr)
 	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 
-func TestPackageResource_ValidatePackageValuesConfig_NestedUnknownsFailKnownUnexposedPaths(t *testing.T) {
+func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesFailKnownUnexposedPaths(t *testing.T) {
 	mockPackager := &MockPackager{}
 	model := NewTestPackageResourceModel(
+		WithOptionalComponents([]string{}),
 		WithValues(types.DynamicValue(types.ObjectValueMust(
 			map[string]attr.Type{
 				"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
@@ -5046,31 +5051,32 @@ func TestPackageResource_ValidatePackageValuesConfig_NestedUnknownsFailKnownUnex
 		},
 	}
 	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil)
-	packageResource := NewPackageResource(nil, mockPackager, nil, nil).(*PackageResource)
+	packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
 
-	packageResource.validatePackageValuesConfig(context.Background(), model, resp)
+	valuePaths := collectAndValidatePackageValuePaths(model, resp)
+	result := packageResource.runPackagePlanChecks(context.Background(), model, valuePaths)
 
-	assert.True(t, resp.Diagnostics.HasError(), "expected unexposed known path to fail")
-	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "image.tag")
+	assert.False(t, resp.Diagnostics.HasError(), "expected local validation to pass, got: %v", resp.Diagnostics.Errors())
+	assert.NotNil(t, result.ValuePathsErr, "expected unexposed known path to fail")
+	assert.Contains(t, result.ValuePathsErr.Error(), "image.tag")
 	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 
-func TestPackageResource_ValidatePackageValuesConfig_DefersRootUnknowns(t *testing.T) {
-	mockPackager := &MockPackager{}
+func TestCollectAndValidatePackageValuePaths_RootUnknownValuesReturnNoPaths(t *testing.T) {
 	model := NewTestPackageResourceModel(WithValues(types.DynamicUnknown()))
-	packageResource := NewPackageResource(nil, mockPackager, nil, nil).(*PackageResource)
 	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
 
-	packageResource.validatePackageValuesConfig(context.Background(), model, resp)
+	valuePaths := collectAndValidatePackageValuePaths(model, resp)
 
 	assert.False(t, resp.Diagnostics.HasError(), "expected root unknown values to defer validation, got: %v", resp.Diagnostics.Errors())
-	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+	assert.Empty(t, valuePaths)
 }
 
-func TestPackageResource_ValidatePackageValuesConfig_DefersWhenPackageLoadFails(t *testing.T) {
+func TestPackageResource_RunPackagePlanChecks_ReturnsLoadErrWhenValuesRequirePackageLoad(t *testing.T) {
 	mockPackager := &MockPackager{}
 	model := NewTestPackageResourceModel(
+		WithOptionalComponents([]string{}),
 		WithValues(types.DynamicValue(types.ObjectValueMust(
 			map[string]attr.Type{
 				"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
@@ -5100,12 +5106,15 @@ func TestPackageResource_ValidatePackageValuesConfig_DefersWhenPackageLoadFails(
 		&layout.PackageLayout{Pkg: v1alpha1.ZarfPackage{}},
 		fmt.Errorf("package metadata unavailable"),
 	)
-	packageResource := NewPackageResource(nil, mockPackager, nil, nil).(*PackageResource)
+	packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
 
-	packageResource.validatePackageValuesConfig(context.Background(), model, resp)
+	valuePaths := collectAndValidatePackageValuePaths(model, resp)
+	result := packageResource.runPackagePlanChecks(context.Background(), model, valuePaths)
 
-	assert.False(t, resp.Diagnostics.HasError(), "expected package load failure to defer validation, got: %v", resp.Diagnostics.Errors())
+	assert.False(t, resp.Diagnostics.HasError(), "expected local validation to pass, got: %v", resp.Diagnostics.Errors())
+	assert.NotNil(t, result.LoadErr)
+	assert.Contains(t, result.LoadErr.Error(), "package metadata unavailable")
 	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 
@@ -5310,12 +5319,31 @@ func TestPackageResource_GetPlannedComponentValueSourcePaths(t *testing.T) {
 	}
 
 	packageResource := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
-	model := NewTestPackageResourceModel()
+	tests := []struct {
+		name          string
+		model         PackageResourceModel
+		expectedPaths []string
+	}{
+		{
+			name:          "empty optional_components uses required components only",
+			model:         NewTestPackageResourceModel(WithOptionalComponents([]string{})),
+			expectedPaths: []string{".required.value"},
+		},
+		{
+			name:          "selected optional component includes optional value paths",
+			model:         NewTestPackageResourceModel(WithOptionalComponents([]string{"optional-component"})),
+			expectedPaths: []string{".required.value", ".optional.value"},
+		},
+	}
 
-	paths, err := packageResource.getPlannedComponentValueSourcePaths(model, pkgLayout)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			paths, err := packageResource.getPlannedComponentValueSourcePaths(tc.model, pkgLayout)
 
-	assert.NoError(t, err)
-	assert.ElementsMatch(t, []string{".required.value"}, paths)
+			assert.NoError(t, err)
+			assert.ElementsMatch(t, tc.expectedPaths, paths)
+		})
+	}
 }
 
 func TestBuildVerifyBlobOptions(t *testing.T) {
