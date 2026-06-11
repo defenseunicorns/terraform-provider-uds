@@ -1689,9 +1689,7 @@ func validateSignatureVerificationAttributes(ctx context.Context, model PackageR
 // - Non-null config: unchanged (config value drives the plan).
 func normalizeOptionalComponentsPlan(config, plan PackageResourceModel) PackageResourceModel {
 	if config.OptionalComponents.IsNull() {
-		noComponentBlocks := config.Components.IsNull() ||
-			(!config.Components.IsUnknown() && len(config.Components.Elements()) == 0)
-		if noComponentBlocks {
+		if !componentBlocksMayBePresent(config.Components) {
 			plan.OptionalComponents = types.SetValueMust(types.StringType, []attr.Value{})
 		} else {
 			plan.OptionalComponents = types.SetNull(types.StringType) // TODO: remove branch when component block is removed
@@ -1707,7 +1705,7 @@ func validateComponentBlockOptionalComponentsMutualExclusivity(model PackageReso
 	if model.OptionalComponents.IsNull() || model.OptionalComponents.IsUnknown() {
 		return
 	}
-	if model.Components.IsNull() || model.Components.IsUnknown() || len(model.Components.Elements()) == 0 {
+	if !componentBlocksMayBePresent(model.Components) {
 		return
 	}
 	resp.Diagnostics.AddAttributeError(
@@ -1715,6 +1713,13 @@ func validateComponentBlockOptionalComponentsMutualExclusivity(model PackageReso
 		"Conflicting configuration",
 		"`optional_components` cannot be specified together with `component` blocks. Use `optional_components` to select optional components instead.",
 	)
+}
+
+// componentBlocksMayBePresent reports whether component blocks are present or
+// may resolve to present once an unknown dynamic block becomes known.
+// TODO: remove when component block is removed
+func componentBlocksMayBePresent(components types.Set) bool {
+	return !components.IsNull() && (components.IsUnknown() || len(components.Elements()) > 0)
 }
 
 // buildVerifyBlobOptions constructs signing.VerifyBlobOptions from the model.

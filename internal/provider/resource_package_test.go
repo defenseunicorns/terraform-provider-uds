@@ -1797,6 +1797,42 @@ func TestNormalizeOptionalComponentsPlan(t *testing.T) {
 	}
 }
 
+func TestComponentBlocksMayBePresent(t *testing.T) {
+	componentSet := componentSliceToSet(NewComponentModelsFromNames([]string{"comp-a"}))
+	tests := []struct {
+		name       string
+		components types.Set
+		expected   bool
+	}{
+		{
+			name:       "null set",
+			components: types.SetNull(componentSet.ElementType(context.Background())),
+			expected:   false,
+		},
+		{
+			name:       "empty set",
+			components: componentSliceToSet([]ComponentModel{}),
+			expected:   false,
+		},
+		{
+			name:       "unknown set",
+			components: types.SetUnknown(componentSet.ElementType(context.Background())),
+			expected:   true,
+		},
+		{
+			name:       "non-empty set",
+			components: componentSet,
+			expected:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, componentBlocksMayBePresent(tc.components))
+		})
+	}
+}
+
 // Unit tests for upsert method architecture attribute
 func TestPackageResource_Upsert_Architecture(t *testing.T) {
 	tests := []struct {
@@ -4579,6 +4615,12 @@ func TestValidateComponentBlockOptionalComponentsMutualExclusivity(t *testing.T)
 			optionalComponents: types.SetUnknown(types.StringType),
 			components:         componentSet,
 			expectError:        false,
+		},
+		{
+			name:               "errors on optional_components with unknown component blocks",
+			optionalComponents: optionalWithNames,
+			components:         types.SetUnknown(componentSet.ElementType(context.Background())),
+			expectError:        true,
 		},
 	}
 
