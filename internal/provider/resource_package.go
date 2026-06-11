@@ -1689,7 +1689,8 @@ func validateSignatureVerificationAttributes(ctx context.Context, model PackageR
 // - Non-null config: unchanged (config value drives the plan).
 func normalizeOptionalComponentsPlan(config, plan PackageResourceModel) PackageResourceModel {
 	if config.OptionalComponents.IsNull() {
-		noComponentBlocks := config.Components.IsNull() || config.Components.IsUnknown() || len(config.Components.Elements()) == 0
+		noComponentBlocks := config.Components.IsNull() ||
+			(!config.Components.IsUnknown() && len(config.Components.Elements()) == 0)
 		if noComponentBlocks {
 			plan.OptionalComponents = types.SetValueMust(types.StringType, []attr.Value{})
 		} else {

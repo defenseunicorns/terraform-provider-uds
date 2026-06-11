@@ -1766,6 +1766,16 @@ func TestNormalizeOptionalComponentsPlan(t *testing.T) {
 			expected: types.SetNull(types.StringType),
 		},
 		{
+			name: "null optional_components with unknown component blocks stays null",
+			config: func() PackageResourceModel {
+				model := NewTestPackageResourceModel()
+				model.Components = types.SetUnknown(model.Components.ElementType(context.Background()))
+				return model
+			}(),
+			plan:     NewTestPackageResourceModel(),
+			expected: types.SetNull(types.StringType),
+		},
+		{
 			name:     "explicit empty optional_components unchanged",
 			config:   NewTestPackageResourceModel(WithOptionalComponents([]string{})),
 			plan:     NewTestPackageResourceModel(WithOptionalComponents([]string{})),
