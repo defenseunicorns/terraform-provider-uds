@@ -4996,6 +4996,50 @@ func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesValidateKnownPa
 	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 
+func TestPackageResource_RunPackagePlanChecks_UnknownIntermediatePodObjectDefersSourcePathValidation(t *testing.T) {
+	mockPackager := &MockPackager{}
+	model := NewTestPackageResourceModel(
+		WithOptionalComponents([]string{}),
+		WithValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{
+				"pod": types.DynamicType,
+			},
+			map[string]attr.Value{
+				"pod": types.DynamicUnknown(),
+			},
+		))),
+	)
+	pkgLayout := &layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Components: []v1alpha1.ZarfComponent{
+				{
+					Name:     "required-component",
+					Required: helpers.BoolPtr(true),
+					Charts: []v1alpha1.ZarfChart{
+						{
+							Name: "chart",
+							Values: []v1alpha1.ZarfChartValue{
+								{SourcePath: ".pod.replicaCount", TargetPath: ".replicaCount"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil)
+	packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
+
+	valuePaths := collectAndValidatePackageValuePaths(model, resp)
+	result := packageResource.runPackagePlanChecks(context.Background(), model, valuePaths)
+
+	assert.False(t, resp.Diagnostics.HasError(), "expected local validation to pass, got: %v", resp.Diagnostics.Errors())
+	assert.NoError(t, result.LoadErr)
+	assert.NoError(t, result.ValuePathsErr)
+	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+}
+
 func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesFailKnownUnexposedPaths(t *testing.T) {
 	mockPackager := &MockPackager{}
 	model := NewTestPackageResourceModel(

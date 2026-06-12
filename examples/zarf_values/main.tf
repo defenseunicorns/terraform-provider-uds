@@ -26,6 +26,12 @@ resource "terraform_data" "dynamic_test_data" {
   }
 }
 
+resource "terraform_data" "dynamic_ui" {
+  input = {
+    color = "#663399"
+  }
+}
+
 resource "uds_package" "init" {
   source       = "oci://ghcr.io/zarf-dev/packages/init:v0.78.0"
   architecture = local.architecture
@@ -66,9 +72,7 @@ resource "uds_package" "podinfo" {
         }
       ]
     }
-    ui = {
-      color = "#663399"
-    }
+    ui = terraform_data.dynamic_ui.output
   }
 
   sensitive_values = {
