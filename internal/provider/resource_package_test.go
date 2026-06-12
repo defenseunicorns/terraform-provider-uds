@@ -5513,7 +5513,7 @@ func TestDelete_ZarfHandoffUsesRemainingBudget(t *testing.T) {
 	mockPackager := &MockPackager{}
 	mockFilter := &MockPackageComponentFilter{}
 
-	mockCluster.On("NewWithWait", mock.Anything).Return((*zarfCluster.Cluster)(nil), nil)
+	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, nil)
 	mockFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
 	mockPackager.On("GetPackageFromSourceOrCluster",
 		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
@@ -5545,7 +5545,7 @@ func TestDelete_ExhaustedBudgetSkipsPackageRemoval(t *testing.T) {
 	mockPackager := &MockPackager{}
 	mockFilter := &MockPackageComponentFilter{}
 
-	mockCluster.On("NewWithWait", mock.Anything).Return((*zarfCluster.Cluster)(nil), nil)
+	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, nil)
 	mockFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
 	mockPackager.On("GetPackageFromSourceOrCluster",
 		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
