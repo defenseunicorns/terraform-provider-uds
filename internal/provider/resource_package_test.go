@@ -1234,6 +1234,16 @@ func TestPackageResource_Upsert_Values(t *testing.T) {
 			)),
 			expectedErrorMsg: "image.tag",
 		},
+		{
+			name:             "package with root unknown values returns error",
+			values:           types.DynamicUnknown(),
+			expectedErrorMsg: "values must be known before apply",
+		},
+		{
+			name:             "package with root unknown sensitive values returns error",
+			sensitiveValues:  types.DynamicUnknown(),
+			expectedErrorMsg: "sensitive_values must be known before apply",
+		},
 	}
 
 	for _, tc := range tests {
@@ -4702,20 +4712,17 @@ func TestDynamicToValues(t *testing.T) {
 		name       string
 		input      types.Dynamic
 		expected   zarfValue.Values
-		configured bool
 		errorText  string
 	}{
 		{
-			name:       "null returns unconfigured empty values",
-			input:      types.DynamicNull(),
-			expected:   zarfValue.Values{},
-			configured: false,
+			name:     "null returns empty values",
+			input:    types.DynamicNull(),
+			expected: zarfValue.Values{},
 		},
 		{
-			name:       "unknown returns configured empty values",
-			input:      types.DynamicUnknown(),
-			expected:   zarfValue.Values{},
-			configured: true,
+			name:      "unknown returns error",
+			input:     types.DynamicUnknown(),
+			errorText: "values must be known before apply",
 		},
 		{
 			name:  "object converts recursively",
@@ -4729,7 +4736,6 @@ func TestDynamicToValues(t *testing.T) {
 					"list": []any{"one", "two"},
 				},
 			},
-			configured: true,
 		},
 		{
 			name:      "root scalar returns error",
@@ -4740,7 +4746,7 @@ func TestDynamicToValues(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			actual, configured, err := dynamicToValues("values", tc.input)
+			actual, err := dynamicToValues("values", tc.input)
 
 			if tc.errorText != "" {
 				assert.Error(t, err)
@@ -4749,7 +4755,6 @@ func TestDynamicToValues(t *testing.T) {
 			}
 
 			assert.NoError(t, err)
-			assert.Equal(t, tc.configured, configured)
 			assert.Equal(t, tc.expected, actual)
 		})
 	}

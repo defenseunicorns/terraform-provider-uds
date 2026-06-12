@@ -1220,11 +1220,11 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if err != nil {
 		return plan, err
 	}
-	values, _, err := dynamicToValues("values", plan.Values)
+	values, err := dynamicToValues("values", plan.Values)
 	if err != nil {
 		return plan, err
 	}
-	sensitiveValues, _, err := dynamicToValues("sensitive_values", plan.SensitiveValues)
+	sensitiveValues, err := dynamicToValues("sensitive_values", plan.SensitiveValues)
 	if err != nil {
 		return plan, err
 	}
@@ -1445,25 +1445,25 @@ func flattenComponentOverrides(ctx context.Context, components []ComponentModel)
 	return result, nil
 }
 
-func dynamicToValues(attrName string, value types.Dynamic) (zarfValue.Values, bool, error) {
+func dynamicToValues(attrName string, value types.Dynamic) (zarfValue.Values, error) {
 	if value.IsNull() || value.IsUnderlyingValueNull() {
-		return zarfValue.Values{}, false, nil
+		return zarfValue.Values{}, nil
 	}
 	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
-		return zarfValue.Values{}, true, nil
+		return zarfValue.Values{}, fmt.Errorf("%s must be known before apply", attrName)
 	}
 
 	converted, err := terraformValueToGoValue(value.UnderlyingValue())
 	if err != nil {
-		return zarfValue.Values{}, true, fmt.Errorf("failed to convert %s: %w", attrName, err)
+		return zarfValue.Values{}, fmt.Errorf("failed to convert %s: %w", attrName, err)
 	}
 
 	values, ok := converted.(map[string]any)
 	if !ok {
-		return zarfValue.Values{}, true, fmt.Errorf("%s must be a map or object", attrName)
+		return zarfValue.Values{}, fmt.Errorf("%s must be a map or object", attrName)
 	}
 
-	return zarfValue.Values(values), true, nil
+	return zarfValue.Values(values), nil
 }
 
 func terraformValueToGoValue(value attr.Value) (any, error) {
@@ -1604,12 +1604,12 @@ func collectAndValidatePackageValuePaths(model PackageResourceModel, resp *resou
 	}
 
 	if !containsUnknown {
-		values, _, err := dynamicToValues("values", model.Values)
+		values, err := dynamicToValues("values", model.Values)
 		if err != nil {
 			resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
 			return nil
 		}
-		sensitiveValues, _, err := dynamicToValues("sensitive_values", model.SensitiveValues)
+		sensitiveValues, err := dynamicToValues("sensitive_values", model.SensitiveValues)
 		if err != nil {
 			resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
 			return nil
