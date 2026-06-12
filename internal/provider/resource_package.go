@@ -858,6 +858,24 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		plan.Architecture = types.StringValue(defaultArch)
 	}
 
+	plan = normalizeOptionalComponentsPlan(config, plan)
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !req.State.Raw.IsNull() {
+		stateOnlyUpdate, err := isStateOnlyUpdate(resp.Plan, req.State)
+		if err != nil {
+			resp.Diagnostics.AddError("Error comparing planned changes", err.Error())
+			return
+		}
+		if stateOnlyUpdate {
+			resp.Diagnostics.Append(preserveComputedState(ctx, req.State, &resp.Plan)...)
+			return
+		}
+	}
+
 	if r.providerConfig == nil || r.providerConfig.ValidatePackagesOnPlan {
 		checks := r.runPackagePlanChecks(ctx, plan)
 		if checks.LoadErr != nil {
@@ -886,8 +904,6 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		}
 	}
 
-	plan = normalizeOptionalComponentsPlan(config, plan)
-
 	// When component selection changes, mark deployment-derived computed outputs as unknown
 	// so Terraform doesn't hold the provider to prior known values that may change after apply.
 	if !req.State.Raw.IsNull() {
@@ -904,18 +920,6 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	}
 
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
-	if resp.Diagnostics.HasError() || req.State.Raw.IsNull() {
-		return
-	}
-
-	stateOnlyUpdate, err := isStateOnlyUpdate(resp.Plan, req.State)
-	if err != nil {
-		resp.Diagnostics.AddError("Error comparing planned changes", err.Error())
-		return
-	}
-	if stateOnlyUpdate {
-		resp.Diagnostics.Append(preserveComputedState(ctx, req.State, &resp.Plan)...)
-	}
 }
 
 // ImportState imports the resource state from an external system.

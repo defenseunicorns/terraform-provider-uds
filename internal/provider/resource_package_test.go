@@ -2507,7 +2507,15 @@ func TestUpdate_TimeoutOnlyChangeSkipsPackageOperations(t *testing.T) {
 }
 
 func TestModifyPlan_TimeoutOnlyChangePreservesComputedState(t *testing.T) {
-	r := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).
+		Return((*layout.PackageLayout)(nil), errors.New("package source unavailable"))
+	r := NewPackageResource(
+		&udsProviderConfig{ValidatePackagesOnPlan: true},
+		mockPackager,
+		nil,
+		nil,
+	).(*PackageResource)
 	stateModel := NewTestPackageResourceModel(
 		WithTimeout("30m"),
 		WithDeployedState(),
@@ -2547,6 +2555,39 @@ func TestModifyPlan_TimeoutOnlyChangePreservesComputedState(t *testing.T) {
 	assert.Equal(t, stateModel.Metadata, updatedPlan.Metadata)
 	assert.Equal(t, stateModel.ConnectStrings, updatedPlan.ConnectStrings)
 	assert.Equal(t, stateModel.SetVariables, updatedPlan.SetVariables)
+	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestModifyPlan_StateOnlyAndPackageChangeRunsPackageChecks(t *testing.T) {
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).
+		Return((*layout.PackageLayout)(nil), errors.New("package source unavailable"))
+	r := NewPackageResource(
+		&udsProviderConfig{ValidatePackagesOnPlan: true},
+		mockPackager,
+		nil,
+		nil,
+	).(*PackageResource)
+	stateModel := NewTestPackageResourceModel(
+		WithTimeout("30m"),
+		WithDeployedState(),
+		WithOptionalComponents([]string{}),
+	)
+	planModel := stateModel
+	WithTimeout("45m")(&planModel)
+	WithNamespace("changed")(&planModel)
+
+	plan := buildTestPlan(t, r, planModel)
+	resp := resource.ModifyPlanResponse{Plan: plan}
+	r.ModifyPlan(context.Background(), resource.ModifyPlanRequest{
+		Config: buildTestConfig(t, r, planModel),
+		Plan:   plan,
+		State:  buildTestState(t, r, stateModel),
+	}, &resp)
+
+	require.True(t, resp.Diagnostics.HasError())
+	assert.Contains(t, resp.Diagnostics.Errors()[0].Summary(), "Failed to load package")
+	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestIsStateOnlyUpdate_RejectsNonAllowlistedChange(t *testing.T) {
