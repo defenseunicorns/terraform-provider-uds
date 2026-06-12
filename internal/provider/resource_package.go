@@ -1213,7 +1213,9 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	// TODO: remove when component block is removed (components extraction, flattenComponentOverrides, and ValuesOverridesMap)
 	var components []ComponentModel
 	if !plan.Components.IsNull() && !plan.Components.IsUnknown() {
-		plan.Components.ElementsAs(ctx, &components, false)
+		if diags := plan.Components.ElementsAs(ctx, &components, false); diags.HasError() {
+			return plan, fmt.Errorf("failed to read component blocks: %v", diags)
+		}
 	}
 
 	valuesOverridesMap, err := flattenComponentOverrides(ctx, components)
@@ -1887,7 +1889,9 @@ func getComponentBlockOptionalComponentsForDeploy(ctx context.Context, component
 
 	var components []ComponentModel
 	if !componentsSet.IsNull() {
-		componentsSet.ElementsAs(ctx, &components, false)
+		if diags := componentsSet.ElementsAs(ctx, &components, false); diags.HasError() {
+			return nil, fmt.Errorf("failed to read component blocks: %v", diags)
+		}
 	}
 
 	var componentErrors []error

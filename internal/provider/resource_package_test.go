@@ -908,6 +908,13 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 	}
 }
 
+func TestGetComponentBlockOptionalComponentsForDeploy_ReturnsDecodeError(t *testing.T) {
+	_, err := getComponentBlockOptionalComponentsForDeploy(context.Background(), malformedComponentSet(), []v1alpha1.ZarfComponent{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to read component blocks")
+}
+
 func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
 	tests := []struct {
 		name                    string
@@ -1116,6 +1123,28 @@ func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPackageResource_Upsert_ComponentOverrides_ReturnsDecodeError(t *testing.T) {
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	validLoadPackageResult := newValidLoadPackageResult()
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+		validLoadPackageResult.Layout,
+		validLoadPackageResult.Error,
+	)
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+	testModel := NewTestPackageResourceModel(WithOptionalComponents([]string{}))
+	testModel.Components = malformedComponentSet()
+
+	_, err := packageResource.upsert(context.Background(), testModel)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to read component blocks")
+	mockPackager.AssertExpectations(t)
+	mockPackageComponentFilter.AssertExpectations(t)
 }
 
 func TestPackageResource_Upsert_Values(t *testing.T) {
@@ -2882,6 +2911,10 @@ func componentSliceToSet(components []ComponentModel) types.Set {
 		elements,
 	)
 	return setValue
+}
+
+func malformedComponentSet() types.Set {
+	return types.SetValueMust(types.StringType, []attr.Value{types.StringValue("not-a-component-block")})
 }
 
 // Helper function to convert a slice of VariableModel to types.Set
