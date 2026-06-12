@@ -1989,7 +1989,7 @@ func isUnknownValuePathPotentiallyExposed(valuePath string, exposedPaths []strin
 		if normalized == "" {
 			return true
 		}
-		if valuePath == normalized || strings.HasPrefix(normalized, valuePath+".") {
+		if valuePath == normalized || strings.HasPrefix(normalized, valuePath+".") || strings.HasPrefix(valuePath, normalized+".") {
 			return true
 		}
 	}

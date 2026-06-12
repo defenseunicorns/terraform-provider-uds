@@ -2917,6 +2917,22 @@ func malformedComponentSet() types.Set {
 	return types.SetValueMust(types.StringType, []attr.Value{types.StringValue("not-a-component-block")})
 }
 
+func dynamicUnknownObjectAtPath(valuePath string) types.Dynamic {
+	parts := strings.Split(valuePath, ".")
+	value := attr.Value(types.DynamicUnknown())
+	valueType := attr.Type(types.DynamicType)
+
+	for i := len(parts) - 1; i >= 0; i-- {
+		value = types.ObjectValueMust(
+			map[string]attr.Type{parts[i]: valueType},
+			map[string]attr.Value{parts[i]: value},
+		)
+		valueType = types.ObjectType{AttrTypes: map[string]attr.Type{parts[i]: valueType}}
+	}
+
+	return types.DynamicValue(value)
+}
+
 // Helper function to convert a slice of VariableModel to types.Set
 func variableSliceToSet(vars []VariableModel) types.Set {
 	if len(vars) == 0 {
@@ -5046,16 +5062,24 @@ func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesValidateKnownPa
 func TestPackageResource_RunPackagePlanChecks_UnknownIntermediateObjectSourcePathValidation(t *testing.T) {
 	tests := []struct {
 		name        string
+		valuePath   string
 		sourcePaths []string
 		expectErr   bool
 		errorText   string
 	}{
 		{
 			name:        "defers when descendant source path is exposed",
+			valuePath:   "pod",
 			sourcePaths: []string{".pod.replicaCount"},
 		},
 		{
+			name:        "defers when unknown object path is under exposed source path",
+			valuePath:   "config.settings.sub_key",
+			sourcePaths: []string{".config.settings"},
+		},
+		{
 			name:        "fails when no source path can match unknown object",
+			valuePath:   "pod",
 			sourcePaths: []string{".service.enabled"},
 			expectErr:   true,
 			errorText:   "pod",
@@ -5067,14 +5091,7 @@ func TestPackageResource_RunPackagePlanChecks_UnknownIntermediateObjectSourcePat
 			mockPackager := &MockPackager{}
 			model := NewTestPackageResourceModel(
 				WithOptionalComponents([]string{}),
-				WithValues(types.DynamicValue(types.ObjectValueMust(
-					map[string]attr.Type{
-						"pod": types.DynamicType,
-					},
-					map[string]attr.Value{
-						"pod": types.DynamicUnknown(),
-					},
-				))),
+				WithValues(dynamicUnknownObjectAtPath(tc.valuePath)),
 			)
 			chartValues := make([]v1alpha1.ZarfChartValue, 0, len(tc.sourcePaths))
 			for _, sourcePath := range tc.sourcePaths {
@@ -5429,6 +5446,12 @@ func TestIsUnknownValuePathPotentiallyExposed(t *testing.T) {
 			name:         "descendant source path potentially exposes unknown object",
 			valuePath:    "pod",
 			exposedPaths: []string{".pod.replicaCount"},
+			expected:     true,
+		},
+		{
+			name:         "ancestor source path potentially exposes unknown descendant object",
+			valuePath:    "config.settings.sub_key",
+			exposedPaths: []string{".config.settings"},
 			expected:     true,
 		},
 		{
