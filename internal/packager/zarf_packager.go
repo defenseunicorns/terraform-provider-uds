@@ -12,7 +12,6 @@ import (
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zConfig "github.com/zarf-dev/zarf/src/config"
 	"github.com/zarf-dev/zarf/src/pkg/cluster"
-	"github.com/zarf-dev/zarf/src/pkg/feature"
 	zPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
@@ -68,21 +67,7 @@ func (p *zarfPackager) ensureZarfConfigured() {
 	// Set the prefix for `./zarf` actions since we have to vendor zarf. This only needs to be done once per instance.
 	zConfig.ActionsCommandZarfPrefix = "zarf"
 
-	ensureZarfValuesFeatureEnabled()
-
 	p.zarfConfigured = true
-}
-
-func ensureZarfValuesFeatureEnabled() {
-	if feature.IsEnabled(feature.Values) {
-		return
-	}
-
-	if len(feature.AllUser()) > 0 {
-		return
-	}
-
-	_ = feature.Set([]feature.Feature{{Name: feature.Values, Enabled: true}})
 }
 
 // PackageComponentFilter provides filtering strategies for Zarf package components.
