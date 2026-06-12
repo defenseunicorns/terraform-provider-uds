@@ -751,7 +751,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	timeoutCtx, cancel := context.WithTimeout(ctx, deleteTimeout)
 	defer cancel()
 
-	clusterCtx, clusterCancel := context.WithTimeout(timeoutCtx, 5*time.Minute)
+	clusterCtx, clusterCancel := withClusterTimeout(timeoutCtx)
 	defer clusterCancel()
 	c, err := r.cluster.NewWithWait(clusterCtx)
 	if err != nil {
@@ -1012,7 +1012,7 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	namespaceOverride := plan.Namespace.ValueString()
 
 	// get a reference to the k8s cluster
-	clusterCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	clusterCtx, cancel := withClusterTimeout(ctx)
 	defer cancel()
 	zarfCluster, err := r.cluster.NewWithWait(clusterCtx)
 	if err != nil {
