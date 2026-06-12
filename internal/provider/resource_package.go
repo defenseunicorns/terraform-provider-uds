@@ -1222,11 +1222,11 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 	values, err := dynamicToValues("values", plan.Values)
 	if err != nil {
-		return plan, err
+		return plan, fmt.Errorf("invalid package values for apply: %w", err)
 	}
 	sensitiveValues, err := dynamicToValues("sensitive_values", plan.SensitiveValues)
 	if err != nil {
-		return plan, err
+		return plan, fmt.Errorf("invalid sensitive package values for apply: %w", err)
 	}
 	deployValues, err := mergePackageValues(values, sensitiveValues)
 	if err != nil {
@@ -1450,7 +1450,7 @@ func dynamicToValues(attrName string, value types.Dynamic) (zarfValue.Values, er
 		return zarfValue.Values{}, nil
 	}
 	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
-		return zarfValue.Values{}, fmt.Errorf("%s must be known before apply", attrName)
+		return zarfValue.Values{}, fmt.Errorf("%s must be known", attrName)
 	}
 
 	converted, err := terraformValueToGoValue(value.UnderlyingValue())

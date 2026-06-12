@@ -1237,12 +1237,12 @@ func TestPackageResource_Upsert_Values(t *testing.T) {
 		{
 			name:             "package with root unknown values returns error",
 			values:           types.DynamicUnknown(),
-			expectedErrorMsg: "values must be known before apply",
+			expectedErrorMsg: "invalid package values for apply: values must be known",
 		},
 		{
 			name:             "package with root unknown sensitive values returns error",
 			sensitiveValues:  types.DynamicUnknown(),
-			expectedErrorMsg: "sensitive_values must be known before apply",
+			expectedErrorMsg: "invalid sensitive package values for apply: sensitive_values must be known",
 		},
 	}
 
@@ -4722,7 +4722,7 @@ func TestDynamicToValues(t *testing.T) {
 		{
 			name:      "unknown returns error",
 			input:     types.DynamicUnknown(),
-			errorText: "values must be known before apply",
+			errorText: "values must be known",
 		},
 		{
 			name:  "object converts recursively",
