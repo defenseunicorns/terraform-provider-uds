@@ -273,6 +273,12 @@ func buildTestPlan(t *testing.T, r *PackageResource, model PackageResourceModel)
 	return plan
 }
 
+func buildTestConfig(t *testing.T, r *PackageResource, model PackageResourceModel) tfsdk.Config {
+	t.Helper()
+	plan := buildTestPlan(t, r, model)
+	return tfsdk.Config{Raw: plan.Raw, Schema: plan.Schema}
+}
+
 func WithNamespace(namespace string) PackageResourceModelDataOption {
 	return func(model *PackageResourceModel) {
 		model.Namespace = types.StringValue(namespace)
@@ -2457,7 +2463,11 @@ func TestUpdate_TimeoutOnlyChangeSkipsPackageOperations(t *testing.T) {
 	mockFilter := &MockPackageComponentFilter{}
 	r := NewPackageResource(nil, mockPackager, mockFilter, mockCluster).(*PackageResource)
 
-	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
+	stateModel := NewTestPackageResourceModel(
+		WithTimeout("30m"),
+		WithDeployedState(),
+		WithOptionalComponents([]string{}),
+	)
 	planModel := stateModel
 	WithTimeout("45m")(&planModel)
 	planModel.ID = types.StringUnknown()
@@ -2496,6 +2506,49 @@ func TestUpdate_TimeoutOnlyChangeSkipsPackageOperations(t *testing.T) {
 	assert.Equal(t, stateModel.SetVariables, updated.SetVariables)
 }
 
+func TestModifyPlan_TimeoutOnlyChangePreservesComputedState(t *testing.T) {
+	r := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+	stateModel := NewTestPackageResourceModel(
+		WithTimeout("30m"),
+		WithDeployedState(),
+		WithOptionalComponents([]string{}),
+	)
+	planModel := stateModel
+	WithTimeout("45m")(&planModel)
+	planModel.ID = types.StringUnknown()
+	planModel.Name = types.StringUnknown()
+	planModel.Kind = types.StringUnknown()
+	planModel.Version = types.StringUnknown()
+	planModel.Metadata = types.ObjectUnknown(map[string]attr.Type{
+		"name":        types.StringType,
+		"description": types.StringType,
+		"version":     types.StringType,
+	})
+	planModel.ConnectStrings = types.SetUnknown(types.ObjectType{AttrTypes: connectStringAttrTypes})
+	planModel.SetVariables = types.MapUnknown(types.StringType)
+
+	plan := buildTestPlan(t, r, planModel)
+	resp := resource.ModifyPlanResponse{Plan: plan}
+	r.ModifyPlan(context.Background(), resource.ModifyPlanRequest{
+		Config: buildTestConfig(t, r, planModel),
+		Plan:   plan,
+		State:  buildTestState(t, r, stateModel),
+	}, &resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "expected no error: %v", resp.Diagnostics)
+	var updatedPlan PackageResourceModel
+	resp.Diagnostics.Append(resp.Plan.Get(context.Background(), &updatedPlan)...)
+	require.False(t, resp.Diagnostics.HasError(), "failed to read updated plan: %v", resp.Diagnostics)
+	assert.True(t, updatedPlan.Timeouts.Equal(planModel.Timeouts))
+	assert.Equal(t, stateModel.ID, updatedPlan.ID)
+	assert.Equal(t, stateModel.Name, updatedPlan.Name)
+	assert.Equal(t, stateModel.Kind, updatedPlan.Kind)
+	assert.Equal(t, stateModel.Version, updatedPlan.Version)
+	assert.Equal(t, stateModel.Metadata, updatedPlan.Metadata)
+	assert.Equal(t, stateModel.ConnectStrings, updatedPlan.ConnectStrings)
+	assert.Equal(t, stateModel.SetVariables, updatedPlan.SetVariables)
+}
+
 func TestIsStateOnlyUpdate_RejectsNonAllowlistedChange(t *testing.T) {
 	r := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
 	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
@@ -2503,10 +2556,10 @@ func TestIsStateOnlyUpdate_RejectsNonAllowlistedChange(t *testing.T) {
 	WithTimeout("45m")(&planModel)
 	WithNamespace("changed")(&planModel)
 
-	stateOnly, err := isStateOnlyUpdate(resource.UpdateRequest{
-		Plan:  buildTestPlan(t, r, planModel),
-		State: buildTestState(t, r, stateModel),
-	})
+	stateOnly, err := isStateOnlyUpdate(
+		buildTestPlan(t, r, planModel),
+		buildTestState(t, r, stateModel),
+	)
 
 	require.NoError(t, err)
 	assert.False(t, stateOnly)

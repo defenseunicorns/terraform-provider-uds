@@ -27,6 +27,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
@@ -687,7 +688,7 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	stateOnlyUpdate, err := isStateOnlyUpdate(req)
+	stateOnlyUpdate, err := isStateOnlyUpdate(req.Plan, req.State)
 	if err != nil {
 		resp.Diagnostics.AddError("Error comparing update changes", err.Error())
 		return
@@ -903,6 +904,18 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	}
 
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+	if resp.Diagnostics.HasError() || req.State.Raw.IsNull() {
+		return
+	}
+
+	stateOnlyUpdate, err := isStateOnlyUpdate(resp.Plan, req.State)
+	if err != nil {
+		resp.Diagnostics.AddError("Error comparing planned changes", err.Error())
+		return
+	}
+	if stateOnlyUpdate {
+		resp.Diagnostics.Append(preserveComputedState(ctx, req.State, &resp.Plan)...)
+	}
 }
 
 // ImportState imports the resource state from an external system.
@@ -1491,8 +1504,8 @@ func getMissingOptionalComponents(plan, oldPlan PackageResourceModel) []string {
 // isStateOnlyUpdate reports whether every configurable change is explicitly
 // allowlisted as state-only. New configurable attributes default to requiring
 // a package update, while computed-only differences are ignored.
-func isStateOnlyUpdate(req resource.UpdateRequest) (bool, error) {
-	diffs, err := req.Plan.Raw.Diff(req.State.Raw)
+func isStateOnlyUpdate(plan tfsdk.Plan, state tfsdk.State) (bool, error) {
+	diffs, err := plan.Raw.Diff(state.Raw)
 	if err != nil {
 		return false, fmt.Errorf("could not compare planned and prior state: %w", err)
 	}
@@ -1500,7 +1513,7 @@ func isStateOnlyUpdate(req resource.UpdateRequest) (bool, error) {
 	stateOnlyAttributes := map[string]struct{}{
 		"timeouts": {},
 	}
-	attributes := req.Plan.Schema.GetAttributes()
+	attributes := plan.Schema.GetAttributes()
 	foundStateOnlyChange := false
 
 	for _, diff := range diffs {
@@ -1525,6 +1538,36 @@ func isStateOnlyUpdate(req resource.UpdateRequest) (bool, error) {
 	}
 
 	return foundStateOnlyChange, nil
+}
+
+// preserveComputedState keeps computed-only values known when an update cannot
+// change the deployed package.
+func preserveComputedState(ctx context.Context, state tfsdk.State, plan *tfsdk.Plan) diag.Diagnostics {
+	var diags diag.Diagnostics
+	for name, attribute := range plan.Schema.GetAttributes() {
+		if !attribute.IsComputed() || attribute.IsOptional() || attribute.IsRequired() {
+			continue
+		}
+
+		terraformPath := tftypes.NewAttributePath().WithAttributeName(name)
+		stateValue, _, err := tftypes.WalkAttributePath(state.Raw, terraformPath)
+		if err != nil {
+			diags.AddError("Error reading prior state", fmt.Sprintf("Could not read %q: %s", name, err))
+			continue
+		}
+		value, ok := stateValue.(tftypes.Value)
+		if !ok {
+			diags.AddError("Error reading prior state", fmt.Sprintf("Unexpected value type for %q: %T", name, stateValue))
+			continue
+		}
+		frameworkValue, err := attribute.GetType().ValueFromTerraform(ctx, value)
+		if err != nil {
+			diags.AddError("Error reading prior state", fmt.Sprintf("Could not convert %q: %s", name, err))
+			continue
+		}
+		diags.Append(plan.SetAttribute(ctx, path.Root(name), frameworkValue)...)
+	}
+	return diags
 }
 
 // withClusterTimeout returns a context with a timeout
