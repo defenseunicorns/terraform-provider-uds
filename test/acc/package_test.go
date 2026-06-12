@@ -24,7 +24,7 @@ import (
 )
 
 // renovate: datasource=github-tags depName=zarf-dev/zarf
-const initPackageVersion = "v0.77.0"
+const initPackageVersion = "v0.78.0"
 
 func buildZarfValuesFixture(t *testing.T) string {
 	t.Helper()

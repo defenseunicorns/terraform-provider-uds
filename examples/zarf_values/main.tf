@@ -27,7 +27,7 @@ resource "terraform_data" "dynamic_test_data" {
 }
 
 resource "uds_package" "init" {
-  source       = "oci://ghcr.io/zarf-dev/packages/init:v0.77.0"
+  source       = "oci://ghcr.io/zarf-dev/packages/init:v0.78.0"
   architecture = local.architecture
 
   signature_verification = {
