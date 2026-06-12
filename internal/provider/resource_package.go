@@ -1232,7 +1232,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if err != nil {
 		return plan, err
 	}
-	if err := r.validatePackageValuesAgainstSourcePaths(plan, pkgLayout, deployValues); err != nil {
+	if err := r.validatePackageValuesAgainstSourcePaths(ctx, plan, pkgLayout, deployValues); err != nil {
 		return plan, err
 	}
 
@@ -1826,8 +1826,8 @@ func collectValuePathsAtPath(values map[string]any, prefix string, paths *[]stri
 	}
 }
 
-func (r *PackageResource) getPlannedComponentValueSourcePaths(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) ([]string, error) {
-	optionalComponents, err := getOptionalComponentsFromAttribute(context.Background(), model.OptionalComponents, pkgLayout.Pkg.Components)
+func (r *PackageResource) getPlannedComponentValueSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) ([]string, error) {
+	optionalComponents, err := getOptionalComponentsFromAttribute(ctx, model.OptionalComponents, pkgLayout.Pkg.Components)
 	if err != nil {
 		return []string{}, err
 	}
@@ -1910,17 +1910,17 @@ func getComponentBlockOptionalComponentsForDeploy(ctx context.Context, component
 	return optionalComponents, nil
 }
 
-func (r *PackageResource) validatePackageValuesAgainstSourcePaths(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, values zarfValue.Values) error {
+func (r *PackageResource) validatePackageValuesAgainstSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, values zarfValue.Values) error {
 	valuePaths := collectValuePaths(map[string]any(values))
-	return r.validatePackageValuePathsAgainstSourcePaths(model, pkgLayout, valuePaths)
+	return r.validatePackageValuePathsAgainstSourcePaths(ctx, model, pkgLayout, valuePaths)
 }
 
-func (r *PackageResource) validatePackageValuePathsAgainstSourcePaths(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, valuePaths []string) error {
+func (r *PackageResource) validatePackageValuePathsAgainstSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, valuePaths []string) error {
 	if len(valuePaths) == 0 {
 		return nil
 	}
 
-	exposedPaths, err := r.getPlannedComponentValueSourcePaths(model, pkgLayout)
+	exposedPaths, err := r.getPlannedComponentValueSourcePaths(ctx, model, pkgLayout)
 	if err != nil {
 		return err
 	}
@@ -1935,12 +1935,12 @@ func (r *PackageResource) validatePackageValuePathsAgainstSourcePaths(model Pack
 	return errors.Join(validationErrors...)
 }
 
-func (r *PackageResource) validatePlannedPackageValuePathsAgainstSourcePaths(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, valuePaths []plannedPackageValuePath) error {
+func (r *PackageResource) validatePlannedPackageValuePathsAgainstSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, valuePaths []plannedPackageValuePath) error {
 	if len(valuePaths) == 0 {
 		return nil
 	}
 
-	exposedPaths, err := r.getPlannedComponentValueSourcePaths(model, pkgLayout)
+	exposedPaths, err := r.getPlannedComponentValueSourcePaths(ctx, model, pkgLayout)
 	if err != nil {
 		return err
 	}
@@ -2615,7 +2615,7 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 	}
 
 	if canValidateValuePaths {
-		if err := r.validatePlannedPackageValuePathsAgainstSourcePaths(plan, pkgLayout, valuePaths); err != nil {
+		if err := r.validatePlannedPackageValuePathsAgainstSourcePaths(ctx, plan, pkgLayout, valuePaths); err != nil {
 			return packagePlanCheckResult{ValuePathsErr: err}
 		}
 	}

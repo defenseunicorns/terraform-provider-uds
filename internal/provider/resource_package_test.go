@@ -5466,7 +5466,7 @@ func TestPackageResource_GetPlannedComponentValueSourcePaths(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			paths, err := packageResource.getPlannedComponentValueSourcePaths(tc.model, pkgLayout)
+			paths, err := packageResource.getPlannedComponentValueSourcePaths(context.Background(), tc.model, pkgLayout)
 
 			assert.NoError(t, err)
 			assert.ElementsMatch(t, tc.expectedPaths, paths)
