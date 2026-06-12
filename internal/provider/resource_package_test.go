@@ -4742,10 +4742,10 @@ func TestDynamicToValues(t *testing.T) {
 	)
 
 	tests := []struct {
-		name       string
-		input      types.Dynamic
-		expected   zarfValue.Values
-		errorText  string
+		name      string
+		input     types.Dynamic
+		expected  zarfValue.Values
+		errorText string
 	}{
 		{
 			name:     "null returns empty values",
