@@ -4903,19 +4903,28 @@ func TestCollectDynamicValuePaths(t *testing.T) {
 			}),
 		},
 	))
+	unknownIntermediateObject := types.DynamicValue(types.ObjectValueMust(
+		map[string]attr.Type{
+			"pod": types.DynamicType,
+		},
+		map[string]attr.Value{
+			"pod": types.DynamicUnknown(),
+		},
+	))
 
 	tests := []struct {
 		name               string
 		input              types.Dynamic
-		expectedPaths      []string
+		expectedPaths      []plannedPackageValuePath
 		expectedHasUnknown bool
 		errorText          string
 	}{
-		{name: "null has no paths", input: types.DynamicNull(), expectedPaths: []string{}},
-		{name: "root unknown has no paths but records unknown", input: types.DynamicUnknown(), expectedPaths: []string{}, expectedHasUnknown: true},
-		{name: "known object returns leaf paths", input: nestedKnownObject, expectedPaths: []string{"pod.annotations.pet-name", "pod.empty", "items"}},
-		{name: "nested unknown returns path and records unknown", input: nestedUnknownObject, expectedPaths: []string{"pod.annotations.pet-name"}, expectedHasUnknown: true},
-		{name: "list with unknown returns list path and records unknown", input: listWithUnknown, expectedPaths: []string{"items"}, expectedHasUnknown: true},
+		{name: "null has no paths", input: types.DynamicNull(), expectedPaths: []plannedPackageValuePath{}},
+		{name: "root unknown has no paths but records unknown", input: types.DynamicUnknown(), expectedPaths: []plannedPackageValuePath{}, expectedHasUnknown: true},
+		{name: "known object returns leaf paths", input: nestedKnownObject, expectedPaths: []plannedPackageValuePath{{path: "pod.annotations.pet-name"}, {path: "pod.empty"}, {path: "items"}}},
+		{name: "nested unknown scalar returns path and records unknown", input: nestedUnknownObject, expectedPaths: []plannedPackageValuePath{{path: "pod.annotations.pet-name"}}, expectedHasUnknown: true},
+		{name: "unknown intermediate object returns unknown subtree path", input: unknownIntermediateObject, expectedPaths: []plannedPackageValuePath{{path: "pod", unknownSubtree: true}}, expectedHasUnknown: true},
+		{name: "list with unknown returns list path and records unknown", input: listWithUnknown, expectedPaths: []plannedPackageValuePath{{path: "items"}}, expectedHasUnknown: true},
 		{name: "root scalar returns error", input: types.DynamicValue(types.StringValue("nope")), errorText: "values must be a map or object"},
 	}
 
@@ -4996,48 +5005,77 @@ func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesValidateKnownPa
 	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 
-func TestPackageResource_RunPackagePlanChecks_UnknownIntermediatePodObjectDefersSourcePathValidation(t *testing.T) {
-	mockPackager := &MockPackager{}
-	model := NewTestPackageResourceModel(
-		WithOptionalComponents([]string{}),
-		WithValues(types.DynamicValue(types.ObjectValueMust(
-			map[string]attr.Type{
-				"pod": types.DynamicType,
-			},
-			map[string]attr.Value{
-				"pod": types.DynamicUnknown(),
-			},
-		))),
-	)
-	pkgLayout := &layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{
-			Components: []v1alpha1.ZarfComponent{
-				{
-					Name:     "required-component",
-					Required: helpers.BoolPtr(true),
-					Charts: []v1alpha1.ZarfChart{
+func TestPackageResource_RunPackagePlanChecks_UnknownIntermediateObjectSourcePathValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		sourcePaths []string
+		expectErr   bool
+		errorText   string
+	}{
+		{
+			name:        "defers when descendant source path is exposed",
+			sourcePaths: []string{".pod.replicaCount"},
+		},
+		{
+			name:        "fails when no source path can match unknown object",
+			sourcePaths: []string{".service.enabled"},
+			expectErr:   true,
+			errorText:   "pod",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			model := NewTestPackageResourceModel(
+				WithOptionalComponents([]string{}),
+				WithValues(types.DynamicValue(types.ObjectValueMust(
+					map[string]attr.Type{
+						"pod": types.DynamicType,
+					},
+					map[string]attr.Value{
+						"pod": types.DynamicUnknown(),
+					},
+				))),
+			)
+			chartValues := make([]v1alpha1.ZarfChartValue, 0, len(tc.sourcePaths))
+			for _, sourcePath := range tc.sourcePaths {
+				chartValues = append(chartValues, v1alpha1.ZarfChartValue{SourcePath: sourcePath, TargetPath: sourcePath})
+			}
+			pkgLayout := &layout.PackageLayout{
+				Pkg: v1alpha1.ZarfPackage{
+					Components: []v1alpha1.ZarfComponent{
 						{
-							Name: "chart",
-							Values: []v1alpha1.ZarfChartValue{
-								{SourcePath: ".pod.replicaCount", TargetPath: ".replicaCount"},
+							Name:     "required-component",
+							Required: helpers.BoolPtr(true),
+							Charts: []v1alpha1.ZarfChart{
+								{
+									Name:   "chart",
+									Values: chartValues,
+								},
 							},
 						},
 					},
 				},
-			},
-		},
+			}
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil)
+			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+			resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
+
+			valuePaths := collectAndValidatePackageValuePaths(model, resp)
+			result := packageResource.runPackagePlanChecks(context.Background(), model, valuePaths)
+
+			assert.False(t, resp.Diagnostics.HasError(), "expected local validation to pass, got: %v", resp.Diagnostics.Errors())
+			assert.NoError(t, result.LoadErr)
+			if tc.expectErr {
+				assert.Error(t, result.ValuePathsErr)
+				assert.Contains(t, result.ValuePathsErr.Error(), tc.errorText)
+			} else {
+				assert.NoError(t, result.ValuePathsErr)
+			}
+			mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+		})
 	}
-	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil)
-	packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
-	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
-
-	valuePaths := collectAndValidatePackageValuePaths(model, resp)
-	result := packageResource.runPackagePlanChecks(context.Background(), model, valuePaths)
-
-	assert.False(t, resp.Diagnostics.HasError(), "expected local validation to pass, got: %v", resp.Diagnostics.Errors())
-	assert.NoError(t, result.LoadErr)
-	assert.NoError(t, result.ValuePathsErr)
-	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesFailKnownUnexposedPaths(t *testing.T) {
@@ -5326,6 +5364,52 @@ func TestIsValuePathExposed(t *testing.T) {
 				paths = tc.exposedPath
 			}
 			assert.Equal(t, tc.expected, isValuePathExposed(tc.valuePath, paths))
+		})
+	}
+}
+
+func TestIsUnknownValuePathPotentiallyExposed(t *testing.T) {
+	tests := []struct {
+		name         string
+		valuePath    string
+		exposedPaths []string
+		expected     bool
+	}{
+		{
+			name:         "root source path potentially exposes unknown object",
+			valuePath:    "pod",
+			exposedPaths: []string{"."},
+			expected:     true,
+		},
+		{
+			name:         "exact source path potentially exposes unknown object",
+			valuePath:    "pod",
+			exposedPaths: []string{".pod"},
+			expected:     true,
+		},
+		{
+			name:         "descendant source path potentially exposes unknown object",
+			valuePath:    "pod",
+			exposedPaths: []string{".pod.replicaCount"},
+			expected:     true,
+		},
+		{
+			name:         "unrelated source path does not potentially expose unknown object",
+			valuePath:    "pod",
+			exposedPaths: []string{".service.enabled"},
+			expected:     false,
+		},
+		{
+			name:         "similar prefix source path does not potentially expose unknown object",
+			valuePath:    "pod",
+			exposedPaths: []string{".podinfo.replicaCount"},
+			expected:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, isUnknownValuePathPotentiallyExposed(tc.valuePath, tc.exposedPaths))
 		})
 	}
 }

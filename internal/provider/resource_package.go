@@ -1584,7 +1584,7 @@ func joinValuePath(prefix string, key string) string {
 // not require loading the package and returns configured value paths for later
 // sourcePath validation. Unknown root values return no paths so package-dependent
 // validation can defer until apply.
-func collectAndValidatePackageValuePaths(model PackageResourceModel, resp *resource.ModifyPlanResponse) []string {
+func collectAndValidatePackageValuePaths(model PackageResourceModel, resp *resource.ModifyPlanResponse) []plannedPackageValuePath {
 	valuePaths, valuesContainUnknown, err := collectDynamicValuePaths(model.Values, "values")
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
@@ -1679,26 +1679,31 @@ func collectionSliceContainsUnknown(elements []attr.Value) bool {
 }
 
 type dynamicValuePathResult struct {
-	paths      []string
+	paths      []plannedPackageValuePath
 	hasUnknown bool
 	validRoot  bool
+}
+
+type plannedPackageValuePath struct {
+	path           string
+	unknownSubtree bool
 }
 
 // collectDynamicValuePaths returns the configured leaf paths that can be validated
 // against Zarf chart value source paths during plan. Root unknowns expose no paths,
 // so validation defers; nested unknowns still expose their configured path; and
 // collections are treated as leaf values because source paths do not address items.
-func collectDynamicValuePaths(value types.Dynamic, attrName string) ([]string, bool, error) {
+func collectDynamicValuePaths(value types.Dynamic, attrName string) ([]plannedPackageValuePath, bool, error) {
 	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
-		return []string{}, true, nil
+		return []plannedPackageValuePath{}, true, nil
 	}
 	if value.IsNull() || value.IsUnderlyingValueNull() {
-		return []string{}, false, nil
+		return []plannedPackageValuePath{}, false, nil
 	}
 
 	result := collectAttrValuePaths(value.UnderlyingValue(), "")
 	if !result.validRoot {
-		return []string{}, false, fmt.Errorf("%s must be a map or object", attrName)
+		return []plannedPackageValuePath{}, false, fmt.Errorf("%s must be a map or object", attrName)
 	}
 	return result.paths, result.hasUnknown, nil
 }
@@ -1708,13 +1713,13 @@ func collectAttrValuePaths(value attr.Value, prefix string) dynamicValuePathResu
 		if prefix == "" {
 			return dynamicValuePathResult{validRoot: true}
 		}
-		return dynamicValuePathResult{paths: []string{prefix}, validRoot: true}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix}}, validRoot: true}
 	}
 	if value.IsUnknown() {
 		if prefix == "" {
 			return dynamicValuePathResult{hasUnknown: true, validRoot: true}
 		}
-		return dynamicValuePathResult{paths: []string{prefix}, hasUnknown: true, validRoot: true}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix, unknownSubtree: isUnknownSubtreeValue(value)}}, hasUnknown: true, validRoot: true}
 	}
 
 	switch v := value.(type) {
@@ -1734,7 +1739,20 @@ func collectAttrValuePaths(value attr.Value, prefix string) dynamicValuePathResu
 		if prefix == "" {
 			return dynamicValuePathResult{}
 		}
-		return dynamicValuePathResult{paths: []string{prefix}, validRoot: true}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix}}, validRoot: true}
+	}
+}
+
+func isUnknownSubtreeValue(value attr.Value) bool {
+	valueType := value.Type(context.Background())
+	if valueType.Equal(types.DynamicType) {
+		return true
+	}
+	switch valueType.(type) {
+	case types.MapType, types.ObjectType:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1743,13 +1761,13 @@ func collectDynamicAttrValuePaths(value types.Dynamic, prefix string) dynamicVal
 		if prefix == "" {
 			return dynamicValuePathResult{hasUnknown: true, validRoot: true}
 		}
-		return dynamicValuePathResult{paths: []string{prefix}, hasUnknown: true, validRoot: true}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix, unknownSubtree: true}}, hasUnknown: true, validRoot: true}
 	}
 	if value.IsNull() || value.IsUnderlyingValueNull() {
 		if prefix == "" {
 			return dynamicValuePathResult{validRoot: true}
 		}
-		return dynamicValuePathResult{paths: []string{prefix}, validRoot: true}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix}}, validRoot: true}
 	}
 	return collectAttrValuePaths(value.UnderlyingValue(), prefix)
 }
@@ -1759,7 +1777,7 @@ func collectAttrMapValuePaths(elements map[string]attr.Value, prefix string) dyn
 		if prefix == "" {
 			return dynamicValuePathResult{validRoot: true}
 		}
-		return dynamicValuePathResult{paths: []string{prefix}, validRoot: true}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix}}, validRoot: true}
 	}
 
 	result := dynamicValuePathResult{validRoot: true}
@@ -1776,7 +1794,7 @@ func collectAttrCollectionValuePaths(elements []attr.Value, prefix string) dynam
 		return dynamicValuePathResult{}
 	}
 
-	result := dynamicValuePathResult{paths: []string{prefix}, validRoot: true}
+	result := dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix}}, validRoot: true}
 	for _, value := range elements {
 		if attrValueContainsUnknown(value) {
 			result.hasUnknown = true
@@ -1910,11 +1928,42 @@ func (r *PackageResource) validatePackageValuePathsAgainstSourcePaths(model Pack
 	var validationErrors []error
 	for _, valuePath := range valuePaths {
 		if !isValuePathExposed(valuePath, exposedPaths) {
-			validationErrors = append(validationErrors, fmt.Errorf("value path %q does not match any chart value sourcePath exposed by the package components planned for deployment", valuePath))
+			validationErrors = append(validationErrors, valuePathNotExposedError(valuePath))
 		}
 	}
 
 	return errors.Join(validationErrors...)
+}
+
+func (r *PackageResource) validatePlannedPackageValuePathsAgainstSourcePaths(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, valuePaths []plannedPackageValuePath) error {
+	if len(valuePaths) == 0 {
+		return nil
+	}
+
+	exposedPaths, err := r.getPlannedComponentValueSourcePaths(model, pkgLayout)
+	if err != nil {
+		return err
+	}
+
+	var validationErrors []error
+	for _, valuePath := range valuePaths {
+		if valuePath.unknownSubtree {
+			if !isUnknownValuePathPotentiallyExposed(valuePath.path, exposedPaths) {
+				validationErrors = append(validationErrors, valuePathNotExposedError(valuePath.path))
+			}
+			continue
+		}
+
+		if !isValuePathExposed(valuePath.path, exposedPaths) {
+			validationErrors = append(validationErrors, valuePathNotExposedError(valuePath.path))
+		}
+	}
+
+	return errors.Join(validationErrors...)
+}
+
+func valuePathNotExposedError(valuePath string) error {
+	return fmt.Errorf("value path %q does not match any chart value sourcePath exposed by the package components planned for deployment", valuePath)
 }
 
 func isValuePathExposed(valuePath string, exposedPaths []string) bool {
@@ -1924,6 +1973,19 @@ func isValuePathExposed(valuePath string, exposedPaths []string) bool {
 			return true
 		}
 		if valuePath == normalized || strings.HasPrefix(valuePath, normalized+".") {
+			return true
+		}
+	}
+	return false
+}
+
+func isUnknownValuePathPotentiallyExposed(valuePath string, exposedPaths []string) bool {
+	for _, exposedPath := range exposedPaths {
+		normalized := strings.TrimPrefix(exposedPath, ".")
+		if normalized == "" {
+			return true
+		}
+		if valuePath == normalized || strings.HasPrefix(normalized, valuePath+".") {
 			return true
 		}
 	}
@@ -2509,7 +2571,7 @@ type packagePlanCheckResult struct {
 // checks. If valuePaths is non-empty, those paths are validated against chart
 // value sourcePaths for the components planned for deployment.
 // Skipped when source is unknown, packager/providerConfig are nil, or no checks are needed.
-func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel, valuePaths []string) packagePlanCheckResult {
+func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel, valuePaths []plannedPackageValuePath) packagePlanCheckResult {
 	if plan.Source.IsUnknown() || plan.Source.IsNull() {
 		return packagePlanCheckResult{}
 	}
@@ -2553,7 +2615,7 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 	}
 
 	if canValidateValuePaths {
-		if err := r.validatePackageValuePathsAgainstSourcePaths(plan, pkgLayout, valuePaths); err != nil {
+		if err := r.validatePlannedPackageValuePathsAgainstSourcePaths(plan, pkgLayout, valuePaths); err != nil {
 			return packagePlanCheckResult{ValuePathsErr: err}
 		}
 	}
