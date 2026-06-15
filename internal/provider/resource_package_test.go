@@ -4985,27 +4985,27 @@ func TestZarfOperationTimeout(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "remaining 2s: reserve lower-clamped to 1s, operationTimeout ~1s",
+			name: "remaining 2s returns full remaining duration",
 			makeCtx: func() (context.Context, context.CancelFunc) {
 				return context.WithDeadline(context.Background(), time.Now().Add(2*time.Second))
 			},
-			wantSeconds:      time.Second.Seconds(),
+			wantSeconds:      (2 * time.Second).Seconds(),
 			toleranceSeconds: 0.5,
 		},
 		{
-			name: "remaining 60s: reserve unclamped 3s (5%), operationTimeout ~57s",
+			name: "remaining 60s returns full remaining duration",
 			makeCtx: func() (context.Context, context.CancelFunc) {
 				return context.WithDeadline(context.Background(), time.Now().Add(60*time.Second))
 			},
-			wantSeconds:      57,
+			wantSeconds:      60,
 			toleranceSeconds: 0.5,
 		},
 		{
-			name: "remaining 20m: reserve upper-clamped to 30s, operationTimeout ~19m30s",
+			name: "remaining 20m returns full remaining duration",
 			makeCtx: func() (context.Context, context.CancelFunc) {
 				return context.WithDeadline(context.Background(), time.Now().Add(20*time.Minute))
 			},
-			wantSeconds:      (19*time.Minute + 30*time.Second).Seconds(),
+			wantSeconds:      (20 * time.Minute).Seconds(),
 			toleranceSeconds: 0.5,
 		},
 	}
@@ -5314,7 +5314,8 @@ func TestPackageResource_Upsert_ZarfReceivesRemainingBudget(t *testing.T) {
 
 		packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		lifecycleBudget := 5 * time.Minute
+		ctx, cancel := context.WithTimeout(context.Background(), lifecycleBudget)
 		defer cancel()
 
 		_, err := packageResource.upsert(ctx, NewTestPackageResourceModel())
@@ -5323,10 +5324,11 @@ func TestPackageResource_Upsert_ZarfReceivesRemainingBudget(t *testing.T) {
 		for _, call := range mockPackager.Calls {
 			if call.Method == "Deploy" {
 				deployOpts := call.Arguments[2].(zarfPackager.DeployOptions)
-				assert.Less(t, deployOpts.Timeout, 5*time.Minute,
-					"operationTimeout must be less than lifecycle deadline")
-				assert.Greater(t, deployOpts.Timeout, 4*time.Minute,
-					"operationTimeout must consume most of the lifecycle budget")
+				assert.Positive(t, deployOpts.Timeout, "Zarf timeout must be positive")
+				assert.LessOrEqual(t, deployOpts.Timeout, lifecycleBudget,
+					"Zarf timeout must not exceed the lifecycle budget")
+				assert.InDelta(t, lifecycleBudget.Seconds(), deployOpts.Timeout.Seconds(), 1,
+					"Zarf timeout must be close to the full remaining lifecycle budget")
 			}
 		}
 	})
@@ -5362,7 +5364,8 @@ func TestRemoveComponents_ZarfReceivesRemainingBudget(t *testing.T) {
 
 		packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		lifecycleBudget := 5 * time.Minute
+		ctx, cancel := context.WithTimeout(context.Background(), lifecycleBudget)
 		defer cancel()
 
 		err := packageResource.removeComponents(ctx, NewTestPackageResourceModel(), []string{"component-a"})
@@ -5371,10 +5374,11 @@ func TestRemoveComponents_ZarfReceivesRemainingBudget(t *testing.T) {
 		for _, call := range mockPackager.Calls {
 			if call.Method == "Remove" {
 				removeOpts := call.Arguments[2].(zarfPackager.RemoveOptions)
-				assert.Less(t, removeOpts.Timeout, 5*time.Minute,
-					"operationTimeout must be less than lifecycle deadline")
-				assert.Greater(t, removeOpts.Timeout, 4*time.Minute,
-					"operationTimeout must consume most of the lifecycle budget")
+				assert.Positive(t, removeOpts.Timeout, "Zarf timeout must be positive")
+				assert.LessOrEqual(t, removeOpts.Timeout, lifecycleBudget,
+					"Zarf timeout must not exceed the lifecycle budget")
+				assert.InDelta(t, lifecycleBudget.Seconds(), removeOpts.Timeout.Seconds(), 1,
+					"Zarf timeout must be close to the full remaining lifecycle budget")
 			}
 		}
 	})
@@ -5532,10 +5536,12 @@ func TestDelete_ZarfHandoffUsesRemainingBudget(t *testing.T) {
 	for _, call := range mockPackager.Calls {
 		if call.Method == "Remove" {
 			removeOpts := call.Arguments[2].(zarfPackager.RemoveOptions)
-			assert.Less(t, removeOpts.Timeout, 10*time.Minute,
-				"Zarf timeout must be less than configured delete timeout")
-			assert.Greater(t, removeOpts.Timeout, 9*time.Minute,
-				"Zarf timeout must consume most of the configured delete budget")
+			lifecycleBudget := 10 * time.Minute
+			assert.Positive(t, removeOpts.Timeout, "Zarf timeout must be positive")
+			assert.LessOrEqual(t, removeOpts.Timeout, lifecycleBudget,
+				"Zarf timeout must not exceed the lifecycle budget")
+			assert.InDelta(t, lifecycleBudget.Seconds(), removeOpts.Timeout.Seconds(), 1,
+				"Zarf timeout must be close to the full remaining lifecycle budget")
 		}
 	}
 }

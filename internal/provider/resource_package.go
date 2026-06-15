@@ -284,10 +284,10 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				Read:              true,
 				Update:            true,
 				Delete:            true,
-				CreateDescription: "Total create-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and Helm/Zarf execution. Zarf receives the remaining budget minus a 5% safety reserve (clamped 1 s–30 s), so this value is not passed verbatim to Helm.",
+				CreateDescription: "Total create-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and Helm/Zarf execution.",
 				ReadDescription:   "Total read-operation wall-clock timeout (default 5 m). Covers cluster connection and state retrieval.",
-				UpdateDescription: "Total update-operation wall-clock timeout (default 30 m). Covers component removal and redeployment. Each Zarf call receives the recalculated remaining budget minus the safety reserve.",
-				DeleteDescription: "Total delete-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and removal. Zarf receives the remaining budget minus the safety reserve.",
+				UpdateDescription: "Total update-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and redeployment.",
+				DeleteDescription: "Total delete-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and removal.",
 			}),
 			"kind": schema.StringAttribute{
 				MarkdownDescription: "Kind of UDS package; ZarfInitConfig or ZarfPackageConfig.",
@@ -1579,9 +1579,8 @@ func withClusterTimeout(ctx context.Context) (context.Context, context.CancelFun
 	return context.WithTimeout(ctx, clusterTimeoutMinutes*time.Minute)
 }
 
-// zarfOperationTimeout derives the time budget for a Zarf Deploy or Remove call
-// from the remaining context deadline, minus a small reserve to allow cleanup.
-// Reserve is clamped to 5% of remaining time, between 1s and 30s.
+// zarfOperationTimeout derives the full time budget for a Zarf Deploy or Remove
+// call from the remaining context deadline.
 // Returns an error when the context is already done or has no usable budget.
 func zarfOperationTimeout(ctx context.Context) (time.Duration, error) {
 	if err := ctx.Err(); err != nil {
@@ -1595,18 +1594,11 @@ func zarfOperationTimeout(ctx context.Context) (time.Duration, error) {
 	if remaining <= 0 {
 		return 0, fmt.Errorf("operation deadline exceeded before Zarf call")
 	}
-	reserve := remaining / 20
-	if reserve < time.Second {
-		reserve = time.Second
-	}
-	if reserve > 30*time.Second {
-		reserve = 30 * time.Second
-	}
-	zarfTimeout := remaining - reserve
-	if zarfTimeout <= 0 {
-		return 0, fmt.Errorf("operation deadline exceeded before Zarf call")
-	}
-	return zarfTimeout, nil
+
+	// If Zarf ever needs a shorter deadline than the parent lifecycle context,
+	// subtract that reserve here and reject a non-positive result before returning.
+
+	return remaining, nil
 }
 
 // lifecycleErrorDetail returns a detail string for CRUD operation errors,

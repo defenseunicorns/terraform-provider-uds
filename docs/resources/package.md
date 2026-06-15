@@ -283,10 +283,10 @@ Optional:
 
 Optional:
 
-- `create` (String) Total create-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and Helm/Zarf execution. Zarf receives the remaining budget minus a 5% safety reserve (clamped 1 s–30 s), so this value is not passed verbatim to Helm.
-- `delete` (String) Total delete-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and removal. Zarf receives the remaining budget minus the safety reserve.
+- `create` (String) Total create-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and Helm/Zarf execution.
+- `delete` (String) Total delete-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and removal.
 - `read` (String) Total read-operation wall-clock timeout (default 5 m). Covers cluster connection and state retrieval.
-- `update` (String) Total update-operation wall-clock timeout (default 30 m). Covers component removal and redeployment. Each Zarf call receives the recalculated remaining budget minus the safety reserve.
+- `update` (String) Total update-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and redeployment.
 
 
 <a id="nestedatt--vars"></a>
