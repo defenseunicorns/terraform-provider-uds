@@ -14,15 +14,19 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/defenseunicorns/pkg/helpers/v2"
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/defaults"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -40,6 +44,15 @@ import (
 
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 )
+
+// testCtx returns a context with a 5-minute deadline, matching the minimum
+// lifecycle budget expected by zarfOperationTimeout.
+func testCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	t.Cleanup(cancel)
+	return ctx
+}
 
 type MockCluster struct {
 	mock.Mock
@@ -156,10 +169,117 @@ func WithSignatureVerificationEnabled(enabled bool) PackageResourceModelDataOpti
 	return withSigVerification(newTestSigVerification(enabled, "", nil))
 }
 
-func WithTimeout(timeout string) PackageResourceModelDataOption {
-	return func(model *PackageResourceModel) {
-		model.Timeout = types.StringValue(timeout)
+// nullTimeoutsValue returns a timeouts.Value with no durations configured
+// so all operations fall back to their code defaults.
+func nullTimeoutsValue() timeouts.Value {
+	return timeouts.Value{
+		Object: types.ObjectNull(map[string]attr.Type{
+			"create": types.StringType,
+			"read":   types.StringType,
+			"update": types.StringType,
+			"delete": types.StringType,
+		}),
 	}
+}
+
+// WithTimeout sets all four timeout operations to the same duration string.
+func WithTimeout(duration string) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.Timeouts = timeouts.Value{
+			Object: types.ObjectValueMust(
+				map[string]attr.Type{
+					"create": types.StringType,
+					"read":   types.StringType,
+					"update": types.StringType,
+					"delete": types.StringType,
+				},
+				map[string]attr.Value{
+					"create": types.StringValue(duration),
+					"read":   types.StringValue(duration),
+					"update": types.StringValue(duration),
+					"delete": types.StringValue(duration),
+				},
+			),
+		}
+	}
+}
+
+// WithCreateTimeout sets only the create timeout, leaving others null (defaults apply).
+func WithCreateTimeout(duration string) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.Timeouts = timeouts.Value{
+			Object: types.ObjectValueMust(
+				map[string]attr.Type{
+					"create": types.StringType,
+					"read":   types.StringType,
+					"update": types.StringType,
+					"delete": types.StringType,
+				},
+				map[string]attr.Value{
+					"create": types.StringValue(duration),
+					"read":   types.StringNull(),
+					"update": types.StringNull(),
+					"delete": types.StringNull(),
+				},
+			),
+		}
+	}
+}
+
+// WithDeployedState populates computed read-only fields to plausible post-deploy values.
+// Required when constructing a prior-state tfsdk.State for handler-level Read/Delete tests.
+func WithDeployedState() PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.ID = types.StringValue("test-pkg")
+		model.Name = types.StringValue("test-pkg")
+		model.Kind = types.StringValue("ZarfPackageConfig")
+		model.Version = types.StringValue("1.0.0")
+		meta, _ := types.ObjectValue(
+			map[string]attr.Type{
+				"name":        types.StringType,
+				"description": types.StringType,
+				"version":     types.StringType,
+			},
+			map[string]attr.Value{
+				"name":        types.StringValue("test-pkg"),
+				"description": types.StringValue("test package"),
+				"version":     types.StringValue("1.0.0"),
+			},
+		)
+		model.Metadata = meta
+		model.ConnectStrings = emptyConnectStringSet()
+		model.SetVariables = types.MapValueMust(types.StringType, map[string]attr.Value{})
+	}
+}
+
+// buildTestState serializes model into a tfsdk.State using the resource schema.
+// Use for handler-level tests that call r.Create/Read/Update/Delete directly.
+func buildTestState(t *testing.T, r *PackageResource, model PackageResourceModel) tfsdk.State {
+	t.Helper()
+	ctx := context.Background()
+	var schemaResp resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &schemaResp)
+	state := tfsdk.State{Schema: schemaResp.Schema}
+	diags := state.Set(ctx, &model)
+	require.False(t, diags.HasError(), "buildTestState: %v", diags)
+	return state
+}
+
+func buildTestPlan(t *testing.T, r *PackageResource, model PackageResourceModel) tfsdk.Plan {
+	t.Helper()
+	ctx := context.Background()
+	var schemaResp resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &schemaResp)
+	plan := tfsdk.Plan{Schema: schemaResp.Schema}
+	diags := plan.Set(ctx, &model)
+	require.False(t, diags.HasError(), "buildTestPlan: %v", diags)
+	return plan
+}
+
+func buildTestConfig(t *testing.T, r *PackageResource, model PackageResourceModel) tfsdk.Config {
+	t.Helper()
+	plan := buildTestPlan(t, r, model)
+	return tfsdk.Config{Raw: plan.Raw, Schema: plan.Schema}
 }
 
 func WithNamespace(namespace string) PackageResourceModelDataOption {
@@ -216,7 +336,7 @@ func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) Pack
 		Source:                types.StringValue("oci://ghcr.io/defenseunicorns/packages/test:latest"),
 		Architecture:          types.StringValue(runtime.GOARCH),
 		SignatureVerification: types.ObjectNull(signatureVerificationAttrTypes),
-		Timeout:               types.StringValue("10m"),
+		Timeouts:              nullTimeoutsValue(),
 		Namespace:             types.StringValue(""),
 		Components:            componentSliceToSet([]ComponentModel{}),
 		OptionalComponents:    types.SetNull(types.StringType),
@@ -495,7 +615,7 @@ func TestPackageResource_Upsert_VariableModels(t *testing.T) {
 				WithSensitiveVars(tc.sensitiveVars),
 			)
 
-			_, err := packageResource.upsert(context.Background(), testModel)
+			_, err := packageResource.upsert(testCtx(t), testModel)
 			assert.NoError(t, err)
 
 			// Check that Deploy was called and the variables map was provided with the correct values
@@ -542,7 +662,7 @@ func TestPackageResource_Upsert_ForceHelmSSAConflicts(t *testing.T) {
 			}
 			packageResource := NewPackageResource(providerCfg, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 
-			_, err := packageResource.upsert(context.Background(), NewTestPackageResourceModel())
+			_, err := packageResource.upsert(testCtx(t), NewTestPackageResourceModel())
 			assert.NoError(t, err)
 
 			for _, call := range mockPackager.Calls {
@@ -636,7 +756,7 @@ func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 
 			testModel := NewTestPackageResourceModel()
 
-			plan, err := packageResource.upsert(context.Background(), testModel)
+			plan, err := packageResource.upsert(testCtx(t), testModel)
 			assert.NoError(t, err)
 
 			gotSetVars, err := readStringMap(context.Background(), plan.SetVariables)
@@ -684,7 +804,7 @@ func TestPackageResource_Upsert_DeployValues_NotPersisted(t *testing.T) {
 
 	testModel := NewTestPackageResourceModel()
 
-	plan, err := packageResource.upsert(context.Background(), testModel)
+	plan, err := packageResource.upsert(testCtx(t), testModel)
 	assert.NoError(t, err)
 
 	// Ensure deployResult.Values are not included in set_variables (only SetVariables are persisted)
@@ -729,7 +849,7 @@ func TestPackageResource_Upsert_InputVars_NotPersisted(t *testing.T) {
 		WithSensitiveVars([]VariableModel{{Name: types.StringValue("INP_SECRET"), Value: types.StringValue("val-secret")}}),
 	)
 
-	plan, err := packageResource.upsert(context.Background(), testModel)
+	plan, err := packageResource.upsert(testCtx(t), testModel)
 	assert.NoError(t, err)
 
 	setVars := map[string]string{}
@@ -775,7 +895,7 @@ func TestPackageResource_Upsert_SetVariables_EmptyAndNull(t *testing.T) {
 
 	// Case A: No set variables configured and no deploy results
 	testModelNull := NewTestPackageResourceModel()
-	planNull, err := packageResource.upsert(context.Background(), testModelNull)
+	planNull, err := packageResource.upsert(testCtx(t), testModelNull)
 	assert.NoError(t, err)
 	exportedNull := map[string]string{}
 	diags := planNull.SetVariables.ElementsAs(context.Background(), &exportedNull, false)
@@ -784,7 +904,7 @@ func TestPackageResource_Upsert_SetVariables_EmptyAndNull(t *testing.T) {
 
 	// Case B: no runtime set variables (legacy export flag removed)
 	testModelEmpty := NewTestPackageResourceModel()
-	planEmpty, err := packageResource.upsert(context.Background(), testModelEmpty)
+	planEmpty, err := packageResource.upsert(testCtx(t), testModelEmpty)
 	assert.NoError(t, err)
 	exportedEmpty := map[string]string{}
 	diags2 := planEmpty.SetVariables.ElementsAs(context.Background(), &exportedEmpty, false)
@@ -882,7 +1002,7 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 			)
 			expectErrors := len(tc.expectedErrorContains) > 0
 
-			_, err := packageResource.upsert(context.Background(), testModel)
+			_, err := packageResource.upsert(testCtx(t), testModel)
 
 			if expectErrors {
 				assert.NotNil(t, err, "Expected error, got none")
@@ -1097,7 +1217,7 @@ func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
 				WithComponents(tc.components),
 			)
 
-			_, err := packageResource.upsert(context.Background(), testModel)
+			_, err := packageResource.upsert(testCtx(t), testModel)
 
 			if tc.expectedErrorContains != "" {
 				assert.NotNil(t, err, "Expected error, got none")
@@ -1139,7 +1259,7 @@ func TestPackageResource_Upsert_ComponentOverrides_ReturnsDecodeError(t *testing
 	testModel := NewTestPackageResourceModel(WithOptionalComponents([]string{}))
 	testModel.Components = malformedComponentSet()
 
-	_, err := packageResource.upsert(context.Background(), testModel)
+	_, err := packageResource.upsert(testCtx(t), testModel)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to read component blocks")
@@ -1307,7 +1427,7 @@ func TestPackageResource_Upsert_Values(t *testing.T) {
 				WithSensitiveValues(tc.sensitiveValues),
 			)
 
-			_, err := packageResource.upsert(context.Background(), testModel)
+			_, err := packageResource.upsert(testCtx(t), testModel)
 
 			if tc.expectedErrorMsg != "" {
 				assert.Error(t, err)
@@ -1494,7 +1614,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			testModel := NewTestPackageResourceModel(WithSource(tc.source))
 			expectErrors := len(tc.expectedErrorContains) > 0
 
-			_, err := packageResource.upsert(context.Background(), testModel)
+			_, err := packageResource.upsert(testCtx(t), testModel)
 
 			if expectErrors {
 				assert.NotNil(t, err, "Expected error, got none")
@@ -1703,7 +1823,7 @@ func TestPackageResource_Upsert_NamespaceOverride(t *testing.T) {
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 			testModel := NewTestPackageResourceModel(WithNamespace(tc.namespace))
 
-			_, err := packageResource.upsert(context.Background(), testModel)
+			_, err := packageResource.upsert(testCtx(t), testModel)
 			assert.NoError(t, err)
 
 			// Check that Deploy was called and the variables map was provided with the correct values
@@ -2097,7 +2217,7 @@ func TestPackageResource_Upsert_SkipsSignatureVerificationWhenDisabled(t *testin
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 	model := NewTestPackageResourceModel(WithSignatureVerificationEnabled(false))
 
-	_, err := packageResource.upsert(context.Background(), model)
+	_, err := packageResource.upsert(testCtx(t), model)
 
 	assert.NoError(t, err)
 	mockPackageComponentFilter.AssertExpectations(t)
@@ -2117,7 +2237,7 @@ func TestPackageResource_Upsert_DoesNotDeployWhenSignatureVerificationFails(t *t
 		return errors.New("signature verification failed")
 	}
 
-	_, err := packageResource.upsert(context.Background(), NewTestPackageResourceModel())
+	_, err := packageResource.upsert(testCtx(t), NewTestPackageResourceModel())
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "signature verification failed")
@@ -2142,7 +2262,7 @@ func TestPackageResource_Upsert_DeploysWhenSignatureVerificationSucceeds(t *test
 		return nil
 	}
 
-	_, err := packageResource.upsert(context.Background(), NewTestPackageResourceModel())
+	_, err := packageResource.upsert(testCtx(t), NewTestPackageResourceModel())
 
 	assert.NoError(t, err)
 	assert.True(t, called)
@@ -2205,7 +2325,7 @@ func TestPackageResource_Upsert_Architecture(t *testing.T) {
 				testModel.Architecture = types.StringNull()
 			}
 
-			_, err := packageResource.upsert(context.Background(), testModel)
+			_, err := packageResource.upsert(testCtx(t), testModel)
 			assert.NoError(t, err)
 
 			// Find the LoadOptions from the LoadPackage call
@@ -2334,7 +2454,7 @@ func TestPackageResource_Upsert_ConnectStrings(t *testing.T) {
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 			testModel := NewTestPackageResourceModel()
 
-			result, err := packageResource.upsert(context.Background(), testModel)
+			result, err := packageResource.upsert(testCtx(t), testModel)
 			assert.NoError(t, err)
 			assert.False(t, result.ConnectStrings.IsNull(), "ConnectStrings should not be null")
 
@@ -2586,15 +2706,14 @@ func TestUpdate_RemoveComponents(t *testing.T) {
 			mockPackager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(zarfPackage, nil)
 			mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
-			resp := resource.UpdateResponse{}
 			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, &mockCluster).(*PackageResource)
 
 			// This is the meat of the test!
 			plan := NewTestPackageResourceModel()
-			packageResource.removeComponents(context.TODO(), plan, tc.componentsToRemove, &resp)
+			err := packageResource.removeComponents(testCtx(t), plan, tc.componentsToRemove)
 
 			// Assertions
-			assert.False(t, resp.Diagnostics.HasError(), resp.Diagnostics.Errors())
+			assert.NoError(t, err)
 
 			// Check that Deploy was called and the variables map was provided with the correct values
 			for _, call := range mockPackager.Calls {
@@ -2628,6 +2747,155 @@ func TestUpdate_RemoveComponents(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUpdate_TimeoutOnlyChangeSkipsPackageOperations(t *testing.T) {
+	mockCluster := &MockCluster{}
+	mockPackager := &MockPackager{}
+	mockFilter := &MockPackageComponentFilter{}
+	r := NewPackageResource(nil, mockPackager, mockFilter, mockCluster).(*PackageResource)
+
+	stateModel := NewTestPackageResourceModel(
+		WithTimeout("30m"),
+		WithDeployedState(),
+		WithOptionalComponents([]string{}),
+	)
+	planModel := stateModel
+	WithTimeout("45m")(&planModel)
+	planModel.ID = types.StringUnknown()
+	planModel.Name = types.StringUnknown()
+	planModel.Kind = types.StringUnknown()
+	planModel.Version = types.StringUnknown()
+	planModel.Metadata = types.ObjectUnknown(map[string]attr.Type{
+		"name":        types.StringType,
+		"description": types.StringType,
+		"version":     types.StringType,
+	})
+	planModel.ConnectStrings = types.SetUnknown(types.ObjectType{AttrTypes: connectStringAttrTypes})
+	planModel.SetVariables = types.MapUnknown(types.StringType)
+
+	plan := buildTestPlan(t, r, planModel)
+	state := buildTestState(t, r, stateModel)
+	resp := resource.UpdateResponse{State: tfsdk.State{Schema: plan.Schema}}
+	r.Update(context.Background(), resource.UpdateRequest{Plan: plan, State: state}, &resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "expected no error: %v", resp.Diagnostics)
+	mockCluster.AssertNotCalled(t, "NewWithWait")
+	mockPackager.AssertNotCalled(t, "LoadPackage")
+	mockPackager.AssertNotCalled(t, "GetPackageFromSourceOrCluster")
+	mockPackager.AssertNotCalled(t, "Deploy")
+	mockPackager.AssertNotCalled(t, "Remove")
+	mockFilter.AssertNotCalled(t, "ForDeploy")
+	mockFilter.AssertNotCalled(t, "ForRemove")
+
+	var updated PackageResourceModel
+	resp.Diagnostics.Append(resp.State.Get(context.Background(), &updated)...)
+	require.False(t, resp.Diagnostics.HasError(), "failed to read updated state: %v", resp.Diagnostics)
+	assert.True(t, updated.Timeouts.Equal(planModel.Timeouts))
+	assert.Equal(t, stateModel.Name, updated.Name)
+	assert.Equal(t, stateModel.Metadata, updated.Metadata)
+	assert.Equal(t, stateModel.ConnectStrings, updated.ConnectStrings)
+	assert.Equal(t, stateModel.SetVariables, updated.SetVariables)
+}
+
+func TestModifyPlan_TimeoutOnlyChangePreservesComputedState(t *testing.T) {
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).
+		Return((*layout.PackageLayout)(nil), errors.New("package source unavailable"))
+	r := NewPackageResource(
+		&udsProviderConfig{ValidatePackagesOnPlan: true},
+		mockPackager,
+		nil,
+		nil,
+	).(*PackageResource)
+	stateModel := NewTestPackageResourceModel(
+		WithTimeout("30m"),
+		WithDeployedState(),
+		WithOptionalComponents([]string{}),
+	)
+	planModel := stateModel
+	WithTimeout("45m")(&planModel)
+	planModel.ID = types.StringUnknown()
+	planModel.Name = types.StringUnknown()
+	planModel.Kind = types.StringUnknown()
+	planModel.Version = types.StringUnknown()
+	planModel.Metadata = types.ObjectUnknown(map[string]attr.Type{
+		"name":        types.StringType,
+		"description": types.StringType,
+		"version":     types.StringType,
+	})
+	planModel.ConnectStrings = types.SetUnknown(types.ObjectType{AttrTypes: connectStringAttrTypes})
+	planModel.SetVariables = types.MapUnknown(types.StringType)
+
+	plan := buildTestPlan(t, r, planModel)
+	resp := resource.ModifyPlanResponse{Plan: plan}
+	r.ModifyPlan(context.Background(), resource.ModifyPlanRequest{
+		Config: buildTestConfig(t, r, planModel),
+		Plan:   plan,
+		State:  buildTestState(t, r, stateModel),
+	}, &resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "expected no error: %v", resp.Diagnostics)
+	var updatedPlan PackageResourceModel
+	resp.Diagnostics.Append(resp.Plan.Get(context.Background(), &updatedPlan)...)
+	require.False(t, resp.Diagnostics.HasError(), "failed to read updated plan: %v", resp.Diagnostics)
+	assert.True(t, updatedPlan.Timeouts.Equal(planModel.Timeouts))
+	assert.Equal(t, stateModel.ID, updatedPlan.ID)
+	assert.Equal(t, stateModel.Name, updatedPlan.Name)
+	assert.Equal(t, stateModel.Kind, updatedPlan.Kind)
+	assert.Equal(t, stateModel.Version, updatedPlan.Version)
+	assert.Equal(t, stateModel.Metadata, updatedPlan.Metadata)
+	assert.Equal(t, stateModel.ConnectStrings, updatedPlan.ConnectStrings)
+	assert.Equal(t, stateModel.SetVariables, updatedPlan.SetVariables)
+	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestModifyPlan_StateOnlyAndPackageChangeRunsPackageChecks(t *testing.T) {
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).
+		Return((*layout.PackageLayout)(nil), errors.New("package source unavailable"))
+	r := NewPackageResource(
+		&udsProviderConfig{ValidatePackagesOnPlan: true},
+		mockPackager,
+		nil,
+		nil,
+	).(*PackageResource)
+	stateModel := NewTestPackageResourceModel(
+		WithTimeout("30m"),
+		WithDeployedState(),
+		WithOptionalComponents([]string{}),
+	)
+	planModel := stateModel
+	WithTimeout("45m")(&planModel)
+	WithNamespace("changed")(&planModel)
+
+	plan := buildTestPlan(t, r, planModel)
+	resp := resource.ModifyPlanResponse{Plan: plan}
+	r.ModifyPlan(context.Background(), resource.ModifyPlanRequest{
+		Config: buildTestConfig(t, r, planModel),
+		Plan:   plan,
+		State:  buildTestState(t, r, stateModel),
+	}, &resp)
+
+	require.True(t, resp.Diagnostics.HasError())
+	assert.Contains(t, resp.Diagnostics.Errors()[0].Summary(), "Failed to load package")
+	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestIsStateOnlyUpdate_RejectsNonAllowlistedChange(t *testing.T) {
+	r := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
+	planModel := stateModel
+	WithTimeout("45m")(&planModel)
+	WithNamespace("changed")(&planModel)
+
+	stateOnly, err := isStateOnlyUpdate(
+		buildTestPlan(t, r, planModel),
+		buildTestState(t, r, stateModel),
+	)
+
+	require.NoError(t, err)
+	assert.False(t, stateOnly)
 }
 
 func TestValidateOptionalComponentsAgainstPackage(t *testing.T) {
@@ -2723,11 +2991,11 @@ func TestDeployAsNewOrUpdate_OptionalComponentRemoval(t *testing.T) {
 	newPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{}))
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, &mockCluster).(*PackageResource)
-	resp := resource.UpdateResponse{}
-	_, err := packageResource.deployAsNewOrUpdate(context.Background(), newPlan, oldPlan, &resp)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	_, err := packageResource.deployAsNewOrUpdate(ctx, newPlan, oldPlan)
 
 	assert.NoError(t, err)
-	assert.False(t, resp.Diagnostics.HasError(), resp.Diagnostics.Errors())
 
 	var forRemoveArgs []string
 	for _, call := range mockPackageComponentFilter.Calls {
@@ -2762,11 +3030,12 @@ func TestDeployAsNewOrUpdate_RemovalFailureSkipsUpsert(t *testing.T) {
 	newPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{}))
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, &mockCluster).(*PackageResource)
-	resp := resource.UpdateResponse{}
-	_, err := packageResource.deployAsNewOrUpdate(context.Background(), newPlan, oldPlan, &resp)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	_, err := packageResource.deployAsNewOrUpdate(ctx, newPlan, oldPlan)
 
-	assert.NoError(t, err)
-	assert.True(t, resp.Diagnostics.HasError(), "diagnostics should have error from failed removal")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "remove failed")
 	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
 	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
@@ -5827,6 +6096,81 @@ func TestValidateComponentBlockOptionalComponentsMutualExclusivity(t *testing.T)
 	}
 }
 
+func TestZarfOperationTimeout(t *testing.T) {
+	tests := []struct {
+		name             string
+		makeCtx          func() (context.Context, context.CancelFunc)
+		wantErr          bool
+		wantSeconds      float64
+		toleranceSeconds float64
+	}{
+		{
+			name:    "no deadline returns error",
+			makeCtx: func() (context.Context, context.CancelFunc) { return context.Background(), func() {} },
+			wantErr: true,
+		},
+		{
+			name: "deadline already past returns error",
+			makeCtx: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			},
+			wantErr: true,
+		},
+		{
+			name: "canceled context with future deadline returns error",
+			makeCtx: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(5*time.Minute))
+				cancel() // cancel immediately — deadline is still in the future
+				return ctx, func() {}
+			},
+			wantErr: true,
+		},
+		{
+			name: "remaining 2s returns full remaining duration",
+			makeCtx: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Now().Add(2*time.Second))
+			},
+			wantSeconds:      (2 * time.Second).Seconds(),
+			toleranceSeconds: 0.5,
+		},
+		{
+			name: "remaining 60s returns full remaining duration",
+			makeCtx: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Now().Add(60*time.Second))
+			},
+			wantSeconds:      60,
+			toleranceSeconds: 0.5,
+		},
+		{
+			name: "remaining 20m returns full remaining duration",
+			makeCtx: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Now().Add(20*time.Minute))
+			},
+			wantSeconds:      (20 * time.Minute).Seconds(),
+			toleranceSeconds: 0.5,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := tc.makeCtx()
+			defer cancel()
+
+			d, err := zarfOperationTimeout(ctx)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			if tc.toleranceSeconds == 0 {
+				assert.Equal(t, tc.wantSeconds, d.Seconds())
+			} else {
+				assert.InDelta(t, tc.wantSeconds, d.Seconds(), tc.toleranceSeconds)
+			}
+		})
+	}
+}
+
 func TestPackageResource_Upsert_OptionalComponents(t *testing.T) {
 	tests := []struct {
 		name                  string
@@ -5876,7 +6220,9 @@ func TestPackageResource_Upsert_OptionalComponents(t *testing.T) {
 				opts = append(opts, WithOptionalComponents(*tc.optionalComponents))
 			}
 
-			_, err := packageResource.upsert(context.Background(), NewTestPackageResourceModel(opts...))
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			_, err := packageResource.upsert(ctx, NewTestPackageResourceModel(opts...))
 			assert.NoError(t, err)
 
 			mockPackageComponentFilter.AssertCalled(t, "ForDeploy", mock.Anything)
@@ -5899,7 +6245,7 @@ func TestPackageResource_Upsert_UnknownOptionalComponents(t *testing.T) {
 		model.OptionalComponents = types.SetUnknown(types.StringType)
 	})
 
-	_, err := packageResource.upsert(context.Background(), model)
+	_, err := packageResource.upsert(testCtx(t), model)
 	require.EqualError(t, err, "optional_components must be known before apply")
 	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 	mockPackageComponentFilter.AssertNotCalled(t, "ForDeploy", mock.Anything)
@@ -6024,4 +6370,375 @@ func TestRefreshOptionalComponentsFromDeployedPackage(t *testing.T) {
 		assert.False(t, diags.HasError())
 		assert.Equal(t, 0, len(result.Elements()))
 	})
+}
+func TestPackageResource_Schema_Timeouts(t *testing.T) {
+	ctx := context.Background()
+
+	r := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+	var schemaResp resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &schemaResp)
+	attrs := schemaResp.Schema.Attributes
+
+	_, hasTimeouts := attrs["timeouts"]
+	assert.True(t, hasTimeouts, "schema must contain 'timeouts' attribute")
+
+	_, hasOldTimeout := attrs["timeout"]
+	assert.False(t, hasOldTimeout, "schema must not contain legacy 'timeout' attribute")
+
+	// null timeouts.Value falls back to code defaults
+	tv := nullTimeoutsValue()
+
+	d, diags := tv.Create(ctx, 30*time.Minute)
+	assert.False(t, diags.HasError())
+	assert.Equal(t, 30*time.Minute, d, "create default must be 30m")
+
+	d, diags = tv.Read(ctx, 5*time.Minute)
+	assert.False(t, diags.HasError())
+	assert.Equal(t, 5*time.Minute, d, "read default must be 5m")
+
+	d, diags = tv.Update(ctx, 30*time.Minute)
+	assert.False(t, diags.HasError())
+	assert.Equal(t, 30*time.Minute, d, "update default must be 30m")
+
+	d, diags = tv.Delete(ctx, 30*time.Minute)
+	assert.False(t, diags.HasError())
+	assert.Equal(t, 30*time.Minute, d, "delete default must be 30m")
+
+	// Explicit timeout overrides default for each operation independently
+	var configured PackageResourceModel
+	WithTimeout("45m")(&configured)
+	d, diags = configured.Timeouts.Create(ctx, 30*time.Minute)
+	assert.False(t, diags.HasError())
+	assert.Equal(t, 45*time.Minute, d, "configured create timeout must override default")
+
+	d, diags = configured.Timeouts.Read(ctx, 5*time.Minute)
+	assert.False(t, diags.HasError())
+	assert.Equal(t, 45*time.Minute, d, "configured read timeout must override default")
+
+	d, diags = configured.Timeouts.Update(ctx, 30*time.Minute)
+	assert.False(t, diags.HasError())
+	assert.Equal(t, 45*time.Minute, d, "configured update timeout must override default")
+
+	d, diags = configured.Timeouts.Delete(ctx, 30*time.Minute)
+	assert.False(t, diags.HasError())
+	assert.Equal(t, 45*time.Minute, d, "configured delete timeout must override default")
+
+	// Operation independence: overriding create must not affect read default
+	var createOnly PackageResourceModel
+	WithCreateTimeout("60m")(&createOnly)
+	d, diags = createOnly.Timeouts.Create(ctx, 30*time.Minute)
+	assert.False(t, diags.HasError())
+	assert.Equal(t, 60*time.Minute, d, "create-only override must apply to create")
+
+	d, diags = createOnly.Timeouts.Read(ctx, 5*time.Minute)
+	assert.False(t, diags.HasError())
+	assert.Equal(t, 5*time.Minute, d, "create-only override must not affect read default")
+
+	d, diags = createOnly.Timeouts.Update(ctx, 30*time.Minute)
+	assert.False(t, diags.HasError())
+	assert.Equal(t, 30*time.Minute, d, "create-only override must not affect update default")
+
+	d, diags = createOnly.Timeouts.Delete(ctx, 30*time.Minute)
+	assert.False(t, diags.HasError())
+	assert.Equal(t, 30*time.Minute, d, "create-only override must not affect delete default")
+}
+
+func TestPackageResource_Upsert_ZarfReceivesRemainingBudget(t *testing.T) {
+	packageLayout := newValidLoadPackageResult().Layout
+
+	t.Run("operationTimeout is remaining budget not fixed 15m", func(t *testing.T) {
+		mockPackager := &MockPackager{}
+		mockPackageComponentFilter := &MockPackageComponentFilter{}
+		mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil)
+		mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+		mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+		packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+		lifecycleBudget := 5 * time.Minute
+		ctx, cancel := context.WithTimeout(context.Background(), lifecycleBudget)
+		defer cancel()
+
+		_, err := packageResource.upsert(ctx, NewTestPackageResourceModel())
+		require.NoError(t, err)
+
+		for _, call := range mockPackager.Calls {
+			if call.Method == "Deploy" {
+				deployOpts := call.Arguments[2].(zarfPackager.DeployOptions)
+				assert.Positive(t, deployOpts.Timeout, "Zarf timeout must be positive")
+				assert.LessOrEqual(t, deployOpts.Timeout, lifecycleBudget,
+					"Zarf timeout must not exceed the lifecycle budget")
+				assert.InDelta(t, lifecycleBudget.Seconds(), deployOpts.Timeout.Seconds(), 1,
+					"Zarf timeout must be close to the full remaining lifecycle budget")
+			}
+		}
+	})
+
+	t.Run("exhausted budget before upsert returns error", func(t *testing.T) {
+		mockPackager := &MockPackager{}
+		mockPackageComponentFilter := &MockPackageComponentFilter{}
+		mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil)
+		mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+		packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+
+		_, err := packageResource.upsert(ctx, NewTestPackageResourceModel())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "insufficient time remaining")
+		mockPackager.AssertNotCalled(t, "Deploy")
+	})
+}
+
+func TestRemoveComponents_ZarfReceivesRemainingBudget(t *testing.T) {
+	t.Run("operationTimeout is remaining budget not fixed value", func(t *testing.T) {
+		mockPackager := &MockPackager{}
+		mockPackageComponentFilter := &MockPackageComponentFilter{}
+		mockCluster := &MockCluster{}
+		zarfC := zarfCluster.Cluster{}
+		mockCluster.On("NewWithWait", mock.Anything).Return(&zarfC, nil)
+		mockPackager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(v1alpha1.ZarfPackage{}, nil)
+		mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockPackageComponentFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
+
+		packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
+
+		lifecycleBudget := 5 * time.Minute
+		ctx, cancel := context.WithTimeout(context.Background(), lifecycleBudget)
+		defer cancel()
+
+		err := packageResource.removeComponents(ctx, NewTestPackageResourceModel(), []string{"component-a"})
+		require.NoError(t, err)
+
+		for _, call := range mockPackager.Calls {
+			if call.Method == "Remove" {
+				removeOpts := call.Arguments[2].(zarfPackager.RemoveOptions)
+				assert.Positive(t, removeOpts.Timeout, "Zarf timeout must be positive")
+				assert.LessOrEqual(t, removeOpts.Timeout, lifecycleBudget,
+					"Zarf timeout must not exceed the lifecycle budget")
+				assert.InDelta(t, lifecycleBudget.Seconds(), removeOpts.Timeout.Seconds(), 1,
+					"Zarf timeout must be close to the full remaining lifecycle budget")
+			}
+		}
+	})
+
+	t.Run("deploy budget recalculates after removal", func(t *testing.T) {
+		packageLayout := newValidLoadPackageResult().Layout
+		mockPackager := &MockPackager{}
+		mockPackageComponentFilter := &MockPackageComponentFilter{}
+		mockCluster := &MockCluster{}
+		zarfC := zarfCluster.Cluster{}
+		mockCluster.On("NewWithWait", mock.Anything).Return(&zarfC, nil)
+		mockPackager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(v1alpha1.ZarfPackage{}, nil)
+		// Sleep during Remove to consume real budget, proving Deploy recalculates from the shared deadline.
+		mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).
+			Run(func(_ mock.Arguments) { time.Sleep(50 * time.Millisecond) }).
+			Return(nil)
+		mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil)
+		mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+		mockPackageComponentFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
+		mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+		packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
+
+		// oldPlan has a component the newPlan lacks, triggering removeComponents before upsert
+		oldPlan := NewTestPackageResourceModel(WithComponents([]ComponentModel{
+			NewTestComponentModel("component-a"),
+		}))
+		newPlan := NewTestPackageResourceModel()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		_, err := packageResource.deployAsNewOrUpdate(ctx, newPlan, oldPlan)
+		require.NoError(t, err)
+
+		var removeTimeout, deployTimeout time.Duration
+		for _, call := range mockPackager.Calls {
+			if call.Method == "Remove" {
+				removeTimeout = call.Arguments[2].(zarfPackager.RemoveOptions).Timeout
+			}
+			if call.Method == "Deploy" {
+				deployTimeout = call.Arguments[2].(zarfPackager.DeployOptions).Timeout
+			}
+		}
+		assert.Greater(t, removeTimeout, 0*time.Second, "remove must receive positive budget")
+		assert.Greater(t, deployTimeout, 0*time.Second, "deploy must receive positive budget")
+		// both < lifecycle budget, confirming deadline-derived (not fixed) calculation
+		assert.Less(t, removeTimeout, 5*time.Minute)
+		assert.Less(t, deployTimeout, 5*time.Minute)
+		// deploy runs after remove so its budget is strictly less (50 ms consumed by Remove mock)
+		assert.Less(t, deployTimeout, removeTimeout,
+			"deploy budget must be strictly less than remove budget, proving per-call recalculation from shared deadline")
+	})
+}
+
+func TestTimeoutPositiveValidator(t *testing.T) {
+	ctx := context.Background()
+	r := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+
+	var schemaResp resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &schemaResp)
+
+	schemaTFType := schemaResp.Schema.Type().TerraformType(ctx).(tftypes.Object)
+	timeoutsType := schemaTFType.AttributeTypes["timeouts"].(tftypes.Object)
+
+	buildConfig := func(field, value string) tfsdk.Config {
+		// all schema attributes null except timeouts, which has one field set
+		vals := make(map[string]tftypes.Value, len(schemaTFType.AttributeTypes))
+		for name, typ := range schemaTFType.AttributeTypes {
+			vals[name] = tftypes.NewValue(typ, nil)
+		}
+		tVals := make(map[string]tftypes.Value, len(timeoutsType.AttributeTypes))
+		for name := range timeoutsType.AttributeTypes {
+			if name == field {
+				tVals[name] = tftypes.NewValue(tftypes.String, value)
+			} else {
+				tVals[name] = tftypes.NewValue(tftypes.String, nil)
+			}
+		}
+		vals["timeouts"] = tftypes.NewValue(timeoutsType, tVals)
+		return tfsdk.Config{Raw: tftypes.NewValue(schemaTFType, vals), Schema: schemaResp.Schema}
+	}
+
+	v := timeoutPositiveValidator{}
+
+	for _, field := range []string{"create", "read", "update", "delete"} {
+		t.Run("rejects non-positive "+field, func(t *testing.T) {
+			var resp resource.ValidateConfigResponse
+			v.ValidateResource(ctx, resource.ValidateConfigRequest{Config: buildConfig(field, "-1m")}, &resp)
+			assert.True(t, resp.Diagnostics.HasError(), "field %q with -1m must fail validation", field)
+		})
+		t.Run("accepts positive "+field, func(t *testing.T) {
+			var resp resource.ValidateConfigResponse
+			v.ValidateResource(ctx, resource.ValidateConfigRequest{Config: buildConfig(field, "30m")}, &resp)
+			assert.False(t, resp.Diagnostics.HasError(), "field %q with 30m must pass validation", field)
+		})
+	}
+
+	// confirm ConfigValidators returns the positive-duration validator
+	assert.NotEmpty(t, r.ConfigValidators(ctx))
+}
+
+// TestDelete_ClusterContextCappedAt5Minutes verifies that the cluster connection
+// sub-context is capped at 5 m even when the configured delete timeout is much longer.
+func TestDelete_ClusterContextCappedAt5Minutes(t *testing.T) {
+	mockCluster := &MockCluster{}
+	mockPackager := &MockPackager{}
+	mockFilter := &MockPackageComponentFilter{}
+
+	var capturedClusterCtx context.Context
+	mockCluster.On("NewWithWait", mock.Anything).
+		Run(func(args mock.Arguments) { capturedClusterCtx = args.Get(0).(context.Context) }).
+		Return((*zarfCluster.Cluster)(nil), errors.New("cluster unavailable"))
+
+	r := NewPackageResource(nil, mockPackager, mockFilter, mockCluster).(*PackageResource)
+	model := NewTestPackageResourceModel(WithTimeout("60m"), WithDeployedState())
+	state := buildTestState(t, r, model)
+
+	var resp resource.DeleteResponse
+	r.Delete(context.Background(), resource.DeleteRequest{State: state}, &resp)
+
+	require.True(t, resp.Diagnostics.HasError())
+	require.NotNil(t, capturedClusterCtx, "cluster.NewWithWait must have been called")
+
+	deadline, ok := capturedClusterCtx.Deadline()
+	require.True(t, ok, "cluster context must have a deadline")
+	remaining := time.Until(deadline)
+	assert.LessOrEqual(t, remaining.Seconds(), (5*time.Minute + 5*time.Second).Seconds(),
+		"cluster context must be capped at 5m regardless of configured delete timeout")
+}
+
+// TestDelete_ZarfHandoffUsesRemainingBudget verifies that RemoveOptions.Timeout is
+// derived from the remaining lifecycle budget via zarfOperationTimeout, not a fixed value.
+func TestDelete_ZarfHandoffUsesRemainingBudget(t *testing.T) {
+	mockCluster := &MockCluster{}
+	mockPackager := &MockPackager{}
+	mockFilter := &MockPackageComponentFilter{}
+
+	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, nil)
+	mockFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
+	mockPackager.On("GetPackageFromSourceOrCluster",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(v1alpha1.ZarfPackage{}, nil)
+	mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+	r := NewPackageResource(nil, mockPackager, mockFilter, mockCluster).(*PackageResource)
+	model := NewTestPackageResourceModel(WithTimeout("10m"), WithDeployedState())
+	state := buildTestState(t, r, model)
+
+	var resp resource.DeleteResponse
+	r.Delete(context.Background(), resource.DeleteRequest{State: state}, &resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "expected no error: %v", resp.Diagnostics)
+
+	for _, call := range mockPackager.Calls {
+		if call.Method == "Remove" {
+			removeOpts := call.Arguments[2].(zarfPackager.RemoveOptions)
+			lifecycleBudget := 10 * time.Minute
+			assert.Positive(t, removeOpts.Timeout, "Zarf timeout must be positive")
+			assert.LessOrEqual(t, removeOpts.Timeout, lifecycleBudget,
+				"Zarf timeout must not exceed the lifecycle budget")
+			assert.InDelta(t, lifecycleBudget.Seconds(), removeOpts.Timeout.Seconds(), 1,
+				"Zarf timeout must be close to the full remaining lifecycle budget")
+		}
+	}
+}
+
+func TestDelete_ExhaustedBudgetSkipsPackageRemoval(t *testing.T) {
+	mockCluster := &MockCluster{}
+	mockPackager := &MockPackager{}
+	mockFilter := &MockPackageComponentFilter{}
+
+	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, nil)
+	mockFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
+	mockPackager.On("GetPackageFromSourceOrCluster",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) { <-args.Get(0).(context.Context).Done() }).
+		Return(v1alpha1.ZarfPackage{}, nil)
+
+	r := NewPackageResource(nil, mockPackager, mockFilter, mockCluster).(*PackageResource)
+	model := NewTestPackageResourceModel(WithTimeout("10ms"), WithDeployedState())
+	state := buildTestState(t, r, model)
+
+	var resp resource.DeleteResponse
+	r.Delete(context.Background(), resource.DeleteRequest{State: state}, &resp)
+
+	require.True(t, resp.Diagnostics.HasError())
+	assert.Equal(t, "Package removal could not start", resp.Diagnostics[0].Summary())
+	mockPackager.AssertNotCalled(t, "Remove")
+}
+
+// TestRead_DirectDeadlinePropagatedToCluster verifies that Read passes its full readTimeout
+// context to getDeployedPackage without a child cap (unlike Delete's 5m cluster sub-context).
+func TestRead_DirectDeadlinePropagatedToCluster(t *testing.T) {
+	mockCluster := &MockCluster{}
+	mockPackager := &MockPackager{}
+	mockFilter := &MockPackageComponentFilter{}
+
+	var capturedClusterCtx context.Context
+	mockCluster.On("NewWithWait", mock.Anything).
+		Run(func(args mock.Arguments) { capturedClusterCtx = args.Get(0).(context.Context) }).
+		Return((*zarfCluster.Cluster)(nil), errors.New("cluster unavailable"))
+
+	r := NewPackageResource(nil, mockPackager, mockFilter, mockCluster).(*PackageResource)
+	// ID = "test-pkg" (set by WithDeployedState) is valid for parsePackageID.
+	model := NewTestPackageResourceModel(WithTimeout("10m"), WithDeployedState())
+	state := buildTestState(t, r, model)
+
+	var resp resource.ReadResponse
+	r.Read(context.Background(), resource.ReadRequest{State: state}, &resp)
+
+	require.True(t, resp.Diagnostics.HasError())
+	require.NotNil(t, capturedClusterCtx, "cluster.NewWithWait must have been called")
+
+	deadline, ok := capturedClusterCtx.Deadline()
+	require.True(t, ok, "cluster context must have a deadline")
+	remaining := time.Until(deadline)
+	// Read passes the full readTimeout directly — no 5m child cap.
+	assert.Greater(t, remaining.Seconds(), (9 * time.Minute).Seconds(),
+		"Read cluster context must carry the full readTimeout, not a 5m sub-cap")
+	assert.LessOrEqual(t, remaining.Seconds(), (10*time.Minute + 5*time.Second).Seconds())
 }

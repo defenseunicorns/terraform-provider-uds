@@ -190,7 +190,7 @@ resource "uds_package" "dos_games" {
 - `sensitive_values` (Dynamic, Sensitive) [Alpha] Sensitive Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package, are redacted from Terraform output, and cannot be used with component blocks.
 - `sensitive_vars` (Attributes Set) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))
 - `signature_verification` (Attributes) Signature verification configuration. Omit to use defaults (verification enabled, no key). (see [below for nested schema](#nestedatt--signature_verification))
-- `timeout` (String) Timeout for the deploy operation.
+- `timeouts` (Attributes) (see [below for nested schema](#nestedatt--timeouts))
 - `values` (Dynamic) [Alpha] Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package. Cannot be used with component blocks.
 - `vars` (Attributes Set) UDS package variables to set. (see [below for nested schema](#nestedatt--vars))
 
@@ -278,6 +278,17 @@ Optional:
 - `trusted_root` (String) Sigstore TrustedRoot JSON content for keyless signature verification. Omit to use Zarf's embedded TrustedRoot.
 - `use_signed_timestamps` (Boolean) Verify RFC3161 signed timestamps in the Sigstore verification bundle. Auto-enabled when the bundle contains TSA timestamp data.
 
+
+
+<a id="nestedatt--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String) Total create-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and Helm/Zarf execution.
+- `delete` (String) Total delete-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and removal.
+- `read` (String) Total read-operation wall-clock timeout (default 5 m). Covers cluster connection and state retrieval.
+- `update` (String) Total update-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and redeployment.
 
 
 <a id="nestedatt--vars"></a>

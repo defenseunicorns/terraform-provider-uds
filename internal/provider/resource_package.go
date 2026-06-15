@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -26,11 +27,12 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"gopkg.in/yaml.v2"
 
@@ -52,15 +54,13 @@ import (
 
 // Ensure provider defined types fully satisfy framework interfaces.
 var (
-	_ resource.Resource                = &PackageResource{}
-	_ resource.ResourceWithImportState = &PackageResource{}
-	_ resource.ResourceWithModifyPlan  = &PackageResource{}
+	_ resource.Resource                     = &PackageResource{}
+	_ resource.ResourceWithImportState      = &PackageResource{}
+	_ resource.ResourceWithModifyPlan       = &PackageResource{}
+	_ resource.ResourceWithConfigValidators = &PackageResource{}
 )
 
-const (
-	clusterTimeoutMinutes = 5
-	defaultPackageTimeout = "15m"
-)
+const clusterTimeoutMinutes = 5
 
 type packageSignatureVerifier func(context.Context, *zarfLayout.PackageLayout, zarfSigning.VerifyBlobOptions) error
 
@@ -93,12 +93,12 @@ func defaultPackageSignatureVerifier(ctx context.Context, pkgLayout *zarfLayout.
 
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
-	ID                    types.String `tfsdk:"id"`
-	Source                types.String `tfsdk:"source"`
-	Architecture          types.String `tfsdk:"architecture"`
-	Timeout               types.String `tfsdk:"timeout"`
-	SignatureVerification types.Object `tfsdk:"signature_verification"`
-	Namespace             types.String `tfsdk:"namespace"`
+	ID                    types.String   `tfsdk:"id"`
+	Source                types.String   `tfsdk:"source"`
+	Architecture          types.String   `tfsdk:"architecture"`
+	Timeouts              timeouts.Value `tfsdk:"timeouts"`
+	SignatureVerification types.Object   `tfsdk:"signature_verification"`
+	Namespace             types.String   `tfsdk:"namespace"`
 
 	Components         types.Set `tfsdk:"component"`           // Set of ComponentModel objects (TODO: remove when component block is removed)
 	OptionalComponents types.Set `tfsdk:"optional_components"` // Set of string component names (alpha)
@@ -204,7 +204,7 @@ func (r *PackageResource) Metadata(_ context.Context, req resource.MetadataReque
 }
 
 // Schema defines the schema for the resource.
-func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Deploys a UDS Package.",
 
@@ -292,15 +292,16 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					},
 				},
 			},
-			"timeout": schema.StringAttribute{
-				MarkdownDescription: "Timeout for the deploy operation.",
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString(defaultPackageTimeout),
-				Validators: []validator.String{
-					udsValidator.DurationGreaterThanValidator(0),
-				},
-			},
+			"timeouts": timeouts.Attributes(ctx, timeouts.Opts{
+				Create:            true,
+				Read:              true,
+				Update:            true,
+				Delete:            true,
+				CreateDescription: "Total create-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and Helm/Zarf execution.",
+				ReadDescription:   "Total read-operation wall-clock timeout (default 5 m). Covers cluster connection and state retrieval.",
+				UpdateDescription: "Total update-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and redeployment.",
+				DeleteDescription: "Total delete-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and removal.",
+			}),
 			"kind": schema.StringAttribute{
 				MarkdownDescription: "Kind of UDS package; ZarfInitConfig or ZarfPackageConfig.",
 				Computed:            true,
@@ -555,20 +556,32 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	createTimeout, timeoutDiags := plan.Timeouts.Create(ctx, 30*time.Minute)
+	resp.Diagnostics.Append(timeoutDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, createTimeout)
+	defer cancel()
+
 	var err error
-	plan, err = r.deployAsNew(ctx, plan)
+	plan, err = r.deployAsNew(timeoutCtx, plan)
 	if err != nil {
 		var optErr *optionalComponentsValidationError
 		if errors.As(err, &optErr) {
 			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", optErr.Error())
 		} else {
-			resp.Diagnostics.AddError("Error creating package", "Could not create resource, unexpected error: "+err.Error())
+			resp.Diagnostics.AddError(
+				"Error creating package",
+				lifecycleErrorDetail(timeoutCtx, "create", err),
+			)
 		}
 		return
 	}
 
 	// Set state to fully populated data
-	diags = resp.State.Set(ctx, plan)
+	diags = resp.State.Set(timeoutCtx, plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -588,7 +601,13 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	timeoutCtx, cancel := withClusterTimeout(ctx)
+	readTimeout, diags := data.Timeouts.Read(ctx, 5*time.Minute)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 
 	packageNamespace, packageName, err := parsePackageID(data.ID.ValueString())
@@ -604,7 +623,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error getting deployed package",
-			"Failed to get deployed package: "+err.Error(),
+			lifecycleErrorDetail(timeoutCtx, "read", err),
 		)
 		return
 	}
@@ -613,7 +632,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 			"Deployed package not found",
 			"Could not find deployed package with namespace "+packageNamespace+" and name "+packageName+" - removing resource",
 		)
-		resp.State.RemoveResource(ctx)
+		resp.State.RemoveResource(timeoutCtx)
 		return
 	}
 
@@ -625,10 +644,6 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	if deployedPackage.NamespaceOverride != "" {
 		data.Namespace = types.StringValue(deployedPackage.NamespaceOverride)
 	}
-	if data.Timeout.IsNull() {
-		data.Timeout = types.StringValue(defaultPackageTimeout)
-	}
-
 	// populate the package metadata type.
 	// TODO(clint): this is ugly and I got it from https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/custom
 	// There are probably a few optimizations or cleanups to be done here.
@@ -674,7 +689,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	}
 	data.OptionalComponents = updatedOptionals
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	resp.Diagnostics.Append(resp.State.Set(timeoutCtx, &data)...)
 }
 
 // Update updates the resource and sets the updated Terraform state on success.
@@ -697,14 +712,36 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	var err error
-	plan, err = r.deployAsNewOrUpdate(ctx, plan, oldPlan, resp)
+	stateOnlyUpdate, err := isStateOnlyUpdate(req.Plan, req.State)
+	if err != nil {
+		resp.Diagnostics.AddError("Error comparing update changes", err.Error())
+		return
+	}
+	if stateOnlyUpdate {
+		oldPlan.Timeouts = plan.Timeouts
+		resp.Diagnostics.Append(resp.State.Set(ctx, oldPlan)...)
+		return
+	}
+
+	updateTimeout, timeoutDiags := plan.Timeouts.Update(ctx, 30*time.Minute)
+	resp.Diagnostics.Append(timeoutDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, updateTimeout)
+	defer cancel()
+
+	plan, err = r.deployAsNewOrUpdate(timeoutCtx, plan, oldPlan)
 	if err != nil {
 		var optErr *optionalComponentsValidationError
 		if errors.As(err, &optErr) {
 			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", optErr.Error())
 		} else {
-			resp.Diagnostics.AddError("Error updating package", "Could not update package, unexpected error: "+err.Error())
+			resp.Diagnostics.AddError(
+				"Error updating package",
+				lifecycleErrorDetail(timeoutCtx, "update", err),
+			)
 		}
 		return
 	}
@@ -713,7 +750,7 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	}
 
 	// Set state to fully populated data
-	diags = resp.State.Set(ctx, plan)
+	diags = resp.State.Set(timeoutCtx, plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -726,24 +763,26 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-
-	// convert the terraform timeout to a time.Duration
-	deleteTimeout, err := time.ParseDuration(data.Timeout.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error determine timeout",
-			"Could not determine timeout: "+err.Error(),
-		)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	deleteTimeout, timeoutDiags := data.Timeouts.Delete(ctx, 30*time.Minute)
+	resp.Diagnostics.Append(timeoutDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, deleteTimeout)
 	defer cancel()
-	c, err := r.cluster.NewWithWait(timeoutCtx)
+
+	clusterCtx, clusterCancel := withClusterTimeout(timeoutCtx)
+	defer clusterCancel()
+	c, err := r.cluster.NewWithWait(clusterCtx)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Could not connect to cluster",
-			"Error connecting to cluster: "+err.Error(),
+			lifecycleErrorDetail(timeoutCtx, "delete", err),
 		)
 		return
 	}
@@ -758,7 +797,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 	defer os.RemoveAll(tmpDir)
 
-	verifyBlobOpts, err := buildVerifyBlobOptions(ctx, data, tmpDir)
+	verifyBlobOpts, err := buildVerifyBlobOptions(timeoutCtx, data, tmpDir)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Verification config error",
@@ -783,29 +822,33 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 
 	packageSource := data.Name.ValueString()
-	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, c, packageSource, data.Namespace.ValueString(), loadOpts)
+	pkg, err := r.packager.GetPackageFromSourceOrCluster(timeoutCtx, c, packageSource, data.Namespace.ValueString(), loadOpts)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error loading package",
-			"Could not load package: "+err.Error(),
+			lifecycleErrorDetail(timeoutCtx, "delete", err),
 		)
 		return
 	}
 
+	zarfTimeout, err := zarfOperationTimeout(timeoutCtx)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Package removal could not start",
+			lifecycleErrorDetail(timeoutCtx, "delete", err),
+		)
+		return
+	}
 	removeOpt := zarfPackager.RemoveOptions{
 		NamespaceOverride: data.Namespace.ValueString(),
 		Cluster:           c,
-		Timeout:           deleteTimeout,
+		Timeout:           zarfTimeout,
 	}
-	if err := r.packager.Remove(ctx, pkg, removeOpt); err != nil {
+	if err := r.packager.Remove(timeoutCtx, pkg, removeOpt); err != nil {
 		resp.Diagnostics.AddError(
 			"Error removing package",
-			"Could not remove package: "+err.Error(),
+			lifecycleErrorDetail(timeoutCtx, "delete", err),
 		)
-		return
-	}
-
-	if resp.Diagnostics.HasError() {
 		return
 	}
 }
@@ -839,12 +882,28 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		plan.Architecture = types.StringValue(defaultArch)
 	}
 
-	valuePaths := collectAndValidatePackageValuePaths(plan, resp)
+	plan = normalizeOptionalComponentsPlan(config, plan)
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	plan = normalizeOptionalComponentsPlan(config, plan)
+	if !req.State.Raw.IsNull() {
+		stateOnlyUpdate, err := isStateOnlyUpdate(resp.Plan, req.State)
+		if err != nil {
+			resp.Diagnostics.AddError("Error comparing planned changes", err.Error())
+			return
+		}
+		if stateOnlyUpdate {
+			resp.Diagnostics.Append(preserveComputedState(ctx, req.State, &resp.Plan)...)
+			return
+		}
+	}
+
+	valuePaths := collectAndValidatePackageValuePaths(plan, resp)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	if r.providerConfig == nil || r.providerConfig.ValidatePackagesOnPlan {
 		checks := r.runPackagePlanChecks(ctx, plan, valuePaths)
@@ -899,6 +958,11 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 // ImportState imports the resource state from an external system.
 func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// ConfigValidators returns resource-level validators run before CRUD operations.
+func (r *PackageResource) ConfigValidators(_ context.Context) []resource.ConfigValidator {
+	return []resource.ConfigValidator{timeoutPositiveValidator{}}
 }
 
 func (r *PackageResource) getRemoteOptions() zarfTypes.RemoteOptions {
@@ -996,33 +1060,25 @@ func getEffectiveSignatureVerification(ctx context.Context, model PackageResourc
 	return sig.Verify.ValueBool()
 }
 
-func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string, resp *resource.UpdateResponse) {
+func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string) error {
 	if len(componentsToRemove) == 0 {
-		return
+		return nil
 	}
 
 	namespaceOverride := plan.Namespace.ValueString()
 
 	// get a reference to the k8s cluster
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	clusterCtx, cancel := withClusterTimeout(ctx)
 	defer cancel()
-	zarfCluster, err := r.cluster.NewWithWait(timeoutCtx)
+	zarfCluster, err := r.cluster.NewWithWait(clusterCtx)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error loading Zarf cluster",
-			"Could not Zarf cluster: "+err.Error(),
-		)
-		return
+		return fmt.Errorf("could not connect to cluster: %w", err)
 	}
 
 	// get a reference to the ZarfPackage
 	packageSource, err := getPackageSource(plan, *r.providerConfig)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error getting package source",
-			"Could not get package source: "+err.Error(),
-		)
-		return
+		return fmt.Errorf("could not get package source: %w", err)
 	}
 	loadOpts := zarfPackager.LoadOptions{
 		Architecture: getArchitecture(plan, *r.providerConfig),
@@ -1031,11 +1087,7 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	}
 	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error loading package",
-			"Could not load package: "+err.Error(),
-		)
-		return
+		return fmt.Errorf("could not load package: %w", err)
 	}
 
 	// Check if any of the components provided are 'required' and remove them from the list of components we are removing
@@ -1054,6 +1106,10 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 
 	// Fetch a new zarfPackage from the cluster, with a new filter of components
 	if foundRequired {
+		if len(newComponentsToRemove) == 0 {
+			// All requested components were required; nothing safe to remove.
+			return nil
+		}
 		loadOpts := zarfPackager.LoadOptions{
 			Architecture: getArchitecture(plan, *r.providerConfig),
 			Filter:       r.packageFilter.ForRemove(newComponentsToRemove),
@@ -1062,36 +1118,23 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 
 		pkg, err = r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
 		if err != nil {
-			resp.Diagnostics.AddError(
-				"Error loading package",
-				"Could not load package: "+err.Error(),
-			)
-			return
+			return fmt.Errorf("could not load package: %w", err)
 		}
 	}
 
-	// Remove the component from the cluster
-	deleteTimeout, err := time.ParseDuration(plan.Timeout.ValueString())
+	zarfTimeout, err := zarfOperationTimeout(ctx)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error parsing timeout duration",
-			"Could not parse timeout duration: "+err.Error(),
-		)
-		return
-
+		return fmt.Errorf("insufficient time remaining before component removal: %w", err)
 	}
 	removeOpt := zarfPackager.RemoveOptions{
 		Cluster:           zarfCluster,
-		Timeout:           deleteTimeout,
+		Timeout:           zarfTimeout,
 		NamespaceOverride: namespaceOverride,
 	}
 	if err := r.packager.Remove(ctx, pkg, removeOpt); err != nil {
-		resp.Diagnostics.AddError(
-			"Error removing components from package",
-			"Could not remove components from package: "+err.Error(),
-		)
-		return
+		return fmt.Errorf("could not remove components from package: %w", err)
 	}
+	return nil
 }
 
 func (r *PackageResource) getDeployedPackage(ctx context.Context, name string, namespace string) (zarfState.DeployedPackage, bool, error) {
@@ -1146,6 +1189,9 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 
 	_, found, err := r.getDeployedPackage(clusterTimeoutCtx, packageName, packageNamespace)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return plan, err
+		}
 		tflog.Warn(ctx, "could not check for existing package, proceeding with deploy", map[string]interface{}{"error": err.Error()})
 	}
 	if found {
@@ -1155,10 +1201,9 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	return r.upsert(ctx, plan)
 }
 
-// TODO(erickson): Remove response parameter and return an error after refactoring removeComponents to do the same
-func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel, resp *resource.UpdateResponse) (PackageResourceModel, error) {
+func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel) (PackageResourceModel, error) {
 	// TODO(erickson): Need to revisit this logic. If deploy errors, can we recover?
-	// Generate list of components to remove after the update is complete.
+	// Generate list of components to remove before the update.
 	// Combines legacy component-block removals with optional_components removals.
 	// Removal happens before upsert because removing a required component removes the entire package.
 	componentsToRemove := getMissingComponents(plan, oldPlan) // TODO: remove when component block is removed
@@ -1172,9 +1217,8 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 		}
 	}
 	if len(componentsToRemove) > 0 {
-		r.removeComponents(ctx, plan, componentsToRemove, resp)
-		if resp.Diagnostics.HasError() {
-			return plan, nil
+		if err := r.removeComponents(ctx, plan, componentsToRemove); err != nil {
+			return plan, err
 		}
 	}
 
@@ -1185,13 +1229,6 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if plan.OptionalComponents.IsUnknown() {
 		return plan, fmt.Errorf("optional_components must be known before apply")
 	}
-
-	// convert the terraform timeout to a time.Duration
-	timeout, err := time.ParseDuration(plan.Timeout.ValueString())
-	if err != nil {
-		return plan, err
-	}
-
 	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
 	if err != nil {
 		return plan, err
@@ -1246,7 +1283,6 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		ValuesOverridesMap:     valuesOverridesMap,
 		RemoteOptions:          r.getRemoteOptions(),
 		NamespaceOverride:      plan.Namespace.ValueString(),
-		Timeout:                timeout,
 		GitServer: zarfState.GitServerInfo{
 			PushUsername: zarfState.ZarfGitPushUser,
 		},
@@ -1263,6 +1299,12 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if err != nil {
 		return plan, err
 	}
+
+	zarfTimeout, err := zarfOperationTimeout(ctx)
+	if err != nil {
+		return plan, fmt.Errorf("insufficient time remaining before deployment: %w", err)
+	}
+	deployOpts.Timeout = zarfTimeout
 
 	tflog.Debug(ctx, "starting deploy")
 	deployResult, err := r.packager.Deploy(ctx, pkgLayout, deployOpts)
@@ -2060,12 +2102,121 @@ func getMissingOptionalComponents(plan, oldPlan PackageResourceModel) []string {
 	return toRemove
 }
 
+// isStateOnlyUpdate reports whether every configurable change is explicitly
+// allowlisted as state-only. New configurable attributes default to requiring
+// a package update, while computed-only differences are ignored.
+func isStateOnlyUpdate(plan tfsdk.Plan, state tfsdk.State) (bool, error) {
+	diffs, err := plan.Raw.Diff(state.Raw)
+	if err != nil {
+		return false, fmt.Errorf("could not compare planned and prior state: %w", err)
+	}
+
+	stateOnlyAttributes := map[string]struct{}{
+		"timeouts": {},
+	}
+	attributes := plan.Schema.GetAttributes()
+	foundStateOnlyChange := false
+
+	for _, diff := range diffs {
+		steps := diff.Path.Steps()
+		if len(steps) == 0 {
+			continue
+		}
+		name, ok := steps[0].(tftypes.AttributeName)
+		if !ok {
+			return false, fmt.Errorf("unexpected update path: %s", diff.Path)
+		}
+		attributeName := string(name)
+		if _, ok := stateOnlyAttributes[attributeName]; ok {
+			foundStateOnlyChange = true
+			continue
+		}
+		attribute, ok := attributes[attributeName]
+		if ok && attribute.IsComputed() && !attribute.IsOptional() && !attribute.IsRequired() {
+			continue
+		}
+		return false, nil
+	}
+
+	return foundStateOnlyChange, nil
+}
+
+// preserveComputedState keeps computed-only values known when an update cannot
+// change the deployed package.
+func preserveComputedState(ctx context.Context, state tfsdk.State, plan *tfsdk.Plan) diag.Diagnostics {
+	var diags diag.Diagnostics
+	for name, attribute := range plan.Schema.GetAttributes() {
+		if !attribute.IsComputed() || attribute.IsOptional() || attribute.IsRequired() {
+			continue
+		}
+
+		terraformPath := tftypes.NewAttributePath().WithAttributeName(name)
+		stateValue, _, err := tftypes.WalkAttributePath(state.Raw, terraformPath)
+		if err != nil {
+			diags.AddError("Error reading prior state", fmt.Sprintf("Could not read %q: %s", name, err))
+			continue
+		}
+		value, ok := stateValue.(tftypes.Value)
+		if !ok {
+			diags.AddError("Error reading prior state", fmt.Sprintf("Unexpected value type for %q: %T", name, stateValue))
+			continue
+		}
+		frameworkValue, err := attribute.GetType().ValueFromTerraform(ctx, value)
+		if err != nil {
+			diags.AddError("Error reading prior state", fmt.Sprintf("Could not convert %q: %s", name, err))
+			continue
+		}
+		diags.Append(plan.SetAttribute(ctx, path.Root(name), frameworkValue)...)
+	}
+	return diags
+}
+
 // withClusterTimeout returns a context with a timeout
 func withClusterTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, clusterTimeoutMinutes*time.Minute)
 }
 
-// TODO: remove when component block is removed
+// zarfOperationTimeout derives the full time budget for a Zarf Deploy or Remove
+// call from the remaining context deadline.
+// Returns an error when the context is already done or has no usable budget.
+func zarfOperationTimeout(ctx context.Context) (time.Duration, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("context already done: %w", err)
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0, fmt.Errorf("context has no deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return 0, fmt.Errorf("operation deadline exceeded before Zarf call")
+	}
+
+	// If Zarf ever needs a shorter deadline than the parent lifecycle context,
+	// subtract that reserve here and reject a non-positive result before returning.
+
+	return remaining, nil
+}
+
+// lifecycleErrorDetail returns a detail string for CRUD operation errors,
+// distinguishing timeout from cancellation from unexpected failures.
+func lifecycleErrorDetail(ctx context.Context, op string, err error) string {
+	switch ctx.Err() {
+	case context.DeadlineExceeded:
+		return fmt.Sprintf("package %s timed out: %s", op, err)
+	case context.Canceled:
+		return fmt.Sprintf("package %s was canceled: %s", op, err)
+	default:
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Sprintf("package %s timed out (sub-operation deadline exceeded): %s", op, err)
+		}
+		if errors.Is(err, context.Canceled) {
+			return fmt.Sprintf("package %s was canceled (sub-operation): %s", op, err)
+		}
+		return fmt.Sprintf("could not %s package: %s", op, err)
+	}
+}
+
 // Inserts a nested value based on the dot-separated path
 func insertNestedValue(root map[string]any, path string, value any) {
 	parts := strings.Split(path, ".")
@@ -2541,9 +2692,41 @@ func emptyConnectStringSet() types.Set {
 	)
 }
 
-// loadPackageLayoutForInspection loads the package for metadata inspection only,
-// without signature verification. Use when package metadata is needed for plan
-// checks such as optional_components or values sourcePath validation.
+type timeoutPositiveValidator struct{}
+
+func (v timeoutPositiveValidator) Description(_ context.Context) string {
+	return "timeout values must be positive durations"
+}
+
+func (v timeoutPositiveValidator) MarkdownDescription(_ context.Context) string {
+	return "timeout values must be positive durations"
+}
+
+func (v timeoutPositiveValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var timeoutsObj timeouts.Value
+	diags := req.Config.GetAttribute(ctx, path.Root("timeouts"), &timeoutsObj)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() || timeoutsObj.IsNull() || timeoutsObj.IsUnknown() {
+		return
+	}
+
+	dv := udsValidator.DurationGreaterThanValidator(0)
+	for _, name := range []string{"create", "read", "update", "delete"} {
+		p := path.Root("timeouts").AtName(name)
+		var val types.String
+		attrDiags := req.Config.GetAttribute(ctx, p, &val)
+		resp.Diagnostics.Append(attrDiags...)
+		if attrDiags.HasError() || val.IsNull() || val.IsUnknown() {
+			continue
+		}
+		var vResp validator.StringResponse
+		dv.ValidateString(ctx, validator.StringRequest{Path: p, ConfigValue: val}, &vResp)
+		resp.Diagnostics.Append(vResp.Diagnostics...)
+	}
+}
+
+// loadPackageLayoutForInspection loads the package for metadata inspection only, without signature verification.
+// Use when only component metadata is needed (e.g., optional_components validation).
 func (r *PackageResource) loadPackageLayoutForInspection(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
 	packageSource, err := getPackageSource(model, *r.providerConfig)
 	if err != nil {
