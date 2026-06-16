@@ -1524,7 +1524,7 @@ func terraformValueToGoValue(value attr.Value) (any, error) {
 	case types.Bool:
 		return v.ValueBool(), nil
 	case types.Number:
-		return numberToGoValue(v.ValueBigFloat()), nil
+		return numberToGoValue(v.ValueBigFloat())
 	case types.Map:
 		return terraformMapToGoMap(v.Elements())
 	case types.Object:
@@ -1566,17 +1566,20 @@ func terraformCollectionToGoSlice(elements []attr.Value) ([]any, error) {
 	return result, nil
 }
 
-func numberToGoValue(value *big.Float) any {
+func numberToGoValue(value *big.Float) (any, error) {
 	if value == nil {
-		return nil
+		return nil, nil
 	}
 
-	if intValue, accuracy := value.Int64(); accuracy == big.Exact {
-		return intValue
+	if intValue, accuracy := value.Int(nil); accuracy == big.Exact {
+		if intValue.IsInt64() {
+			return intValue.Int64(), nil
+		}
+		return nil, fmt.Errorf("Terraform number %s cannot be represented as an int64 Zarf/Helm value without precision loss; quote large numeric identifiers as strings", intValue.String())
 	}
 
 	floatValue, _ := value.Float64()
-	return floatValue
+	return floatValue, nil
 }
 
 func validateNoValueConflicts(values zarfValue.Values, sensitiveValues zarfValue.Values) error {

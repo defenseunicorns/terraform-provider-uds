@@ -4999,6 +4999,9 @@ func TestPackageResource_ValidateConfig_ValuesComponentMutualExclusivity(t *test
 }
 
 func TestDynamicToValues(t *testing.T) {
+	oversizedInt, ok := new(big.Int).SetString("9223372036854775809", 10)
+	require.True(t, ok)
+
 	objectValue := types.ObjectValueMust(
 		map[string]attr.Type{
 			"string": types.StringType,
@@ -5060,11 +5063,66 @@ func TestDynamicToValues(t *testing.T) {
 			input:     types.DynamicValue(types.StringValue("nope")),
 			errorText: "values must be a map or object",
 		},
+		{
+			name: "oversized integer returns error",
+			input: types.DynamicValue(types.ObjectValueMust(
+				map[string]attr.Type{"id": types.NumberType},
+				map[string]attr.Value{"id": types.NumberValue(new(big.Float).SetInt(oversizedInt))},
+			)),
+			errorText: "failed to convert values: id: Terraform number 9223372036854775809 cannot be represented as an int64 Zarf/Helm value without precision loss; quote large numeric identifiers as strings",
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			actual, err := dynamicToValues("values", tc.input)
+
+			if tc.errorText != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errorText)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expected, actual)
+		})
+	}
+}
+
+func TestNumberToGoValue(t *testing.T) {
+	oversizedInt, ok := new(big.Int).SetString("9223372036854775809", 10)
+	require.True(t, ok)
+
+	tests := []struct {
+		name      string
+		input     *big.Float
+		expected  any
+		errorText string
+	}{
+		{
+			name:     "nil returns nil",
+			expected: nil,
+		},
+		{
+			name:     "integer returns int64",
+			input:    big.NewFloat(3),
+			expected: int64(3),
+		},
+		{
+			name:     "fractional returns float64",
+			input:    big.NewFloat(1.5),
+			expected: 1.5,
+		},
+		{
+			name:      "oversized integer returns error",
+			input:     new(big.Float).SetInt(oversizedInt),
+			errorText: "Terraform number 9223372036854775809 cannot be represented as an int64 Zarf/Helm value without precision loss; quote large numeric identifiers as strings",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			actual, err := numberToGoValue(tc.input)
 
 			if tc.errorText != "" {
 				assert.Error(t, err)
