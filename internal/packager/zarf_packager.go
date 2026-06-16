@@ -66,7 +66,6 @@ func (p *zarfPackager) ensureZarfConfigured() {
 
 	// Set the prefix for `./zarf` actions since we have to vendor zarf. This only needs to be done once per instance.
 	zConfig.ActionsCommandZarfPrefix = "zarf"
-
 	p.zarfConfigured = true
 }
 

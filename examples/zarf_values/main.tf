@@ -10,14 +10,18 @@ terraform {
   }
 }
 
+variable "architecture" {
+  description = "Architecture of the created podinfo zarf package and environment to deploy into (i.e. amd64 or arm64)"
+  type        = string
+  default     = "arm64"
+}
+
 locals {
-  # Match this to the architecture suffix in the package created by `uds zarf package create`.
-  architecture = "arm64"
-  change_me    = "initial-value"
+  change_me = "initial-value"
 }
 
 provider "uds" {
-  default_architecture = local.architecture
+  default_architecture = var.architecture
 }
 
 resource "terraform_data" "dynamic_test_data" {
@@ -34,7 +38,7 @@ resource "terraform_data" "dynamic_ui" {
 
 resource "uds_package" "init" {
   source       = "oci://ghcr.io/zarf-dev/packages/init:v0.78.0"
-  architecture = local.architecture
+  architecture = var.architecture
 
   signature_verification = {
     keyless = {
@@ -47,8 +51,8 @@ resource "uds_package" "init" {
 resource "uds_package" "podinfo" {
   depends_on = [uds_package.init]
 
-  source       = "./zarf-package-podinfo-${local.architecture}-0.1.0.tar.zst"
-  architecture = local.architecture
+  source       = "./zarf-package-podinfo-${var.architecture}-0.1.0.tar.zst"
+  architecture = var.architecture
   namespace    = "podinfo"
 
   values = {
