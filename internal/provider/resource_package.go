@@ -1679,24 +1679,24 @@ func validateConfiguredPackageValueConflicts(model PackageResourceModel, resp *r
 			return
 		}
 		return
-	} else {
-		// With unknowns, validate only the structure that is known at plan time.
-		// Unknown object/map subtrees defer to apply so we don't report conflicts
-		// for children that may resolve to disjoint paths.
-		values, err := dynamicToConflictCheckValues("values", model.Values)
-		if err != nil {
-			resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
-			return
-		}
-		sensitiveValues, err := dynamicToConflictCheckValues("sensitive_values", model.SensitiveValues)
-		if err != nil {
-			resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
-			return
-		}
-		if err := validateNoValueConflicts(values, sensitiveValues); err != nil {
-			resp.Diagnostics.AddError("Conflicting package values", err.Error())
-			return
-		}
+	}
+
+	// With unknowns, validate only the structure that is known at plan time.
+	// Unknown object/map subtrees defer to apply so we don't report conflicts
+	// for children that may resolve to disjoint paths.
+	values, err := dynamicToConflictCheckValues("values", model.Values)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
+		return
+	}
+	sensitiveValues, err := dynamicToConflictCheckValues("sensitive_values", model.SensitiveValues)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
+		return
+	}
+	if err := validateNoValueConflicts(values, sensitiveValues); err != nil {
+		resp.Diagnostics.AddError("Conflicting package values", err.Error())
+		return
 	}
 }
 
