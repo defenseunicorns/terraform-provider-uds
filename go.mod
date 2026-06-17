@@ -1,6 +1,6 @@
 module github.com/defenseunicorns/terraform-provider-uds
 
-go 1.26.2
+go 1.26.4
 
 tool (
 	github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs
@@ -20,7 +20,7 @@ require (
 	github.com/hashicorp/terraform-plugin-log v0.10.0
 	github.com/hashicorp/terraform-plugin-testing v1.16.0
 	github.com/stretchr/testify v1.11.1
-	github.com/zarf-dev/zarf v0.78.0
+	github.com/zarf-dev/zarf v0.79.0
 	gopkg.in/yaml.v2 v2.4.0
 	helm.sh/helm/v4 v4.2.0
 	k8s.io/apimachinery v0.36.0
