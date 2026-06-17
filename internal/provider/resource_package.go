@@ -9,8 +9,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -45,6 +47,7 @@ import (
 	zarfLayout "github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfSigning "github.com/zarf-dev/zarf/src/pkg/signing"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
+	zarfValue "github.com/zarf-dev/zarf/src/pkg/value"
 	zarfZoci "github.com/zarf-dev/zarf/src/pkg/zoci"
 	zarfTypes "github.com/zarf-dev/zarf/src/types"
 )
@@ -58,6 +61,8 @@ var (
 )
 
 const clusterTimeoutMinutes = 5
+
+type packageSignatureVerifier func(context.Context, *zarfLayout.PackageLayout, zarfSigning.VerifyBlobOptions) error
 
 // NewPackageResource creates a new instance of the package resource.
 func NewPackageResource(providerConfig *udsProviderConfig, packager udsPackager.Packager, packageComponentFilter udsPackager.PackageComponentFilter, cluster udsCluster.Cluster) resource.Resource {
@@ -74,11 +79,16 @@ func NewPackageResource(providerConfig *udsProviderConfig, packager udsPackager.
 		cluster = udsCluster.NewCluster()
 	}
 	return &PackageResource{
-		providerConfig: providerConfig,
-		packager:       packager,
-		packageFilter:  packageComponentFilter,
-		cluster:        cluster,
+		providerConfig:             providerConfig,
+		packager:                   packager,
+		packageFilter:              packageComponentFilter,
+		cluster:                    cluster,
+		verifyPackageSignatureFunc: defaultPackageSignatureVerifier,
 	}
+}
+
+func defaultPackageSignatureVerifier(ctx context.Context, pkgLayout *zarfLayout.PackageLayout, opts zarfSigning.VerifyBlobOptions) error {
+	return pkgLayout.VerifyPackageSignature(ctx, opts)
 }
 
 // PackageResourceModel describes the resource data model.
@@ -94,6 +104,9 @@ type PackageResourceModel struct {
 	OptionalComponents types.Set `tfsdk:"optional_components"` // Set of string component names (alpha)
 	Vars               types.Set `tfsdk:"vars"`                // Set of VariableModel objects
 	SensitiveVars      types.Set `tfsdk:"sensitive_vars"`      // Set of VariableModel objects
+
+	Values          types.Dynamic `tfsdk:"values"`
+	SensitiveValues types.Dynamic `tfsdk:"sensitive_values"`
 
 	// readonly metadata
 	Name           types.String `tfsdk:"name"`
@@ -391,6 +404,15 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				ElementType:         types.StringType,
 				Sensitive:           true,
 			},
+			"values": schema.DynamicAttribute{
+				MarkdownDescription: "[Alpha] Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package. Cannot be used with component blocks.",
+				Optional:            true,
+			},
+			"sensitive_values": schema.DynamicAttribute{
+				MarkdownDescription: "[Alpha] Sensitive Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package. Cannot be used with component blocks.",
+				Optional:            true,
+				Sensitive:           true,
+			},
 		},
 		Blocks: map[string]schema.Block{
 			// TODO: remove when component block is removed
@@ -481,10 +503,11 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 
 // PackageResource defines the resource implementation.
 type PackageResource struct {
-	providerConfig *udsProviderConfig
-	packager       udsPackager.Packager
-	cluster        udsCluster.Cluster
-	packageFilter  udsPackager.PackageComponentFilter
+	providerConfig             *udsProviderConfig
+	packager                   udsPackager.Packager
+	cluster                    udsCluster.Cluster
+	packageFilter              udsPackager.PackageComponentFilter
+	verifyPackageSignatureFunc packageSignatureVerifier
 }
 
 // ValidateConfig ensures validation between interdependant fields within a PackageResourceModel.
@@ -500,6 +523,7 @@ func (r *PackageResource) ValidateConfig(ctx context.Context, req resource.Valid
 	validateSignatureVerificationAttributes(ctx, model, resp)
 	// TODO: remove when component block is removed
 	validateComponentBlockOptionalComponentsMutualExclusivity(model, resp)
+	validateValuesComponentMutualExclusivity(model, resp)
 }
 
 // Configure configures the resource with provider data.
@@ -876,8 +900,19 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		}
 	}
 
+	// Use config so authored value paths remain visible even when Terraform marks
+	// DynamicAttribute plan values unknown because of unknown leaves.
+	validateConfiguredPackageValueConflicts(config, resp)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	valuePaths := collectConfiguredPackageValuePaths(config, resp)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	if r.providerConfig == nil || r.providerConfig.ValidatePackagesOnPlan {
-		checks := r.runPackagePlanChecks(ctx, plan)
+		checks := r.runPackagePlanChecks(ctx, plan, valuePaths)
 		if checks.LoadErr != nil {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("source"),
@@ -900,6 +935,10 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 				"Invalid optional components",
 				checks.OptComponentsErr.Error(),
 			)
+			return
+		}
+		if checks.ValuePathsErr != nil {
+			resp.Diagnostics.AddError("Invalid package value", checks.ValuePathsErr.Error())
 			return
 		}
 	}
@@ -939,19 +978,8 @@ func (r *PackageResource) getRemoteOptions() zarfTypes.RemoteOptions {
 	}
 }
 
-func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
+func (r *PackageResource) loadPackageLayoutFromSource(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
 	packageSource, err := getPackageSource(model, *r.providerConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	tmpDir, err := os.MkdirTemp("", "uds-package-verify-*")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp dir for package verification: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	verifyBlobOpts, err := buildVerifyBlobOptions(ctx, model, tmpDir)
 	if err != nil {
 		return nil, err
 	}
@@ -960,7 +988,6 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 	loadOpt := zarfPackager.LoadOptions{
 		Filter:               zarfFilters.Empty(),
 		Architecture:         getArchitecture(model, *r.providerConfig),
-		VerifyBlobOptions:    verifyBlobOpts,
 		VerificationStrategy: layout.VerifyNever,
 		RemoteOptions:        r.getRemoteOptions(),
 		CachePath:            r.providerConfig.ZarfCachePath,
@@ -971,18 +998,36 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 		return nil, err
 	}
 
-	// Verify package signature
+	return pkgLayout, nil
+}
+
+func (r *PackageResource) verifyPackageSignature(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) error {
 	enforceSignatureVerification := getEffectiveSignatureVerification(ctx, model)
+	if !enforceSignatureVerification {
+		return nil
+	}
+
+	tmpDir, err := os.MkdirTemp("", "uds-package-verify-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir for package verification: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	verifyBlobOpts, err := buildVerifyBlobOptions(ctx, model, tmpDir)
+	if err != nil {
+		return err
+	}
+
 	verifyOpts := zarfSigning.DefaultVerifyBlobOptions()
 	if verifyBlobOpts != nil {
 		verifyOpts = *verifyBlobOpts
 	}
-	verifyErr := pkgLayout.VerifyPackageSignature(ctx, verifyOpts)
-	if err := handleVerifyResult(ctx, verifyErr, pkgLayout.IsSigned(), enforceSignatureVerification); err != nil {
-		return nil, err
+	verifyPackageSignatureFunc := r.verifyPackageSignatureFunc
+	if verifyPackageSignatureFunc == nil {
+		verifyPackageSignatureFunc = defaultPackageSignatureVerifier
 	}
-
-	return pkgLayout, nil
+	verifyErr := verifyPackageSignatureFunc(ctx, pkgLayout, verifyOpts)
+	return handleVerifyResult(ctx, verifyErr, pkgLayout.IsSigned(), enforceSignatureVerification)
 }
 
 // handleVerifyResult interprets the error from VerifyPackageSignature and either
@@ -1127,9 +1172,8 @@ func (r *PackageResource) getDeployedPackage(ctx context.Context, name string, n
 }
 
 func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
-
 	// Get the package name from the source package metadata
-	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
+	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
 	if err != nil {
 		return plan, err
 	}
@@ -1138,6 +1182,9 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
 		}
 	}()
+	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
+		return plan, err
+	}
 
 	packageNamespace := plan.Namespace.ValueString()
 	packageName := pkgLayout.Pkg.Metadata.Name
@@ -1188,7 +1235,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if plan.OptionalComponents.IsUnknown() {
 		return plan, fmt.Errorf("optional_components must be known before apply")
 	}
-	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
+	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
 	if err != nil {
 		return plan, err
 	}
@@ -1197,34 +1244,40 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
 		}
 	}()
+	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
+		return plan, err
+	}
 
-	// Alpha: if optional_components is set, use it directly; otherwise fall back to component blocks.
-	// TODO: remove branch when component block is removed; always use optional_components.
-	var optionalComponents []string
-	if !plan.OptionalComponents.IsNull() {
-		if diags := plan.OptionalComponents.ElementsAs(ctx, &optionalComponents, false); diags.HasError() {
-			return plan, fmt.Errorf("failed to read optional_components: %v", diags)
-		}
-		if len(optionalComponents) > 0 {
-			if err := validateOptionalComponentsAgainstPackage(optionalComponents, pkgLayout.Pkg.Components); err != nil {
-				return plan, err
-			}
-		}
-	} else {
-		_, optionalComponents, err = getRequiredAndOptionalPackageComponentsNames(plan, pkgLayout)
-		if err != nil {
-			return plan, err
-		}
+	optionalComponents, err := getOptionalComponentsForDeploy(ctx, plan, pkgLayout)
+	if err != nil {
+		return plan, err
 	}
 
 	// TODO: remove when component block is removed (components extraction, flattenComponentOverrides, and ValuesOverridesMap)
 	var components []ComponentModel
 	if !plan.Components.IsNull() && !plan.Components.IsUnknown() {
-		plan.Components.ElementsAs(ctx, &components, false)
+		if diags := plan.Components.ElementsAs(ctx, &components, false); diags.HasError() {
+			return plan, fmt.Errorf("failed to read component blocks: %v", diags)
+		}
 	}
 
 	valuesOverridesMap, err := flattenComponentOverrides(ctx, components)
 	if err != nil {
+		return plan, err
+	}
+	values, err := dynamicToValues("values", plan.Values)
+	if err != nil {
+		return plan, fmt.Errorf("invalid package values for apply: %w", err)
+	}
+	sensitiveValues, err := dynamicToValues("sensitive_values", plan.SensitiveValues)
+	if err != nil {
+		return plan, fmt.Errorf("invalid sensitive package values for apply: %w", err)
+	}
+	deployValues, err := mergePackageValues(values, sensitiveValues)
+	if err != nil {
+		return plan, err
+	}
+	if err := r.validatePackageValuesAgainstSourcePaths(ctx, plan, pkgLayout, deployValues); err != nil {
 		return plan, err
 	}
 
@@ -1232,6 +1285,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	deployOpts := zarfPackager.DeployOptions{
 		AdoptExistingResources: false,
 		SetVariables:           buildSetVariableMap(plan),
+		Values:                 deployValues,
 		ValuesOverridesMap:     valuesOverridesMap,
 		RemoteOptions:          r.getRemoteOptions(),
 		NamespaceOverride:      plan.Namespace.ValueString(),
@@ -1439,6 +1493,668 @@ func flattenComponentOverrides(ctx context.Context, components []ComponentModel)
 	}
 
 	return result, nil
+}
+
+func dynamicToValues(attrName string, value types.Dynamic) (zarfValue.Values, error) {
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return zarfValue.Values{}, nil
+	}
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return zarfValue.Values{}, fmt.Errorf("%s must be known", attrName)
+	}
+
+	converted, err := terraformValueToGoValue(value.UnderlyingValue())
+	if err != nil {
+		return zarfValue.Values{}, fmt.Errorf("failed to convert %s: %w", attrName, err)
+	}
+
+	values, ok := converted.(map[string]any)
+	if !ok {
+		return zarfValue.Values{}, fmt.Errorf("%s must be a map or object", attrName)
+	}
+
+	return zarfValue.Values(values), nil
+}
+
+func terraformValueToGoValue(value attr.Value) (any, error) {
+	if value == nil || value.IsNull() {
+		return nil, nil
+	}
+	if value.IsUnknown() {
+		return nil, fmt.Errorf("unknown values cannot be converted")
+	}
+
+	switch v := value.(type) {
+	case types.String:
+		return v.ValueString(), nil
+	case types.Bool:
+		return v.ValueBool(), nil
+	case types.Number:
+		return numberToGoValue(v.ValueBigFloat())
+	case types.Map:
+		return terraformMapToGoMap(v.Elements())
+	case types.Object:
+		return terraformMapToGoMap(v.Attributes())
+	case types.List:
+		return terraformCollectionToGoSlice(v.Elements())
+	case types.Set:
+		return terraformCollectionToGoSlice(v.Elements())
+	case types.Tuple:
+		return terraformCollectionToGoSlice(v.Elements())
+	case types.Dynamic:
+		return terraformValueToGoValue(v.UnderlyingValue())
+	default:
+		return nil, fmt.Errorf("unsupported value type %T", value)
+	}
+}
+
+func terraformMapToGoMap(elements map[string]attr.Value) (map[string]any, error) {
+	result := make(map[string]any, len(elements))
+	for key, value := range elements {
+		converted, err := terraformValueToGoValue(value)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", key, err)
+		}
+		result[key] = converted
+	}
+	return result, nil
+}
+
+func terraformCollectionToGoSlice(elements []attr.Value) ([]any, error) {
+	result := make([]any, 0, len(elements))
+	for idx, value := range elements {
+		converted, err := terraformValueToGoValue(value)
+		if err != nil {
+			return nil, fmt.Errorf("%d: %w", idx, err)
+		}
+		result = append(result, converted)
+	}
+	return result, nil
+}
+
+func numberToGoValue(value *big.Float) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
+
+	if intValue, accuracy := value.Int(nil); accuracy == big.Exact {
+		if intValue.IsInt64() {
+			return intValue.Int64(), nil
+		}
+		return nil, fmt.Errorf("Terraform number %s cannot be represented as an int64 Zarf/Helm value without precision loss; quote large numeric identifiers as strings", intValue.String())
+	}
+
+	floatValue, _ := value.Float64()
+	return floatValue, nil
+}
+
+func validateNoValueConflicts(values zarfValue.Values, sensitiveValues zarfValue.Values) error {
+	return validateNoValueConflictsAtPath(map[string]any(values), map[string]any(sensitiveValues), "")
+}
+
+func validateNoValueConflictsAtPath(values map[string]any, sensitiveValues map[string]any, prefix string) error {
+	for key, sensitiveValue := range sensitiveValues {
+		path := joinValuePath(prefix, key)
+		value, exists := values[key]
+		if !exists {
+			continue
+		}
+
+		valueMap, valueIsMap := value.(map[string]any)
+		sensitiveValueMap, sensitiveValueIsMap := sensitiveValue.(map[string]any)
+		if valueIsMap && sensitiveValueIsMap {
+			if err := validateNoValueConflictsAtPath(valueMap, sensitiveValueMap, path); err != nil {
+				return err
+			}
+			continue
+		}
+
+		return fmt.Errorf("duplicate or conflicting value path %q found in both values and sensitive_values", path)
+	}
+
+	return nil
+}
+
+func mergePackageValues(values zarfValue.Values, sensitiveValues zarfValue.Values) (zarfValue.Values, error) {
+	if err := validateNoValueConflicts(values, sensitiveValues); err != nil {
+		return zarfValue.Values{}, err
+	}
+
+	merged := zarfValue.Values{}
+	merged.DeepMerge(values)
+	merged.DeepMerge(sensitiveValues)
+	return merged, nil
+}
+
+func joinValuePath(prefix string, key string) string {
+	if prefix == "" {
+		return key
+	}
+	return prefix + "." + key
+}
+
+// collectConfiguredPackageValuePaths returns configured package value paths for
+// package-dependent sourcePath validation. Unknown root values return no paths
+// so package-dependent validation can defer until apply.
+func collectConfiguredPackageValuePaths(model PackageResourceModel, resp *resource.ModifyPlanResponse) []plannedPackageValuePath {
+	valuePaths, _, err := collectDynamicValuePaths(model.Values, "values")
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
+		return nil
+	}
+	sensitiveValuePaths, _, err := collectDynamicValuePaths(model.SensitiveValues, "sensitive_values")
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
+		return nil
+	}
+
+	allValuePaths := slices.Concat(valuePaths, sensitiveValuePaths)
+	if len(allValuePaths) == 0 {
+		return nil
+	}
+	return allValuePaths
+}
+
+// validateConfiguredPackageValueConflicts checks local conflicts between
+// configured values and sensitive_values. It should be called with config so
+// best-effort plan-time validation can use authored paths even when planned
+// DynamicAttribute values become unknown.
+func validateConfiguredPackageValueConflicts(model PackageResourceModel, resp *resource.ModifyPlanResponse) {
+	containsUnknown := dynamicContainsUnknown(model.Values) || dynamicContainsUnknown(model.SensitiveValues)
+
+	if !containsUnknown {
+		// Fully known values can use the normal conversion path and exact conflict validation.
+		values, err := dynamicToValues("values", model.Values)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
+			return
+		}
+		sensitiveValues, err := dynamicToValues("sensitive_values", model.SensitiveValues)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
+			return
+		}
+		if err := validateNoValueConflicts(values, sensitiveValues); err != nil {
+			resp.Diagnostics.AddError("Conflicting package values", err.Error())
+			return
+		}
+		return
+	}
+
+	// With unknowns, validate only the structure that is known at plan time.
+	// Unknown object/map subtrees defer to apply so we don't report conflicts
+	// for children that may resolve to disjoint paths.
+	values, err := dynamicToConflictCheckValues("values", model.Values)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
+		return
+	}
+	sensitiveValues, err := dynamicToConflictCheckValues("sensitive_values", model.SensitiveValues)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
+		return
+	}
+	if err := validateNoValueConflicts(values, sensitiveValues); err != nil {
+		resp.Diagnostics.AddError("Conflicting package values", err.Error())
+		return
+	}
+}
+
+// conflictCheckValuePlaceholder marks a configured plan-time leaf value. The
+// concrete value is irrelevant because these Values are only used for conflict
+// validation and are never deployed.
+type conflictCheckValuePlaceholder struct{}
+
+// dynamicToConflictCheckValues converts Terraform dynamic values into a
+// temporary Values tree used only for best-effort plan-time conflict checks.
+// Leaf values are placeholders because validateNoValueConflicts only needs path
+// shape, not concrete deploy values.
+func dynamicToConflictCheckValues(attrName string, value types.Dynamic) (zarfValue.Values, error) {
+	if value.IsNull() || value.IsUnderlyingValueNull() || value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return zarfValue.Values{}, nil
+	}
+
+	converted, includeInConflictCheck, err := terraformValueToConflictCheckValue(value.UnderlyingValue())
+	if err != nil {
+		return zarfValue.Values{}, fmt.Errorf("failed to convert %s: %w", attrName, err)
+	}
+	if !includeInConflictCheck {
+		return zarfValue.Values{}, nil
+	}
+
+	values, ok := converted.(map[string]any)
+	if !ok {
+		return zarfValue.Values{}, fmt.Errorf("%s must be a map or object", attrName)
+	}
+	return zarfValue.Values(values), nil
+}
+
+// terraformValueToConflictCheckValue preserves known object/map structure,
+// replaces known or scalar unknown leaves with placeholders, and omits unknown
+// object/map subtrees so potentially disjoint child paths defer until apply.
+func terraformValueToConflictCheckValue(value attr.Value) (converted any, includeInConflictCheck bool, err error) {
+	if value == nil || value.IsNull() {
+		return conflictCheckValuePlaceholder{}, true, nil
+	}
+	if value.IsUnknown() {
+		if isUnknownSubtreeValue(value) {
+			return nil, false, nil
+		}
+		return conflictCheckValuePlaceholder{}, true, nil
+	}
+
+	switch v := value.(type) {
+	case types.Dynamic:
+		return terraformDynamicToConflictCheckValue(v)
+	case types.Map:
+		return terraformMapToConflictCheckValue(v.Elements())
+	case types.Object:
+		return terraformMapToConflictCheckValue(v.Attributes())
+	case types.List, types.Set, types.Tuple:
+		return conflictCheckValuePlaceholder{}, true, nil
+	default:
+		return conflictCheckValuePlaceholder{}, true, nil
+	}
+}
+
+// terraformDynamicToConflictCheckValue unwraps dynamic values for conflict
+// checks. Fully unknown dynamic values are treated as unknown subtrees because
+// their eventual shape cannot be safely inferred at plan time.
+func terraformDynamicToConflictCheckValue(value types.Dynamic) (converted any, includeInConflictCheck bool, err error) {
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return conflictCheckValuePlaceholder{}, true, nil
+	}
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return nil, false, nil
+	}
+	return terraformValueToConflictCheckValue(value.UnderlyingValue())
+}
+
+// terraformMapToConflictCheckValue recursively converts known map/object
+// entries while preserving their original keys exactly.
+func terraformMapToConflictCheckValue(elements map[string]attr.Value) (converted map[string]any, includeInConflictCheck bool, err error) {
+	result := make(map[string]any, len(elements))
+	for key, value := range elements {
+		converted, includeInConflictCheck, err := terraformValueToConflictCheckValue(value)
+		if err != nil {
+			return nil, false, fmt.Errorf("%s: %w", key, err)
+		}
+		if includeInConflictCheck {
+			result[key] = converted
+		}
+	}
+	return result, true, nil
+}
+
+func dynamicContainsUnknown(value types.Dynamic) bool {
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return true
+	}
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return false
+	}
+
+	return attrValueContainsUnknown(value.UnderlyingValue())
+}
+
+func attrValueContainsUnknown(value attr.Value) bool {
+	if value == nil || value.IsNull() {
+		return false
+	}
+	if value.IsUnknown() {
+		return true
+	}
+
+	switch v := value.(type) {
+	case types.Dynamic:
+		return dynamicContainsUnknown(v)
+	case types.Map:
+		return collectionMapContainsUnknown(v.Elements())
+	case types.Object:
+		return collectionMapContainsUnknown(v.Attributes())
+	case types.List:
+		return collectionSliceContainsUnknown(v.Elements())
+	case types.Set:
+		return collectionSliceContainsUnknown(v.Elements())
+	case types.Tuple:
+		return collectionSliceContainsUnknown(v.Elements())
+	default:
+		return false
+	}
+}
+
+func collectionMapContainsUnknown(elements map[string]attr.Value) bool {
+	for _, value := range elements {
+		if attrValueContainsUnknown(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func collectionSliceContainsUnknown(elements []attr.Value) bool {
+	for _, value := range elements {
+		if attrValueContainsUnknown(value) {
+			return true
+		}
+	}
+	return false
+}
+
+type dynamicValuePathResult struct {
+	paths      []plannedPackageValuePath
+	hasUnknown bool
+	validRoot  bool
+}
+
+type plannedPackageValuePath struct {
+	path           string
+	unknownSubtree bool
+}
+
+// collectDynamicValuePaths returns the configured leaf paths that can be validated
+// against Zarf chart value source paths during plan. Root unknowns expose no paths,
+// so validation defers; nested unknowns still expose their configured path; and
+// collections are treated as leaf values because source paths do not address items.
+func collectDynamicValuePaths(value types.Dynamic, attrName string) ([]plannedPackageValuePath, bool, error) {
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return []plannedPackageValuePath{}, true, nil
+	}
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return []plannedPackageValuePath{}, false, nil
+	}
+
+	result := collectAttrValuePaths(value.UnderlyingValue(), "")
+	if !result.validRoot {
+		return []plannedPackageValuePath{}, false, fmt.Errorf("%s must be a map or object", attrName)
+	}
+	return result.paths, result.hasUnknown, nil
+}
+
+func collectAttrValuePaths(value attr.Value, prefix string) dynamicValuePathResult {
+	if value == nil || value.IsNull() {
+		if prefix == "" {
+			return dynamicValuePathResult{validRoot: true}
+		}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix}}, validRoot: true}
+	}
+	if value.IsUnknown() {
+		if prefix == "" {
+			return dynamicValuePathResult{hasUnknown: true, validRoot: true}
+		}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix, unknownSubtree: isUnknownSubtreeValue(value)}}, hasUnknown: true, validRoot: true}
+	}
+
+	switch v := value.(type) {
+	case types.Dynamic:
+		return collectDynamicAttrValuePaths(v, prefix)
+	case types.Map:
+		return collectAttrMapValuePaths(v.Elements(), prefix)
+	case types.Object:
+		return collectAttrMapValuePaths(v.Attributes(), prefix)
+	case types.List:
+		return collectAttrCollectionValuePaths(v.Elements(), prefix)
+	case types.Set:
+		return collectAttrCollectionValuePaths(v.Elements(), prefix)
+	case types.Tuple:
+		return collectAttrCollectionValuePaths(v.Elements(), prefix)
+	default:
+		if prefix == "" {
+			return dynamicValuePathResult{}
+		}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix}}, validRoot: true}
+	}
+}
+
+func isUnknownSubtreeValue(value attr.Value) bool {
+	valueType := value.Type(context.Background())
+	if valueType.Equal(types.DynamicType) {
+		return true
+	}
+	switch valueType.(type) {
+	case types.MapType, types.ObjectType:
+		return true
+	default:
+		return false
+	}
+}
+
+func collectDynamicAttrValuePaths(value types.Dynamic, prefix string) dynamicValuePathResult {
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		if prefix == "" {
+			return dynamicValuePathResult{hasUnknown: true, validRoot: true}
+		}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix, unknownSubtree: true}}, hasUnknown: true, validRoot: true}
+	}
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		if prefix == "" {
+			return dynamicValuePathResult{validRoot: true}
+		}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix}}, validRoot: true}
+	}
+	return collectAttrValuePaths(value.UnderlyingValue(), prefix)
+}
+
+func collectAttrMapValuePaths(elements map[string]attr.Value, prefix string) dynamicValuePathResult {
+	if len(elements) == 0 {
+		if prefix == "" {
+			return dynamicValuePathResult{validRoot: true}
+		}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix}}, validRoot: true}
+	}
+
+	result := dynamicValuePathResult{validRoot: true}
+	for key, value := range elements {
+		childResult := collectAttrValuePaths(value, joinValuePath(prefix, key))
+		result.paths = append(result.paths, childResult.paths...)
+		result.hasUnknown = result.hasUnknown || childResult.hasUnknown
+	}
+	return result
+}
+
+func collectAttrCollectionValuePaths(elements []attr.Value, prefix string) dynamicValuePathResult {
+	if prefix == "" {
+		return dynamicValuePathResult{}
+	}
+
+	result := dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix}}, validRoot: true}
+	for _, value := range elements {
+		if attrValueContainsUnknown(value) {
+			result.hasUnknown = true
+			break
+		}
+	}
+	return result
+}
+
+func collectValuePaths(values map[string]any) []string {
+	paths := []string{}
+	collectValuePathsAtPath(values, "", &paths)
+	return paths
+}
+
+func collectValuePathsAtPath(values map[string]any, prefix string, paths *[]string) {
+	for key, value := range values {
+		currentPath := joinValuePath(prefix, key)
+		valueMap, ok := value.(map[string]any)
+		if !ok {
+			*paths = append(*paths, currentPath)
+			continue
+		}
+		if len(valueMap) == 0 {
+			*paths = append(*paths, currentPath)
+			continue
+		}
+		collectValuePathsAtPath(valueMap, currentPath, paths)
+	}
+}
+
+func (r *PackageResource) getPlannedComponentValueSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) ([]string, error) {
+	optionalComponents, err := getOptionalComponentsFromAttribute(ctx, model.OptionalComponents, pkgLayout.Pkg.Components)
+	if err != nil {
+		return []string{}, err
+	}
+
+	filter := r.packageFilter.ForDeploy(optionalComponents)
+	components, err := filter.Apply(pkgLayout.Pkg)
+	if err != nil {
+		return []string{}, err
+	}
+
+	paths := []string{}
+	for _, component := range components {
+		for _, chart := range component.Charts {
+			for _, chartValue := range chart.Values {
+				paths = append(paths, chartValue.SourcePath)
+			}
+		}
+	}
+	return paths, nil
+}
+
+func getOptionalComponentsForDeploy(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) ([]string, error) {
+	// Alpha: if optional_components is set, use it directly; otherwise fall back to component blocks.
+	// TODO: remove branch when component block is removed; always use optional_components.
+	if !model.OptionalComponents.IsNull() {
+		return getOptionalComponentsFromAttribute(ctx, model.OptionalComponents, pkgLayout.Pkg.Components)
+	}
+
+	return getComponentBlockOptionalComponentsForDeploy(ctx, model.Components, pkgLayout.Pkg.Components)
+}
+
+func getOptionalComponentsFromAttribute(ctx context.Context, optionalComponentsSet types.Set, pkgComponents []v1alpha1.ZarfComponent) ([]string, error) {
+	if optionalComponentsSet.IsUnknown() {
+		return nil, fmt.Errorf("optional_components must be known")
+	}
+
+	var optionalComponents []string
+	if diags := optionalComponentsSet.ElementsAs(ctx, &optionalComponents, false); diags.HasError() {
+		return nil, fmt.Errorf("failed to read optional_components: %v", diags)
+	}
+	if len(optionalComponents) > 0 {
+		if err := validateOptionalComponentsAgainstPackage(optionalComponents, pkgComponents); err != nil {
+			return nil, err
+		}
+	}
+	return optionalComponents, nil
+}
+
+// getComponentBlockOptionalComponentsForDeploy returns optional component names
+// selected through legacy component blocks. Required component names are ignored
+// because Zarf deploy includes required components automatically.
+// TODO: remove when component block is removed
+func getComponentBlockOptionalComponentsForDeploy(ctx context.Context, componentsSet types.Set, pkgComponents []v1alpha1.ZarfComponent) ([]string, error) {
+	if componentsSet.IsUnknown() {
+		return nil, fmt.Errorf("component blocks must be known")
+	}
+
+	var components []ComponentModel
+	if !componentsSet.IsNull() {
+		if diags := componentsSet.ElementsAs(ctx, &components, false); diags.HasError() {
+			return nil, fmt.Errorf("failed to read component blocks: %v", diags)
+		}
+	}
+
+	var componentErrors []error
+	optionalComponents := []string{}
+	for _, component := range components {
+		pkgComponent, found := findPackageComponent(pkgComponents, component.Name.ValueString())
+		if !found {
+			componentErrors = append(componentErrors, fmt.Errorf("unknown package component %s", component.Name.ValueString()))
+			continue
+		}
+		if pkgComponent.Required == nil || !*pkgComponent.Required {
+			optionalComponents = append(optionalComponents, component.Name.ValueString())
+		}
+	}
+
+	if len(componentErrors) > 0 {
+		return []string{}, errors.Join(componentErrors...)
+	}
+
+	return optionalComponents, nil
+}
+
+func (r *PackageResource) validatePackageValuesAgainstSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, values zarfValue.Values) error {
+	valuePaths := collectValuePaths(map[string]any(values))
+	return r.validatePackageValuePathsAgainstSourcePaths(ctx, model, pkgLayout, valuePaths)
+}
+
+func (r *PackageResource) validatePackageValuePathsAgainstSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, valuePaths []string) error {
+	if len(valuePaths) == 0 {
+		return nil
+	}
+
+	exposedPaths, err := r.getPlannedComponentValueSourcePaths(ctx, model, pkgLayout)
+	if err != nil {
+		return err
+	}
+
+	var validationErrors []error
+	for _, valuePath := range valuePaths {
+		if !isValuePathExposed(valuePath, exposedPaths) {
+			validationErrors = append(validationErrors, valuePathNotExposedError(valuePath))
+		}
+	}
+
+	return errors.Join(validationErrors...)
+}
+
+func (r *PackageResource) validatePlannedPackageValuePathsAgainstSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, valuePaths []plannedPackageValuePath) error {
+	if len(valuePaths) == 0 {
+		return nil
+	}
+
+	exposedPaths, err := r.getPlannedComponentValueSourcePaths(ctx, model, pkgLayout)
+	if err != nil {
+		return err
+	}
+
+	var validationErrors []error
+	for _, valuePath := range valuePaths {
+		if valuePath.unknownSubtree {
+			if !isUnknownValuePathPotentiallyExposed(valuePath.path, exposedPaths) {
+				validationErrors = append(validationErrors, valuePathNotExposedError(valuePath.path))
+			}
+			continue
+		}
+
+		if !isValuePathExposed(valuePath.path, exposedPaths) {
+			validationErrors = append(validationErrors, valuePathNotExposedError(valuePath.path))
+		}
+	}
+
+	return errors.Join(validationErrors...)
+}
+
+func valuePathNotExposedError(valuePath string) error {
+	return fmt.Errorf("value path %q does not match any chart value sourcePath exposed by the package components planned for deployment", valuePath)
+}
+
+func isValuePathExposed(valuePath string, exposedPaths []string) bool {
+	for _, exposedPath := range exposedPaths {
+		normalized := strings.TrimPrefix(exposedPath, ".")
+		if normalized == "" {
+			return true
+		}
+		if valuePath == normalized || strings.HasPrefix(valuePath, normalized+".") {
+			return true
+		}
+	}
+	return false
+}
+
+func isUnknownValuePathPotentiallyExposed(valuePath string, exposedPaths []string) bool {
+	for _, exposedPath := range exposedPaths {
+		normalized := strings.TrimPrefix(exposedPath, ".")
+		if normalized == "" {
+			return true
+		}
+		if valuePath == normalized || strings.HasPrefix(normalized, valuePath+".") || strings.HasPrefix(valuePath, normalized+".") {
+			return true
+		}
+	}
+	return false
 }
 
 // getMissingComponents compares two Package plans and returns a list of components that was specified in the
@@ -1686,7 +2402,6 @@ func getPackageSource(pkg PackageResourceModel, providerConfig udsProviderConfig
 // getPackageOverrideName generates a deterministic tarball filename for a package based on its original source value.
 // Returns a filename in the format "zarf-package-{sha1-checksum}.tar.zst".
 func getPackageOverrideName(pkg PackageResourceModel) string {
-
 	sourceString := pkg.Source.ValueString()
 	if !strings.HasPrefix(sourceString, "oci://") {
 		sourceString = filepath.Base(sourceString)
@@ -1876,6 +2591,36 @@ func componentBlocksMayBePresent(components types.Set) bool {
 	return !components.IsNull() && (components.IsUnknown() || len(components.Elements()) > 0)
 }
 
+func validateValuesComponentMutualExclusivity(model PackageResourceModel, resp *resource.ValidateConfigResponse) {
+	if !componentBlocksMayBePresent(model.Components) {
+		return
+	}
+
+	if isDynamicAttributeConfigured(model.Values) {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("values"),
+			"Invalid package values configuration",
+			"values cannot be specified together with component blocks",
+		)
+	}
+
+	if isDynamicAttributeConfigured(model.SensitiveValues) {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("sensitive_values"),
+			"Invalid package values configuration",
+			"sensitive_values cannot be specified together with component blocks",
+		)
+	}
+}
+
+func isDynamicAttributeConfigured(value types.Dynamic) bool {
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return false
+	}
+
+	return true
+}
+
 // buildVerifyBlobOptions constructs signing.VerifyBlobOptions from the model.
 // Writes any inline key or trusted-root content to files under tmpDir (caller owns cleanup).
 // Returns nil when no verification material is configured.
@@ -1892,7 +2637,7 @@ func buildVerifyBlobOptions(ctx context.Context, model PackageResourceModel, tmp
 
 	if !sig.PublicKey.IsNull() && !sig.PublicKey.IsUnknown() && sig.PublicKey.ValueString() != "" {
 		keyPath := filepath.Join(tmpDir, "key.pub")
-		if err := os.WriteFile(keyPath, []byte(sig.PublicKey.ValueString()), 0600); err != nil {
+		if err := os.WriteFile(keyPath, []byte(sig.PublicKey.ValueString()), 0o600); err != nil {
 			return nil, fmt.Errorf("failed to write public key file: %w", err)
 		}
 		opts := zarfSigning.DefaultVerifyBlobOptions()
@@ -1916,7 +2661,7 @@ func buildVerifyBlobOptions(ctx context.Context, model PackageResourceModel, tmp
 
 		if !keyless.TrustedRoot.IsNull() && !keyless.TrustedRoot.IsUnknown() && keyless.TrustedRoot.ValueString() != "" {
 			rootPath := filepath.Join(tmpDir, "trusted-root.json")
-			if err := os.WriteFile(rootPath, []byte(keyless.TrustedRoot.ValueString()), 0600); err != nil {
+			if err := os.WriteFile(rootPath, []byte(keyless.TrustedRoot.ValueString()), 0o600); err != nil {
 				return nil, fmt.Errorf("failed to write trusted root file: %w", err)
 			}
 			opts.CommonVerifyOptions.TrustedRootPath = rootPath
@@ -1950,38 +2695,6 @@ func buildSetVariableMap(model PackageResourceModel) map[string]string {
 	}
 
 	return setVariables
-}
-
-// TODO: remove when component block is removed
-func getRequiredAndOptionalPackageComponentsNames(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) (required []string, optional []string, err error) {
-	var componentErrors []error
-	requiredComponents := []string{}
-	optionalComponents := []string{}
-
-	// Extract components from Set
-	var components []ComponentModel
-	if !model.Components.IsNull() && !model.Components.IsUnknown() {
-		model.Components.ElementsAs(context.Background(), &components, false)
-	}
-
-	for _, component := range components {
-		pkgComponent, found := findPackageComponent(pkgLayout.Pkg.Components, component.Name.ValueString())
-		if !found {
-			componentErrors = append(componentErrors, fmt.Errorf("unknown package component %s", component.Name.ValueString()))
-			continue
-		}
-		if pkgComponent.Required == nil || !*pkgComponent.Required {
-			optionalComponents = append(optionalComponents, component.Name.ValueString())
-		} else {
-			requiredComponents = append(requiredComponents, component.Name.ValueString())
-		}
-	}
-
-	if len(componentErrors) > 0 {
-		return []string{}, []string{}, errors.Join(componentErrors...)
-	}
-
-	return requiredComponents, optionalComponents, nil
 }
 
 func newPackageMetadata(pkgLayout *zarfLayout.PackageLayout) (types.Object, error) {
@@ -2158,11 +2871,14 @@ type packagePlanCheckResult struct {
 	LoadErr          error
 	SigErr           error
 	OptComponentsErr error
+	ValuePathsErr    error
 }
 
-// runPackagePlanChecks loads the package once and runs all plan-time validation checks.
+// runPackagePlanChecks loads the package once and runs package-dependent plan
+// checks. If valuePaths is non-empty, those paths are validated against chart
+// value sourcePaths for the components planned for deployment.
 // Skipped when source is unknown, packager/providerConfig are nil, or no checks are needed.
-func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel) packagePlanCheckResult {
+func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel, valuePaths []plannedPackageValuePath) packagePlanCheckResult {
 	if plan.Source.IsUnknown() || plan.Source.IsNull() {
 		return packagePlanCheckResult{}
 	}
@@ -2179,8 +2895,9 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 	if canValidateOptionalComponents {
 		plan.OptionalComponents.ElementsAs(ctx, &requestedOptionals, false)
 	}
+	canValidateValuePaths := len(valuePaths) > 0 && !plan.OptionalComponents.IsNull() && !plan.OptionalComponents.IsUnknown()
 
-	if !needsSigVerification && !canValidateOptionalComponents {
+	if !needsSigVerification && !canValidateOptionalComponents && !canValidateValuePaths {
 		return packagePlanCheckResult{}
 	}
 
@@ -2193,29 +2910,21 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 	}
 
 	if needsSigVerification {
-		tmpDir, err := os.MkdirTemp("", "uds-package-verify-*")
-		if err != nil {
-			return packagePlanCheckResult{SigErr: fmt.Errorf("failed to create temp dir for package verification: %w", err)}
-		}
-		defer os.RemoveAll(tmpDir)
-
-		verifyBlobOpts, err := buildVerifyBlobOptions(ctx, plan, tmpDir)
-		if err != nil {
-			return packagePlanCheckResult{SigErr: err}
-		}
-
-		verifyOpts := zarfSigning.DefaultVerifyBlobOptions()
-		if verifyBlobOpts != nil {
-			verifyOpts = *verifyBlobOpts
-		}
-		verifyErr := pkgLayout.VerifyPackageSignature(ctx, verifyOpts)
-		if sigErr := handleVerifyResult(ctx, verifyErr, pkgLayout.IsSigned(), true); sigErr != nil {
+		if sigErr := r.verifyPackageSignature(ctx, plan, pkgLayout); sigErr != nil {
 			return packagePlanCheckResult{SigErr: sigErr}
 		}
 	}
 
 	if canValidateOptionalComponents {
-		return packagePlanCheckResult{OptComponentsErr: validateOptionalComponentsAgainstPackage(requestedOptionals, pkgLayout.Pkg.Components)}
+		if err := validateOptionalComponentsAgainstPackage(requestedOptionals, pkgLayout.Pkg.Components); err != nil {
+			return packagePlanCheckResult{OptComponentsErr: err}
+		}
+	}
+
+	if canValidateValuePaths {
+		if err := r.validatePlannedPackageValuePathsAgainstSourcePaths(ctx, plan, pkgLayout, valuePaths); err != nil {
+			return packagePlanCheckResult{ValuePathsErr: err}
+		}
 	}
 
 	return packagePlanCheckResult{}

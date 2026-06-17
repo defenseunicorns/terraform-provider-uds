@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "description": "Schema for the Zarf values acceptance test fixture",
+  "additionalProperties": false,
+  "properties": {
+    "config": {
+      "type": "object",
+      "description": "Chart configuration values",
+      "additionalProperties": false,
+      "properties": {
+        "annotations": {
+          "type": "object",
+          "description": "Config annotations",
+          "additionalProperties": true
+        },
+        "settings": {
+          "type": "object",
+          "description": "Config settings",
+          "additionalProperties": false,
+          "properties": {
+            "message": {
+              "type": "string",
+              "description": "Configured message"
+            },
+            "secret": {
+              "type": "string",
+              "description": "Configured secret"
+            }
+          },
+          "required": ["message", "secret"]
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the config is enabled"
+        },
+        "items": {
+          "type": "array",
+          "description": "Config items"
+        },
+        "labels": {
+          "type": "object",
+          "description": "Config labels",
+          "additionalProperties": true
+        },
+        "replicas": {
+          "type": "integer",
+          "description": "Configured replica count"
+        }
+      },
+      "required": ["annotations", "settings", "enabled", "items", "labels", "replicas"]
+    }
+  },
+  "required": ["config"]
+}

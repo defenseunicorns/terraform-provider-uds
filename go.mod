@@ -20,9 +20,11 @@ require (
 	github.com/hashicorp/terraform-plugin-log v0.10.0
 	github.com/hashicorp/terraform-plugin-testing v1.16.0
 	github.com/stretchr/testify v1.11.1
-	github.com/zarf-dev/zarf v0.77.0
+	github.com/zarf-dev/zarf v0.78.0
 	gopkg.in/yaml.v2 v2.4.0
 	helm.sh/helm/v4 v4.2.0
+	k8s.io/apimachinery v0.36.0
+	k8s.io/client-go v0.36.0
 	oras.land/oras-go/v2 v2.6.1
 )
 
@@ -261,7 +263,7 @@ require (
 	github.com/go-errors/errors v1.5.1 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
 	github.com/go-git/go-billy/v5 v5.9.0 // indirect
-	github.com/go-git/go-git/v5 v5.18.0 // indirect
+	github.com/go-git/go-git/v5 v5.19.1 // indirect
 	github.com/go-gorp/gorp/v3 v3.1.0 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
@@ -378,6 +380,7 @@ require (
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
+	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/pgzip v1.2.6 // indirect
 	github.com/knqyf263/go-apk-version v0.0.0-20200609155635-041fdbb8563f // indirect
 	github.com/knqyf263/go-deb-version v0.0.0-20241115132648-6f4aee6ccd23 // indirect
@@ -469,7 +472,7 @@ require (
 	github.com/peterbourgon/diskv v2.0.1+incompatible // indirect
 	github.com/phsym/console-slog v0.3.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
-	github.com/pjbgf/sha1cd v0.4.0 // indirect
+	github.com/pjbgf/sha1cd v0.6.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pkg/profile v1.7.0 // indirect
@@ -624,10 +627,8 @@ require (
 	helm.sh/helm/v3 v3.19.3 // indirect
 	k8s.io/api v0.36.0 // indirect
 	k8s.io/apiextensions-apiserver v0.36.0 // indirect
-	k8s.io/apimachinery v0.36.0 // indirect
 	k8s.io/apiserver v0.36.0 // indirect
 	k8s.io/cli-runtime v0.36.0 // indirect
-	k8s.io/client-go v0.36.0 // indirect
 	k8s.io/component-base v0.36.0 // indirect
 	k8s.io/component-helpers v0.36.0 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect

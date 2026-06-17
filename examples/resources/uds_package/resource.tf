@@ -12,7 +12,7 @@ provider "uds" {
 }
 
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.74.0"
+  source = "oci://ghcr.io/zarf-dev/packages/init:v0.78.0"
 
   signature_verification = {
     keyless = {
