@@ -900,7 +900,13 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		}
 	}
 
-	valuePaths := collectAndValidatePackageValuePaths(plan, resp)
+	// Use config so authored value paths remain visible even when Terraform marks
+	// DynamicAttribute plan values unknown because of unknown leaves.
+	validateConfiguredPackageValueConflicts(config, resp)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	valuePaths := collectConfiguredPackageValuePaths(config, resp)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -1627,47 +1633,157 @@ func joinValuePath(prefix string, key string) string {
 	return prefix + "." + key
 }
 
-// collectAndValidatePackageValuePaths performs package values validation that does
-// not require loading the package and returns configured value paths for later
-// sourcePath validation. Unknown root values return no paths so package-dependent
-// validation can defer until apply.
-func collectAndValidatePackageValuePaths(model PackageResourceModel, resp *resource.ModifyPlanResponse) []plannedPackageValuePath {
-	valuePaths, valuesContainUnknown, err := collectDynamicValuePaths(model.Values, "values")
+// collectConfiguredPackageValuePaths returns configured package value paths for
+// package-dependent sourcePath validation. Unknown root values return no paths
+// so package-dependent validation can defer until apply.
+func collectConfiguredPackageValuePaths(model PackageResourceModel, resp *resource.ModifyPlanResponse) []plannedPackageValuePath {
+	valuePaths, _, err := collectDynamicValuePaths(model.Values, "values")
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
 		return nil
 	}
-	sensitiveValuePaths, sensitiveValuesContainUnknown, err := collectDynamicValuePaths(model.SensitiveValues, "sensitive_values")
+	sensitiveValuePaths, _, err := collectDynamicValuePaths(model.SensitiveValues, "sensitive_values")
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
 		return nil
 	}
 
 	allValuePaths := slices.Concat(valuePaths, sensitiveValuePaths)
-	containsUnknown := valuesContainUnknown || sensitiveValuesContainUnknown
-
 	if len(allValuePaths) == 0 {
 		return nil
 	}
+	return allValuePaths
+}
+
+// validateConfiguredPackageValueConflicts checks local conflicts between
+// configured values and sensitive_values. It should be called with config so
+// best-effort plan-time validation can use authored paths even when planned
+// DynamicAttribute values become unknown.
+func validateConfiguredPackageValueConflicts(model PackageResourceModel, resp *resource.ModifyPlanResponse) {
+	containsUnknown := dynamicContainsUnknown(model.Values) || dynamicContainsUnknown(model.SensitiveValues)
 
 	if !containsUnknown {
+		// Fully known values can use the normal conversion path and exact conflict validation.
 		values, err := dynamicToValues("values", model.Values)
 		if err != nil {
 			resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
-			return nil
+			return
 		}
 		sensitiveValues, err := dynamicToValues("sensitive_values", model.SensitiveValues)
 		if err != nil {
 			resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
-			return nil
+			return
 		}
-		if _, err := mergePackageValues(values, sensitiveValues); err != nil {
+		if err := validateNoValueConflicts(values, sensitiveValues); err != nil {
 			resp.Diagnostics.AddError("Conflicting package values", err.Error())
-			return nil
+			return
+		}
+		return
+	} else {
+		// With unknowns, validate only the structure that is known at plan time.
+		// Unknown object/map subtrees defer to apply so we don't report conflicts
+		// for children that may resolve to disjoint paths.
+		values, err := dynamicToConflictCheckValues("values", model.Values)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
+			return
+		}
+		sensitiveValues, err := dynamicToConflictCheckValues("sensitive_values", model.SensitiveValues)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
+			return
+		}
+		if err := validateNoValueConflicts(values, sensitiveValues); err != nil {
+			resp.Diagnostics.AddError("Conflicting package values", err.Error())
+			return
 		}
 	}
+}
 
-	return allValuePaths
+// conflictCheckValuePlaceholder marks a configured plan-time leaf value. The
+// concrete value is irrelevant because these Values are only used for conflict
+// validation and are never deployed.
+type conflictCheckValuePlaceholder struct{}
+
+// dynamicToConflictCheckValues converts Terraform dynamic values into a
+// temporary Values tree used only for best-effort plan-time conflict checks.
+// Leaf values are placeholders because validateNoValueConflicts only needs path
+// shape, not concrete deploy values.
+func dynamicToConflictCheckValues(attrName string, value types.Dynamic) (zarfValue.Values, error) {
+	if value.IsNull() || value.IsUnderlyingValueNull() || value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return zarfValue.Values{}, nil
+	}
+
+	converted, includeInConflictCheck, err := terraformValueToConflictCheckValue(value.UnderlyingValue())
+	if err != nil {
+		return zarfValue.Values{}, fmt.Errorf("failed to convert %s: %w", attrName, err)
+	}
+	if !includeInConflictCheck {
+		return zarfValue.Values{}, nil
+	}
+
+	values, ok := converted.(map[string]any)
+	if !ok {
+		return zarfValue.Values{}, fmt.Errorf("%s must be a map or object", attrName)
+	}
+	return zarfValue.Values(values), nil
+}
+
+// terraformValueToConflictCheckValue preserves known object/map structure,
+// replaces known or scalar unknown leaves with placeholders, and omits unknown
+// object/map subtrees so potentially disjoint child paths defer until apply.
+func terraformValueToConflictCheckValue(value attr.Value) (converted any, includeInConflictCheck bool, err error) {
+	if value == nil || value.IsNull() {
+		return conflictCheckValuePlaceholder{}, true, nil
+	}
+	if value.IsUnknown() {
+		if isUnknownSubtreeValue(value) {
+			return nil, false, nil
+		}
+		return conflictCheckValuePlaceholder{}, true, nil
+	}
+
+	switch v := value.(type) {
+	case types.Dynamic:
+		return terraformDynamicToConflictCheckValue(v)
+	case types.Map:
+		return terraformMapToConflictCheckValue(v.Elements())
+	case types.Object:
+		return terraformMapToConflictCheckValue(v.Attributes())
+	case types.List, types.Set, types.Tuple:
+		return conflictCheckValuePlaceholder{}, true, nil
+	default:
+		return conflictCheckValuePlaceholder{}, true, nil
+	}
+}
+
+// terraformDynamicToConflictCheckValue unwraps dynamic values for conflict
+// checks. Fully unknown dynamic values are treated as unknown subtrees because
+// their eventual shape cannot be safely inferred at plan time.
+func terraformDynamicToConflictCheckValue(value types.Dynamic) (converted any, includeInConflictCheck bool, err error) {
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return conflictCheckValuePlaceholder{}, true, nil
+	}
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return nil, false, nil
+	}
+	return terraformValueToConflictCheckValue(value.UnderlyingValue())
+}
+
+// terraformMapToConflictCheckValue recursively converts known map/object
+// entries while preserving their original keys exactly.
+func terraformMapToConflictCheckValue(elements map[string]attr.Value) (converted map[string]any, includeInConflictCheck bool, err error) {
+	result := make(map[string]any, len(elements))
+	for key, value := range elements {
+		converted, includeInConflictCheck, err := terraformValueToConflictCheckValue(value)
+		if err != nil {
+			return nil, false, fmt.Errorf("%s: %w", key, err)
+		}
+		if includeInConflictCheck {
+			result[key] = converted
+		}
+	}
+	return result, true, nil
 }
 
 func dynamicContainsUnknown(value types.Dynamic) bool {
@@ -2496,6 +2612,7 @@ func validateValuesComponentMutualExclusivity(model PackageResourceModel, resp *
 		)
 	}
 }
+
 func isDynamicAttributeConfigured(value types.Dynamic) bool {
 	if value.IsNull() || value.IsUnderlyingValueNull() {
 		return false
@@ -2520,7 +2637,7 @@ func buildVerifyBlobOptions(ctx context.Context, model PackageResourceModel, tmp
 
 	if !sig.PublicKey.IsNull() && !sig.PublicKey.IsUnknown() && sig.PublicKey.ValueString() != "" {
 		keyPath := filepath.Join(tmpDir, "key.pub")
-		if err := os.WriteFile(keyPath, []byte(sig.PublicKey.ValueString()), 0600); err != nil {
+		if err := os.WriteFile(keyPath, []byte(sig.PublicKey.ValueString()), 0o600); err != nil {
 			return nil, fmt.Errorf("failed to write public key file: %w", err)
 		}
 		opts := zarfSigning.DefaultVerifyBlobOptions()
@@ -2544,7 +2661,7 @@ func buildVerifyBlobOptions(ctx context.Context, model PackageResourceModel, tmp
 
 		if !keyless.TrustedRoot.IsNull() && !keyless.TrustedRoot.IsUnknown() && keyless.TrustedRoot.ValueString() != "" {
 			rootPath := filepath.Join(tmpDir, "trusted-root.json")
-			if err := os.WriteFile(rootPath, []byte(keyless.TrustedRoot.ValueString()), 0600); err != nil {
+			if err := os.WriteFile(rootPath, []byte(keyless.TrustedRoot.ValueString()), 0o600); err != nil {
 				return nil, fmt.Errorf("failed to write trusted root file: %w", err)
 			}
 			opts.CommonVerifyOptions.TrustedRootPath = rootPath

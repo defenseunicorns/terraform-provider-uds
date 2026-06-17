@@ -5377,7 +5377,7 @@ func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesValidateKnownPa
 	packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
 
-	valuePaths := collectAndValidatePackageValuePaths(model, resp)
+	valuePaths := collectConfiguredPackageValuePaths(model, resp)
 	result := packageResource.runPackagePlanChecks(context.Background(), model, valuePaths)
 
 	assert.False(t, resp.Diagnostics.HasError(), "expected nested unknown values with exposed paths to pass, got: %v", resp.Diagnostics.Errors())
@@ -5444,7 +5444,7 @@ func TestPackageResource_RunPackagePlanChecks_UnknownIntermediateObjectSourcePat
 			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 			resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
 
-			valuePaths := collectAndValidatePackageValuePaths(model, resp)
+			valuePaths := collectConfiguredPackageValuePaths(model, resp)
 			result := packageResource.runPackagePlanChecks(context.Background(), model, valuePaths)
 
 			assert.False(t, resp.Diagnostics.HasError(), "expected local validation to pass, got: %v", resp.Diagnostics.Errors())
@@ -5518,7 +5518,7 @@ func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesFailKnownUnexpo
 	packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
 
-	valuePaths := collectAndValidatePackageValuePaths(model, resp)
+	valuePaths := collectConfiguredPackageValuePaths(model, resp)
 	result := packageResource.runPackagePlanChecks(context.Background(), model, valuePaths)
 
 	assert.False(t, resp.Diagnostics.HasError(), "expected local validation to pass, got: %v", resp.Diagnostics.Errors())
@@ -5527,14 +5527,190 @@ func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesFailKnownUnexpo
 	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 
-func TestCollectAndValidatePackageValuePaths_RootUnknownValuesReturnNoPaths(t *testing.T) {
+func TestCollectConfiguredPackageValuePaths_RootUnknownValuesReturnNoPaths(t *testing.T) {
 	model := NewTestPackageResourceModel(WithValues(types.DynamicUnknown()))
 	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
 
-	valuePaths := collectAndValidatePackageValuePaths(model, resp)
+	valuePaths := collectConfiguredPackageValuePaths(model, resp)
 
 	assert.False(t, resp.Diagnostics.HasError(), "expected root unknown values to defer validation, got: %v", resp.Diagnostics.Errors())
 	assert.Empty(t, valuePaths)
+}
+
+func TestValidateConfiguredPackageValueConflicts(t *testing.T) {
+	unknownDuplicateModel := NewTestPackageResourceModel(
+		WithValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{
+				"config": types.ObjectType{AttrTypes: map[string]attr.Type{
+					"settings": types.ObjectType{AttrTypes: map[string]attr.Type{"message": types.StringType}},
+				}},
+				"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
+					"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{"dynamic": types.StringType}},
+				}},
+			},
+			map[string]attr.Value{
+				"config": types.ObjectValueMust(
+					map[string]attr.Type{"settings": types.ObjectType{AttrTypes: map[string]attr.Type{"message": types.StringType}}},
+					map[string]attr.Value{"settings": types.ObjectValueMust(
+						map[string]attr.Type{"message": types.StringType},
+						map[string]attr.Value{"message": types.StringValue("plain")},
+					)},
+				),
+				"pod": types.ObjectValueMust(
+					map[string]attr.Type{"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{"dynamic": types.StringType}}},
+					map[string]attr.Value{"annotations": types.ObjectValueMust(
+						map[string]attr.Type{"dynamic": types.StringType},
+						map[string]attr.Value{"dynamic": types.StringUnknown()},
+					)},
+				),
+			},
+		))),
+		WithSensitiveValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{
+				"config": types.ObjectType{AttrTypes: map[string]attr.Type{
+					"settings": types.ObjectType{AttrTypes: map[string]attr.Type{"message": types.StringType}},
+				}},
+			},
+			map[string]attr.Value{
+				"config": types.ObjectValueMust(
+					map[string]attr.Type{"settings": types.ObjectType{AttrTypes: map[string]attr.Type{"message": types.StringType}}},
+					map[string]attr.Value{"settings": types.ObjectValueMust(
+						map[string]attr.Type{"message": types.StringType},
+						map[string]attr.Value{"message": types.StringValue("secret")},
+					)},
+				),
+			},
+		))),
+	)
+	emptyMapSiblingModel := NewTestPackageResourceModel(
+		WithValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{
+				"config": types.ObjectType{AttrTypes: map[string]attr.Type{}},
+				"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
+					"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{"dynamic": types.StringType}},
+				}},
+			},
+			map[string]attr.Value{
+				"config": types.ObjectValueMust(map[string]attr.Type{}, map[string]attr.Value{}),
+				"pod": types.ObjectValueMust(
+					map[string]attr.Type{"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{"dynamic": types.StringType}}},
+					map[string]attr.Value{"annotations": types.ObjectValueMust(
+						map[string]attr.Type{"dynamic": types.StringType},
+						map[string]attr.Value{"dynamic": types.StringUnknown()},
+					)},
+				),
+			},
+		))),
+		WithSensitiveValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{
+				"config": types.ObjectType{AttrTypes: map[string]attr.Type{"secret": types.StringType}},
+			},
+			map[string]attr.Value{
+				"config": types.ObjectValueMust(
+					map[string]attr.Type{"secret": types.StringType},
+					map[string]attr.Value{"secret": types.StringValue("redacted")},
+				),
+			},
+		))),
+	)
+
+	tests := []struct {
+		name            string
+		model           PackageResourceModel
+		expectedErrText string
+	}{
+		{
+			name:            "unknown sibling fails known duplicate path",
+			model:           unknownDuplicateModel,
+			expectedErrText: "config.settings.message",
+		},
+		{
+			name:  "unknown sibling allows empty map with sensitive child",
+			model: emptyMapSiblingModel,
+		},
+		{
+			name:  "root unknown defers",
+			model: NewTestPackageResourceModel(WithValues(types.DynamicUnknown())),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
+
+			validateConfiguredPackageValueConflicts(tc.model, resp)
+
+			if tc.expectedErrText == "" {
+				assert.False(t, resp.Diagnostics.HasError(), "expected no conflict diagnostics, got: %v", resp.Diagnostics.Errors())
+				return
+			}
+			require.True(t, resp.Diagnostics.HasError())
+			assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), tc.expectedErrText)
+		})
+	}
+}
+
+func TestModifyPlan_ConfigValuesFailKnownConflictsWhenPlanValuesAreUnknown(t *testing.T) {
+	r := NewPackageResource(
+		&udsProviderConfig{ValidatePackagesOnPlan: true},
+		&MockPackager{},
+		nil,
+		nil,
+	).(*PackageResource)
+	configModel := NewTestPackageResourceModel(
+		WithSignatureVerificationEnabled(false),
+		WithValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{
+				"logLevel": types.StringType,
+				"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
+					"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
+						"dynamic": types.StringType,
+					}},
+				}},
+			},
+			map[string]attr.Value{
+				"logLevel": types.StringValue("debug"),
+				"pod": types.ObjectValueMust(
+					map[string]attr.Type{"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{"dynamic": types.StringType}}},
+					map[string]attr.Value{"annotations": types.ObjectValueMust(
+						map[string]attr.Type{"dynamic": types.StringType},
+						map[string]attr.Value{"dynamic": types.StringUnknown()},
+					)},
+				),
+			},
+		))),
+		WithSensitiveValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{"logLevel": types.StringType},
+			map[string]attr.Value{"logLevel": types.StringValue("info")},
+		))),
+	)
+	configModel.Metadata = types.ObjectUnknown(map[string]attr.Type{
+		"name":        types.StringType,
+		"description": types.StringType,
+		"version":     types.StringType,
+	})
+	configModel.ConnectStrings = types.SetUnknown(types.ObjectType{AttrTypes: connectStringAttrTypes})
+	configModel.SetVariables = types.MapUnknown(types.StringType)
+	planModel := configModel
+	planModel.Values = types.DynamicUnknown()
+	planModel.SensitiveValues = types.DynamicUnknown()
+	planModel.Metadata = types.ObjectUnknown(map[string]attr.Type{
+		"name":        types.StringType,
+		"description": types.StringType,
+		"version":     types.StringType,
+	})
+	planModel.ConnectStrings = types.SetUnknown(types.ObjectType{AttrTypes: connectStringAttrTypes})
+	planModel.SetVariables = types.MapUnknown(types.StringType)
+	plan := buildTestPlan(t, r, planModel)
+	resp := resource.ModifyPlanResponse{Plan: plan}
+
+	r.ModifyPlan(context.Background(), resource.ModifyPlanRequest{
+		Config: buildTestConfig(t, r, configModel),
+		Plan:   plan,
+	}, &resp)
+
+	require.True(t, resp.Diagnostics.HasError(), "expected config values to fail known conflicts when plan values are unknown")
+	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "logLevel")
 }
 
 func TestPackageResource_RunPackagePlanChecks_ReturnsLoadErrWhenValuesRequirePackageLoad(t *testing.T) {
@@ -5573,7 +5749,7 @@ func TestPackageResource_RunPackagePlanChecks_ReturnsLoadErrWhenValuesRequirePac
 	packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
 
-	valuePaths := collectAndValidatePackageValuePaths(model, resp)
+	valuePaths := collectConfiguredPackageValuePaths(model, resp)
 	result := packageResource.runPackagePlanChecks(context.Background(), model, valuePaths)
 
 	assert.False(t, resp.Diagnostics.HasError(), "expected local validation to pass, got: %v", resp.Diagnostics.Errors())
@@ -6429,6 +6605,7 @@ func TestRefreshOptionalComponentsFromDeployedPackage(t *testing.T) {
 		assert.Equal(t, 0, len(result.Elements()))
 	})
 }
+
 func TestPackageResource_Schema_Timeouts(t *testing.T) {
 	ctx := context.Background()
 
