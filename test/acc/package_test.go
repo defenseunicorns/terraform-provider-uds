@@ -23,8 +23,18 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// renovate: datasource=github-tags depName=zarf-dev/zarf
-const initPackageVersion = "v0.78.0"
+const (
+	// renovate: datasource=github-tags depName=zarf-dev/zarf
+	initPackageVersion = "v0.79.0"
+
+	// renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/core-crds versioning=semver
+	udsCoreCRDsPackageVersion = "1.6.0"
+
+	// renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/nginx versioning=semver
+	udsNginxPackageVersion = "1.31.1-uds.1"
+
+	udsPackageFlavor = "upstream"
+)
 
 func buildZarfValuesFixture(t *testing.T) string {
 	t.Helper()
@@ -90,22 +100,31 @@ func TestAccPackageResource(t *testing.T) {
 	})
 }
 
-var testAccPackageResourceRemoteValuesInvalidPathConfig = fmt.Sprintf(`
-resource "uds_package" "init" {
-  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
+var testAccPackageResourceRemoteValuesConfig = fmt.Sprintf(`
+resource "uds_package" "nginx" {
+  source       = "oci://ghcr.io/defenseunicorns/packages/uds/nginx:%s-%s"
   architecture = "%s"
-  signature_verification = {
-    keyless = {
-      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
-      certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
-    }
-  }
 
   values = {
-    definitely_unexposed_by_zarf_init_values_test = "invalid"
+    nginx = {
+      replicaCount = 1
+    }
   }
 }
-`, initPackageVersion, runtime.GOARCH)
+`, udsNginxPackageVersion, udsPackageFlavor, runtime.GOARCH)
+
+var testAccPackageResourceRemoteValuesInvalidPathConfig = fmt.Sprintf(`
+resource "uds_package" "nginx" {
+  source       = "oci://ghcr.io/defenseunicorns/packages/uds/nginx:%s-%s"
+  architecture = "%s"
+
+  values = {
+    nginx = {
+      definitely_unexposed_by_nginx_values_test = "invalid"
+    }
+  }
+}
+`, udsNginxPackageVersion, udsPackageFlavor, runtime.GOARCH)
 
 var testAccPackageResourcePlanValidationDisabledConfig = fmt.Sprintf(`
 provider "uds" {
@@ -128,14 +147,17 @@ func TestAccPackageResourcePlanValidation(t *testing.T) {
 		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
-			// Zarf init is a remote package, but this published version does not expose
-			// values mappings. This still proves remote metadata is loaded during plan
-			// and configured value paths are rejected when not exposed by that package.
-			// Add a positive remote values test once a published package exposes values.
+			// Remote packages load metadata during plan so configured values can be
+			// validated before apply.
+			{
+				Config:             testAccPackageResourceRemoteValuesConfig,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
 			{
 				Config:      testAccPackageResourceRemoteValuesInvalidPathConfig,
 				PlanOnly:    true,
-				ExpectError: regexp.MustCompile(`value path "definitely_unexposed_by_zarf_init_values_test" does not match any`),
+				ExpectError: regexp.MustCompile(`value path "nginx\.definitely_unexposed_by_nginx_values_test" does not match\s+any`),
 			},
 			// Disabling package validation on plan skips package-dependent checks.
 			// This unavailable source would otherwise fail package loading, signature
@@ -152,6 +174,8 @@ func TestAccPackageResourcePlanValidation(t *testing.T) {
 type zarfValuesTestConfig struct {
 	PackagePath       string
 	InitPackageSource string
+	CoreCRDsSource    string
+	NginxSource       string
 	Architecture      string
 	AnnotationVersion string
 	Message           string
@@ -161,6 +185,8 @@ type zarfValuesTestConfig struct {
 	ListItemOne       string
 	ListItemTwo       string
 	AppLabel          string
+	NginxReplicas     int
+	NginxAnnotation   string
 }
 
 func renderZarfValuesPackageConfig(t *testing.T, config zarfValuesTestConfig) string {
@@ -225,6 +251,29 @@ resource "uds_package" "values" {
     }
   }
 }
+
+resource "uds_package" "uds_crds" {
+  depends_on = [uds_package.init]
+
+  source       = "{{ .CoreCRDsSource }}"
+  architecture = "{{ .Architecture }}"
+}
+
+resource "uds_package" "nginx" {
+  depends_on = [uds_package.init, uds_package.uds_crds]
+
+  source       = "{{ .NginxSource }}"
+  architecture = "{{ .Architecture }}"
+
+  values = {
+    nginx = {
+      replicaCount = {{ .NginxReplicas }}
+      podAnnotations = {
+        "example.com/source" = "{{ .NginxAnnotation }}"
+      }
+    }
+  }
+}
 `
 
 	tmpl, err := template.New("zarf values package config").Parse(configTemplate)
@@ -240,7 +289,7 @@ resource "uds_package" "values" {
 	return rendered.String()
 }
 
-func checkAppliedZarfValuesConfigMap(expectedConfig zarfValuesTestConfig) resource.TestCheckFunc {
+func checkAppliedZarfValuesResources(expectedConfig zarfValuesTestConfig) resource.TestCheckFunc {
 	return func(_ *terraform.State) error {
 		kubeconfigPath := os.Getenv("KUBECONFIG")
 		if kubeconfigPath == "" {
@@ -284,6 +333,20 @@ func checkAppliedZarfValuesConfigMap(expectedConfig zarfValuesTestConfig) resour
 			return fmt.Errorf("expected configmap annotation test-id to be set")
 		}
 
+		deployment, err := clientset.AppsV1().Deployments("nginx").Get(context.Background(), "nginx", metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to get nginx deployment: %w", err)
+		}
+		if deployment.Spec.Replicas == nil {
+			return fmt.Errorf("expected nginx deployment replicas to be set")
+		}
+		if actual := int(*deployment.Spec.Replicas); actual != expectedConfig.NginxReplicas {
+			return fmt.Errorf("expected nginx deployment replicas %d, got %d", expectedConfig.NginxReplicas, actual)
+		}
+		if actual := deployment.Spec.Template.Annotations["example.com/source"]; actual != expectedConfig.NginxAnnotation {
+			return fmt.Errorf("expected nginx pod annotation example.com/source %q, got %q", expectedConfig.NginxAnnotation, actual)
+		}
+
 		return nil
 	}
 }
@@ -302,7 +365,7 @@ resource "uds_package" "values" {
 `, packagePath, runtime.GOARCH)
 }
 
-func TestAccPackageResourceLocalZarfValues(t *testing.T) {
+func TestAccPackageResourceZarfValues(t *testing.T) {
 	if os.Getenv(resource.EnvTfAcc) == "" {
 		t.Skip("Acceptance tests skipped unless TF_ACC=1")
 	}
@@ -311,6 +374,8 @@ func TestAccPackageResourceLocalZarfValues(t *testing.T) {
 	initialValues := zarfValuesTestConfig{
 		PackagePath:       packagePath,
 		InitPackageSource: fmt.Sprintf("oci://ghcr.io/zarf-dev/packages/init:%s", initPackageVersion),
+		CoreCRDsSource:    fmt.Sprintf("oci://ghcr.io/defenseunicorns/packages/uds/core-crds:%s-%s", udsCoreCRDsPackageVersion, udsPackageFlavor),
+		NginxSource:       fmt.Sprintf("oci://ghcr.io/defenseunicorns/packages/uds/nginx:%s-%s", udsNginxPackageVersion, udsPackageFlavor),
 		Architecture:      runtime.GOARCH,
 		AnnotationVersion: "0.1.0",
 		Message:           "hello-values",
@@ -320,10 +385,14 @@ func TestAccPackageResourceLocalZarfValues(t *testing.T) {
 		ListItemOne:       "alpha",
 		ListItemTwo:       "bravo",
 		AppLabel:          "zarf-values",
+		NginxReplicas:     1,
+		NginxAnnotation:   "terraform-provider-uds-initial",
 	}
 	updatedValues := initialValues
 	updatedValues.AnnotationVersion = "0.1.1"
 	updatedValues.Message = "updated-values"
+	updatedValues.NginxReplicas = 2
+	updatedValues.NginxAnnotation = "terraform-provider-uds-updated"
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
@@ -339,7 +408,11 @@ func TestAccPackageResourceLocalZarfValues(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("uds_package.values", "id", "zarf-values:zarf-values"),
 					resource.TestCheckResourceAttr("uds_package.values", "metadata.version", "0.1.0"),
-					checkAppliedZarfValuesConfigMap(initialValues),
+					resource.TestCheckResourceAttr("uds_package.uds_crds", "id", "core-crds"),
+					resource.TestCheckResourceAttr("uds_package.uds_crds", "metadata.version", udsCoreCRDsPackageVersion),
+					resource.TestCheckResourceAttr("uds_package.nginx", "id", "nginx"),
+					resource.TestCheckResourceAttr("uds_package.nginx", "metadata.version", udsNginxPackageVersion),
+					checkAppliedZarfValuesResources(initialValues),
 				),
 			},
 			{
@@ -347,7 +420,11 @@ func TestAccPackageResourceLocalZarfValues(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("uds_package.values", "id", "zarf-values:zarf-values"),
 					resource.TestCheckResourceAttr("uds_package.values", "metadata.version", "0.1.0"),
-					checkAppliedZarfValuesConfigMap(updatedValues),
+					resource.TestCheckResourceAttr("uds_package.uds_crds", "id", "core-crds"),
+					resource.TestCheckResourceAttr("uds_package.uds_crds", "metadata.version", udsCoreCRDsPackageVersion),
+					resource.TestCheckResourceAttr("uds_package.nginx", "id", "nginx"),
+					resource.TestCheckResourceAttr("uds_package.nginx", "metadata.version", udsNginxPackageVersion),
+					checkAppliedZarfValuesResources(updatedValues),
 				),
 			},
 		},

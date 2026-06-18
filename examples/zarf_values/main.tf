@@ -17,7 +17,17 @@ variable "architecture" {
 }
 
 locals {
-  change_me = "initial-value"
+  change_me          = "initial-value"
+  uds_package_flavor = "upstream"
+
+  # renovate: datasource=docker depName=ghcr.io/zarf-dev/packages/init versioning=semver
+  zarf_init_version = "v0.79.0"
+
+  # renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/core-crds versioning=semver
+  uds_core_crds_version = "1.6.0"
+
+  # renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/nginx versioning=semver
+  uds_nginx_version = "1.31.1-uds.1"
 }
 
 provider "uds" {
@@ -37,7 +47,7 @@ resource "terraform_data" "dynamic_ui" {
 }
 
 resource "uds_package" "init" {
-  source       = "oci://ghcr.io/zarf-dev/packages/init:v0.78.0"
+  source       = "oci://ghcr.io/zarf-dev/packages/init:${local.zarf_init_version}"
   architecture = var.architecture
 
   signature_verification = {
@@ -85,6 +95,29 @@ resource "uds_package" "podinfo" {
         "example.com/sensitive-changed-value" = local.change_me
         "example.com/sensitive-dynamic-value" = terraform_data.dynamic_test_data.id
         "example.com/sensitive-note"          = "redacted-from-terraform-output"
+      }
+    }
+  }
+}
+
+resource "uds_package" "uds_crds" {
+  depends_on = [uds_package.init]
+
+  source       = "oci://ghcr.io/defenseunicorns/packages/uds/core-crds:${local.uds_core_crds_version}-${local.uds_package_flavor}"
+  architecture = var.architecture
+}
+
+resource "uds_package" "nginx" {
+  depends_on = [uds_package.init, uds_package.uds_crds]
+
+  source       = "oci://ghcr.io/defenseunicorns/packages/uds/nginx:${local.uds_nginx_version}-${local.uds_package_flavor}"
+  architecture = var.architecture
+
+  values = {
+    nginx = {
+      replicaCount = 3
+      podAnnotations = {
+        "example.com/source" = "terraform-provider-uds"
       }
     }
   }
