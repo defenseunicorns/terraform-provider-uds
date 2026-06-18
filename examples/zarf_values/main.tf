@@ -23,7 +23,7 @@ locals {
   # renovate: datasource=docker depName=ghcr.io/zarf-dev/packages/init versioning=semver
   zarf_init_version = "v0.79.0"
 
-  # renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/core-crds  versioning=semver
+  # renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/core-crds versioning=semver
   uds_core_crds_version = "1.6.0"
 
   # renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/nginx versioning=semver
@@ -115,7 +115,7 @@ resource "uds_package" "nginx" {
 
   values = {
     nginx = {
-      replicaCount : 3
+      replicaCount = 3
       podAnnotations = {
         "example.com/source" = "terraform-provider-uds"
       }

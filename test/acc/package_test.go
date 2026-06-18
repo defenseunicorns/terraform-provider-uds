@@ -100,22 +100,31 @@ func TestAccPackageResource(t *testing.T) {
 	})
 }
 
-var testAccPackageResourceRemoteValuesInvalidPathConfig = fmt.Sprintf(`
-resource "uds_package" "init" {
-  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
+var testAccPackageResourceRemoteValuesConfig = fmt.Sprintf(`
+resource "uds_package" "nginx" {
+  source       = "oci://ghcr.io/defenseunicorns/packages/uds/nginx:%s-%s"
   architecture = "%s"
-  signature_verification = {
-    keyless = {
-      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
-      certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
-    }
-  }
 
   values = {
-    definitely_unexposed_by_zarf_init_values_test = "invalid"
+    nginx = {
+      replicaCount = 1
+    }
   }
 }
-`, initPackageVersion, runtime.GOARCH)
+`, udsNginxPackageVersion, udsPackageFlavor, runtime.GOARCH)
+
+var testAccPackageResourceRemoteValuesInvalidPathConfig = fmt.Sprintf(`
+resource "uds_package" "nginx" {
+  source       = "oci://ghcr.io/defenseunicorns/packages/uds/nginx:%s-%s"
+  architecture = "%s"
+
+  values = {
+    nginx = {
+      definitely_unexposed_by_nginx_values_test = "invalid"
+    }
+  }
+}
+`, udsNginxPackageVersion, udsPackageFlavor, runtime.GOARCH)
 
 var testAccPackageResourcePlanValidationDisabledConfig = fmt.Sprintf(`
 provider "uds" {
@@ -138,14 +147,17 @@ func TestAccPackageResourcePlanValidation(t *testing.T) {
 		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
-			// Zarf init is a remote package, but this published version does not expose
-			// values mappings. This still proves remote metadata is loaded during plan
-			// and configured value paths are rejected when not exposed by that package.
-			// Add a positive remote values test once a published package exposes values.
+			// Remote packages load metadata during plan so configured values can be
+			// validated before apply.
+			{
+				Config:             testAccPackageResourceRemoteValuesConfig,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
 			{
 				Config:      testAccPackageResourceRemoteValuesInvalidPathConfig,
 				PlanOnly:    true,
-				ExpectError: regexp.MustCompile(`value path "definitely_unexposed_by_zarf_init_values_test" does not match any`),
+				ExpectError: regexp.MustCompile(`value path "nginx\.definitely_unexposed_by_nginx_values_test" does not match\s+any`),
 			},
 			// Disabling package validation on plan skips package-dependent checks.
 			// This unavailable source would otherwise fail package loading, signature
