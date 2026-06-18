@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.4.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.3.5...v0.4.0) (2026-06-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* **uds_package:** replace scalar `timeout` with per-operation wall-clock `timeouts` meta attr ([#244](https://github.com/defenseunicorns/terraform-provider-uds/issues/244))
+* remove unused bundle_metadata resource ([#237](https://github.com/defenseunicorns/terraform-provider-uds/issues/237))
+* keyless package signature verification with zarf dep v0.77.0 update (https://github.com/defenseunicorns/terraform-provider-uds/pull/236)
+
+### Features
+
+* add support for zarf values ([#233](https://github.com/defenseunicorns/terraform-provider-uds/issues/233)) ([0a76103](https://github.com/defenseunicorns/terraform-provider-uds/commit/0a76103eee9ca855fa4d717c5b51e22d8a70c7c0))
+* keyless package signature verification with zarf dep v0.77.0 update (https://github.com/defenseunicorns/terraform-provider-uds/pull/236) ([61866ad](https://github.com/defenseunicorns/terraform-provider-uds/commit/61866add0a6a41cf237dc1c61a4ef21fd9317c8d))
+* **uds_package:** add alpha `optional_components` for optional component selection ([#238](https://github.com/defenseunicorns/terraform-provider-uds/issues/238)) ([d995f5b](https://github.com/defenseunicorns/terraform-provider-uds/commit/d995f5bc85f46b5dd5856a4a0f8bdb145a26b299))
+
+
+### Bug Fixes
+
+* **deps:** update go-dependencies to v2.6.1 ([#240](https://github.com/defenseunicorns/terraform-provider-uds/issues/240)) ([efeece4](https://github.com/defenseunicorns/terraform-provider-uds/commit/efeece44f9f9b1830bd3990a9d84e0b95e9ac36e))
+* **deps:** update go-dependencies to v3 ([#232](https://github.com/defenseunicorns/terraform-provider-uds/issues/232)) ([5f5f21b](https://github.com/defenseunicorns/terraform-provider-uds/commit/5f5f21b07ba2d4395aee0f2c8dbb912150c547cb))
+
+
+### Refactoring
+
+* **uds_package:** replace scalar `timeout` with per-operation wall-clock `timeouts` meta attr ([#244](https://github.com/defenseunicorns/terraform-provider-uds/issues/244)) ([6490592](https://github.com/defenseunicorns/terraform-provider-uds/commit/64905922e01145f9a38c3abc530ee02f622eb657))
+
+
+### Miscellaneous
+
+* **deps:** update dependency defenseunicorns/uds-cli to v0.32.0 ([#234](https://github.com/defenseunicorns/terraform-provider-uds/issues/234)) ([244356d](https://github.com/defenseunicorns/terraform-provider-uds/commit/244356d3c45a00baf1f5adcbee2f57cca2838172))
+* **deps:** update dependency defenseunicorns/uds-cli to v0.33.0 ([#246](https://github.com/defenseunicorns/terraform-provider-uds/issues/246)) ([c27e41c](https://github.com/defenseunicorns/terraform-provider-uds/commit/c27e41c1a6776dc7da2d6f7e8c1e077431be62d2))
+* **deps:** update dependency defenseunicorns/uds-k3d to v0.20.1 ([#242](https://github.com/defenseunicorns/terraform-provider-uds/issues/242)) ([4c30157](https://github.com/defenseunicorns/terraform-provider-uds/commit/4c30157bb858a334af30709e2b21e009c7f69df8))
+* **deps:** update github-actions ([#224](https://github.com/defenseunicorns/terraform-provider-uds/issues/224)) ([7f2c287](https://github.com/defenseunicorns/terraform-provider-uds/commit/7f2c287eb855641628c3216b96fe274736db698d))
+* **deps:** update github-actions ([#231](https://github.com/defenseunicorns/terraform-provider-uds/issues/231)) ([d630b77](https://github.com/defenseunicorns/terraform-provider-uds/commit/d630b777042bb8ce40e9d830efcb8e7f05aa8bf7))
+* **deps:** update github-actions ([#239](https://github.com/defenseunicorns/terraform-provider-uds/issues/239)) ([a6285f8](https://github.com/defenseunicorns/terraform-provider-uds/commit/a6285f88fe0fcf01aab660e57fc64b80e1cc3a2a))
+* **deps:** update github-actions ([#247](https://github.com/defenseunicorns/terraform-provider-uds/issues/247)) ([4fe2a29](https://github.com/defenseunicorns/terraform-provider-uds/commit/4fe2a292216485fb0cc8da290941e2998fe8c7fd))
+* **deps:** update github-actions to v0.32.0 ([#235](https://github.com/defenseunicorns/terraform-provider-uds/issues/235)) ([77d600b](https://github.com/defenseunicorns/terraform-provider-uds/commit/77d600b6e168f307b43eef11350fb2bfdc5653bd))
+* remove unused bundle_metadata resource ([#237](https://github.com/defenseunicorns/terraform-provider-uds/issues/237)) ([6e89c9e](https://github.com/defenseunicorns/terraform-provider-uds/commit/6e89c9e6e262d5d3ed33c0939418681b3aefc29c))
+* rename LICENSE.md to LICENSE for standard tooling recognition ([#225](https://github.com/defenseunicorns/terraform-provider-uds/issues/225)) ([0530c3f](https://github.com/defenseunicorns/terraform-provider-uds/commit/0530c3f43ac209281df373c05342c0f8175db951))
+* upgrade zarf to v0.79.0 / add acc test and example using oci ref ([#250](https://github.com/defenseunicorns/terraform-provider-uds/issues/250)) ([68046d8](https://github.com/defenseunicorns/terraform-provider-uds/commit/68046d83fe97291df6ce6ebbf2b0f8d935b30ca6))
+
 ## [0.3.5](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.3.4...v0.3.5) (2026-05-15)
 
 
