@@ -10,7 +10,7 @@
 
 locals {
   # renovate: datasource=docker depName=ghcr.io/zarf-dev/packages/init versioning=semver
-  zarf_init_version = "v0.79.0"
+  zarf_init_version = "v0.80.0"
 }
 
 # import package deployed without a namespace override
