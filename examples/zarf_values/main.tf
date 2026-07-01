@@ -27,7 +27,7 @@ locals {
   uds_core_crds_version = "1.6.0"
 
   # renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/nginx versioning=semver
-  uds_nginx_version = "1.31.1-uds.1"
+  uds_nginx_version = "1.31.1-uds.1-upstream"
 }
 
 provider "uds" {
