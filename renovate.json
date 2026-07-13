@@ -28,7 +28,7 @@
       "commitMessageTopic": "go dependencies"
     },
     {
-      "matchPackageNames": ["zarf-dev/zarf", "github.com/zarf-dev/zarf"],
+      "matchPackageNames": ["zarf-dev/zarf", "github.com/zarf-dev/zarf", "ghcr.io/zarf-dev/packages/init"],
       "groupName": "zarf",
       "commitMessageTopic": "zarf"
     },
