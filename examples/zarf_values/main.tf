@@ -21,7 +21,7 @@ locals {
   uds_package_flavor = "upstream"
 
   # renovate: datasource=docker depName=ghcr.io/zarf-dev/packages/init versioning=semver
-  zarf_init_version = "v0.81.0"
+  zarf_init_version = "v0.81.1"
 
   # renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/core-crds versioning=semver
   uds_core_crds_version = "1.6.0"

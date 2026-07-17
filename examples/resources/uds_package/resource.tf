@@ -13,7 +13,7 @@ provider "uds" {
 
 locals {
   # renovate: datasource=docker depName=ghcr.io/zarf-dev/packages/init versioning=semver
-  zarf_init_version = "v0.81.0"
+  zarf_init_version = "v0.81.1"
 }
 
 resource "uds_package" "init" {
