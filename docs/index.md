@@ -16,11 +16,11 @@ provider "uds" {
   # Set a default architecture for packages if not set explicitly in the resource
   default_architecture = "arm64"
 
-  # Enable HTTP-only connections when working with non-TLS registries
-  insecure_force_http = true
+  # Allow HTTP-only OCI package sources or force HTTP for an external Zarf registry
+  # insecure_force_http = true
 
-  # Skip TLS verification when using custom or self-signed certificates
-  insecure_skip_tls_verification = true
+  # Skip TLS verification for package sources or external registries with self-signed certificates
+  # insecure_skip_tls_verification = true
 
   # Use a custom Zarf cache directory for package downloads and verification
   zarf_cache_path = "~/.zarf-cache"
@@ -40,7 +40,7 @@ provider "uds" {
 
 - `default_architecture` (String) Default system architecture of the target cluster. Valid values are `amd64` or `arm64`. Defaults to the local system architecture. Can also be configured with the `UDS_DEFAULT_ARCHITECTURE` environment variable.
 - `force_helm_ssa_conflicts` (Boolean) Force Helm to take ownership of conflicting fields during Server-Side Apply operations during package deployment. Use when external tools (kubectl, HPAs, etc.) have modified resources. Defaults to `false`. Can also be configured with the `UDS_FORCE_HELM_SSA_CONFLICTS` environment variable.
-- `insecure_force_http` (Boolean) Force remote package fetching over HTTP instead of HTTPS. Defaults to `false`. Can also be configured with the `UDS_INSECURE_FORCE_HTTP` environment variable.
-- `insecure_skip_tls_verification` (Boolean) Skip TLS certificate verification when fetching remote packages over HTTPS. Defaults to `false`. Can also be configured with the `UDS_INSECURE_SKIP_TLS_VERIFICATION` environment variable.
+- `insecure_force_http` (Boolean) Allow plain HTTP for OCI package sources and force plain HTTP for external Zarf registry pushes. Package sources continue to use HTTPS when available, while Zarf-managed registries use the transport recorded in cluster state. Defaults to `false`. Can also be configured with the `UDS_INSECURE_FORCE_HTTP` environment variable.
+- `insecure_skip_tls_verification` (Boolean) Skip TLS certificate verification for HTTPS package sources and external Zarf registry pushes. Zarf-managed mTLS registries continue to use their managed trust configuration. Defaults to `false`. Can also be configured with the `UDS_INSECURE_SKIP_TLS_VERIFICATION` environment variable.
 - `validate_packages_on_plan` (Boolean) Whether to validate UDS packages during planning. When enabled, the provider may load packages during plan to catch package-dependent configuration errors early, such as invalid optional component names or signature verification failures. Disable this to avoid plan-time package downloads or expensive validation. These checks are still enforced during apply. Defaults to `true`. Can also be configured with the `UDS_VALIDATE_PACKAGES_ON_PLAN` environment variable.
 - `zarf_cache_path` (String) Filesystem path to the local Zarf cache directory. Defaults to `~/.zarf-cache`. Can also be configured with the `UDS_ZARF_CACHE_PATH` environment variable.
