@@ -4119,6 +4119,53 @@ func TestFlattenComponentOverrides(t *testing.T) {
 	}
 }
 
+// Unit test that an invalid YAML override value is not leaked in the parse error
+func TestFlattenComponentOverrides_InvalidYAMLDoesNotLeakValue(t *testing.T) {
+	const secret = "sup3rs3cr3tP@ssw0rd"
+
+	tests := []struct {
+		name      string
+		valueType string
+		value     string
+	}{
+		{name: "sensitive_values syntax error", valueType: "sensitive values", value: secret + ": [oops"},
+		{name: "values syntax error", valueType: "values", value: secret + ": [oops"},
+		{name: "sensitive_values decode error", valueType: "sensitive values", value: "!!int " + secret},
+		{name: "values decode error", valueType: "values", value: "!!int " + secret},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pathValues := helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+				{Path: types.StringValue("path1"), Value: types.StringValue(tc.value)},
+			})
+
+			chart := ComponentChartValuesModel{ChartName: types.StringValue("chart1")}
+			if tc.valueType == "sensitive values" {
+				chart.SensitiveValues = pathValues
+			} else {
+				chart.Values = pathValues
+			}
+
+			input := []ComponentModel{
+				{
+					Name:      types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{chart}),
+				},
+			}
+
+			_, err := flattenComponentOverrides(context.Background(), input)
+
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), secret)
+			assert.Contains(t, err.Error(), tc.valueType)
+			assert.Contains(t, err.Error(), "path1")
+			assert.Contains(t, err.Error(), "chart1")
+			assert.Contains(t, err.Error(), "component1")
+		})
+	}
+}
+
 func TestGetPackageOverrideName(t *testing.T) {
 	t.Run("oci source uses full reference", func(t *testing.T) {
 		source := "oci://ghcr.io/defenseunicorns/packages/test:latest"
