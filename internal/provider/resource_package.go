@@ -9,12 +9,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -24,11 +27,12 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"gopkg.in/yaml.v2"
 
@@ -43,21 +47,22 @@ import (
 	zarfLayout "github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfSigning "github.com/zarf-dev/zarf/src/pkg/signing"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
+	zarfValue "github.com/zarf-dev/zarf/src/pkg/value"
 	zarfZoci "github.com/zarf-dev/zarf/src/pkg/zoci"
 	zarfTypes "github.com/zarf-dev/zarf/src/types"
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
 var (
-	_ resource.Resource                = &PackageResource{}
-	_ resource.ResourceWithImportState = &PackageResource{}
-	_ resource.ResourceWithModifyPlan  = &PackageResource{}
+	_ resource.Resource                     = &PackageResource{}
+	_ resource.ResourceWithImportState      = &PackageResource{}
+	_ resource.ResourceWithModifyPlan       = &PackageResource{}
+	_ resource.ResourceWithConfigValidators = &PackageResource{}
 )
 
-const (
-	clusterTimeoutMinutes = 5
-	defaultPackageTimeout = "15m"
-)
+const clusterTimeoutMinutes = 5
+
+type packageSignatureVerifier func(context.Context, *zarfLayout.PackageLayout, zarfSigning.VerifyBlobOptions) error
 
 // NewPackageResource creates a new instance of the package resource.
 func NewPackageResource(providerConfig *udsProviderConfig, packager udsPackager.Packager, packageComponentFilter udsPackager.PackageComponentFilter, cluster udsCluster.Cluster) resource.Resource {
@@ -74,26 +79,34 @@ func NewPackageResource(providerConfig *udsProviderConfig, packager udsPackager.
 		cluster = udsCluster.NewCluster()
 	}
 	return &PackageResource{
-		providerConfig: providerConfig,
-		packager:       packager,
-		packageFilter:  packageComponentFilter,
-		cluster:        cluster,
+		providerConfig:             providerConfig,
+		packager:                   packager,
+		packageFilter:              packageComponentFilter,
+		cluster:                    cluster,
+		verifyPackageSignatureFunc: defaultPackageSignatureVerifier,
 	}
+}
+
+func defaultPackageSignatureVerifier(ctx context.Context, pkgLayout *zarfLayout.PackageLayout, opts zarfSigning.VerifyBlobOptions) error {
+	return pkgLayout.VerifyPackageSignature(ctx, opts)
 }
 
 // PackageResourceModel describes the resource data model.
 type PackageResourceModel struct {
-	ID                    types.String `tfsdk:"id"`
-	Source                types.String `tfsdk:"source"`
-	Architecture          types.String `tfsdk:"architecture"`
-	Timeout               types.String `tfsdk:"timeout"`
-	SignatureVerification types.Object `tfsdk:"signature_verification"`
-	Namespace             types.String `tfsdk:"namespace"`
+	ID                    types.String   `tfsdk:"id"`
+	Source                types.String   `tfsdk:"source"`
+	Architecture          types.String   `tfsdk:"architecture"`
+	Timeouts              timeouts.Value `tfsdk:"timeouts"`
+	SignatureVerification types.Object   `tfsdk:"signature_verification"`
+	Namespace             types.String   `tfsdk:"namespace"`
 
 	Components         types.Set `tfsdk:"component"`           // Set of ComponentModel objects (TODO: remove when component block is removed)
 	OptionalComponents types.Set `tfsdk:"optional_components"` // Set of string component names (alpha)
 	Vars               types.Set `tfsdk:"vars"`                // Set of VariableModel objects
 	SensitiveVars      types.Set `tfsdk:"sensitive_vars"`      // Set of VariableModel objects
+
+	Values          types.Dynamic `tfsdk:"values"`
+	SensitiveValues types.Dynamic `tfsdk:"sensitive_values"`
 
 	// readonly metadata
 	Name           types.String `tfsdk:"name"`
@@ -191,7 +204,7 @@ func (r *PackageResource) Metadata(_ context.Context, req resource.MetadataReque
 }
 
 // Schema defines the schema for the resource.
-func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Deploys a UDS Package.",
 
@@ -279,15 +292,16 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					},
 				},
 			},
-			"timeout": schema.StringAttribute{
-				MarkdownDescription: "Timeout for the deploy operation.",
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString(defaultPackageTimeout),
-				Validators: []validator.String{
-					udsValidator.DurationGreaterThanValidator(0),
-				},
-			},
+			"timeouts": timeouts.Attributes(ctx, timeouts.Opts{
+				Create:            true,
+				Read:              true,
+				Update:            true,
+				Delete:            true,
+				CreateDescription: "Total create-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and Helm/Zarf execution.",
+				ReadDescription:   "Total read-operation wall-clock timeout (default 5 m). Covers cluster connection and state retrieval.",
+				UpdateDescription: "Total update-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and redeployment.",
+				DeleteDescription: "Total delete-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and removal.",
+			}),
 			"kind": schema.StringAttribute{
 				MarkdownDescription: "Kind of UDS package; ZarfInitConfig or ZarfPackageConfig.",
 				Computed:            true,
@@ -390,6 +404,15 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				ElementType:         types.StringType,
 				Sensitive:           true,
 			},
+			"values": schema.DynamicAttribute{
+				MarkdownDescription: "[Alpha] Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package. Cannot be used with component blocks.",
+				Optional:            true,
+			},
+			"sensitive_values": schema.DynamicAttribute{
+				MarkdownDescription: "[Alpha] Sensitive Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package. Cannot be used with component blocks.",
+				Optional:            true,
+				Sensitive:           true,
+			},
 		},
 		Blocks: map[string]schema.Block{
 			// TODO: remove when component block is removed
@@ -480,10 +503,11 @@ func (r *PackageResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 
 // PackageResource defines the resource implementation.
 type PackageResource struct {
-	providerConfig *udsProviderConfig
-	packager       udsPackager.Packager
-	cluster        udsCluster.Cluster
-	packageFilter  udsPackager.PackageComponentFilter
+	providerConfig             *udsProviderConfig
+	packager                   udsPackager.Packager
+	cluster                    udsCluster.Cluster
+	packageFilter              udsPackager.PackageComponentFilter
+	verifyPackageSignatureFunc packageSignatureVerifier
 }
 
 // ValidateConfig ensures validation between interdependant fields within a PackageResourceModel.
@@ -499,6 +523,7 @@ func (r *PackageResource) ValidateConfig(ctx context.Context, req resource.Valid
 	validateSignatureVerificationAttributes(ctx, model, resp)
 	// TODO: remove when component block is removed
 	validateComponentBlockOptionalComponentsMutualExclusivity(model, resp)
+	validateValuesComponentMutualExclusivity(model, resp)
 }
 
 // Configure configures the resource with provider data.
@@ -531,20 +556,32 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	createTimeout, timeoutDiags := plan.Timeouts.Create(ctx, 30*time.Minute)
+	resp.Diagnostics.Append(timeoutDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, createTimeout)
+	defer cancel()
+
 	var err error
-	plan, err = r.deployAsNew(ctx, plan)
+	plan, err = r.deployAsNew(timeoutCtx, plan)
 	if err != nil {
 		var optErr *optionalComponentsValidationError
 		if errors.As(err, &optErr) {
 			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", optErr.Error())
 		} else {
-			resp.Diagnostics.AddError("Error creating package", "Could not create resource, unexpected error: "+err.Error())
+			resp.Diagnostics.AddError(
+				"Error creating package",
+				lifecycleErrorDetail(timeoutCtx, "create", err),
+			)
 		}
 		return
 	}
 
 	// Set state to fully populated data
-	diags = resp.State.Set(ctx, plan)
+	diags = resp.State.Set(timeoutCtx, plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -564,7 +601,13 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	timeoutCtx, cancel := withClusterTimeout(ctx)
+	readTimeout, diags := data.Timeouts.Read(ctx, 5*time.Minute)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 
 	packageNamespace, packageName, err := parsePackageID(data.ID.ValueString())
@@ -580,7 +623,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error getting deployed package",
-			"Failed to get deployed package: "+err.Error(),
+			lifecycleErrorDetail(timeoutCtx, "read", err),
 		)
 		return
 	}
@@ -589,7 +632,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 			"Deployed package not found",
 			"Could not find deployed package with namespace "+packageNamespace+" and name "+packageName+" - removing resource",
 		)
-		resp.State.RemoveResource(ctx)
+		resp.State.RemoveResource(timeoutCtx)
 		return
 	}
 
@@ -601,10 +644,6 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	if deployedPackage.NamespaceOverride != "" {
 		data.Namespace = types.StringValue(deployedPackage.NamespaceOverride)
 	}
-	if data.Timeout.IsNull() {
-		data.Timeout = types.StringValue(defaultPackageTimeout)
-	}
-
 	// populate the package metadata type.
 	// TODO(clint): this is ugly and I got it from https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/custom
 	// There are probably a few optimizations or cleanups to be done here.
@@ -650,7 +689,7 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	}
 	data.OptionalComponents = updatedOptionals
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	resp.Diagnostics.Append(resp.State.Set(timeoutCtx, &data)...)
 }
 
 // Update updates the resource and sets the updated Terraform state on success.
@@ -673,14 +712,36 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	var err error
-	plan, err = r.deployAsNewOrUpdate(ctx, plan, oldPlan, resp)
+	stateOnlyUpdate, err := isStateOnlyUpdate(req.Plan, req.State)
+	if err != nil {
+		resp.Diagnostics.AddError("Error comparing update changes", err.Error())
+		return
+	}
+	if stateOnlyUpdate {
+		oldPlan.Timeouts = plan.Timeouts
+		resp.Diagnostics.Append(resp.State.Set(ctx, oldPlan)...)
+		return
+	}
+
+	updateTimeout, timeoutDiags := plan.Timeouts.Update(ctx, 30*time.Minute)
+	resp.Diagnostics.Append(timeoutDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, updateTimeout)
+	defer cancel()
+
+	plan, err = r.deployAsNewOrUpdate(timeoutCtx, plan, oldPlan)
 	if err != nil {
 		var optErr *optionalComponentsValidationError
 		if errors.As(err, &optErr) {
 			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", optErr.Error())
 		} else {
-			resp.Diagnostics.AddError("Error updating package", "Could not update package, unexpected error: "+err.Error())
+			resp.Diagnostics.AddError(
+				"Error updating package",
+				lifecycleErrorDetail(timeoutCtx, "update", err),
+			)
 		}
 		return
 	}
@@ -689,7 +750,7 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	}
 
 	// Set state to fully populated data
-	diags = resp.State.Set(ctx, plan)
+	diags = resp.State.Set(timeoutCtx, plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -702,24 +763,26 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-
-	// convert the terraform timeout to a time.Duration
-	deleteTimeout, err := time.ParseDuration(data.Timeout.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error determine timeout",
-			"Could not determine timeout: "+err.Error(),
-		)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	deleteTimeout, timeoutDiags := data.Timeouts.Delete(ctx, 30*time.Minute)
+	resp.Diagnostics.Append(timeoutDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, deleteTimeout)
 	defer cancel()
-	c, err := r.cluster.NewWithWait(timeoutCtx)
+
+	clusterCtx, clusterCancel := withClusterTimeout(timeoutCtx)
+	defer clusterCancel()
+	c, err := r.cluster.NewWithWait(clusterCtx)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Could not connect to cluster",
-			"Error connecting to cluster: "+err.Error(),
+			lifecycleErrorDetail(timeoutCtx, "delete", err),
 		)
 		return
 	}
@@ -734,7 +797,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 	defer os.RemoveAll(tmpDir)
 
-	verifyBlobOpts, err := buildVerifyBlobOptions(ctx, data, tmpDir)
+	verifyBlobOpts, err := buildVerifyBlobOptions(timeoutCtx, data, tmpDir)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Verification config error",
@@ -759,29 +822,33 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 
 	packageSource := data.Name.ValueString()
-	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, c, packageSource, data.Namespace.ValueString(), loadOpts)
+	pkg, err := r.packager.GetPackageFromSourceOrCluster(timeoutCtx, c, packageSource, data.Namespace.ValueString(), loadOpts)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error loading package",
-			"Could not load package: "+err.Error(),
+			lifecycleErrorDetail(timeoutCtx, "delete", err),
 		)
 		return
 	}
 
+	zarfTimeout, err := zarfOperationTimeout(timeoutCtx)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Package removal could not start",
+			lifecycleErrorDetail(timeoutCtx, "delete", err),
+		)
+		return
+	}
 	removeOpt := zarfPackager.RemoveOptions{
 		NamespaceOverride: data.Namespace.ValueString(),
 		Cluster:           c,
-		Timeout:           deleteTimeout,
+		Timeout:           zarfTimeout,
 	}
-	if err := r.packager.Remove(ctx, pkg, removeOpt); err != nil {
+	if err := r.packager.Remove(timeoutCtx, pkg, removeOpt); err != nil {
 		resp.Diagnostics.AddError(
 			"Error removing package",
-			"Could not remove package: "+err.Error(),
+			lifecycleErrorDetail(timeoutCtx, "delete", err),
 		)
-		return
-	}
-
-	if resp.Diagnostics.HasError() {
 		return
 	}
 }
@@ -815,8 +882,37 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		plan.Architecture = types.StringValue(defaultArch)
 	}
 
+	plan = normalizeOptionalComponentsPlan(config, plan)
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !req.State.Raw.IsNull() {
+		stateOnlyUpdate, err := isStateOnlyUpdate(resp.Plan, req.State)
+		if err != nil {
+			resp.Diagnostics.AddError("Error comparing planned changes", err.Error())
+			return
+		}
+		if stateOnlyUpdate {
+			resp.Diagnostics.Append(preserveComputedState(ctx, req.State, &resp.Plan)...)
+			return
+		}
+	}
+
+	// Use config so authored value paths remain visible even when Terraform marks
+	// DynamicAttribute plan values unknown because of unknown leaves.
+	validateConfiguredPackageValueConflicts(config, resp)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	valuePaths := collectConfiguredPackageValuePaths(config, resp)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	if r.providerConfig == nil || r.providerConfig.ValidatePackagesOnPlan {
-		checks := r.runPackagePlanChecks(ctx, plan)
+		checks := r.runPackagePlanChecks(ctx, plan, valuePaths)
 		if checks.LoadErr != nil {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("source"),
@@ -841,9 +937,11 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 			)
 			return
 		}
+		if checks.ValuePathsErr != nil {
+			resp.Diagnostics.AddError("Invalid package value", checks.ValuePathsErr.Error())
+			return
+		}
 	}
-
-	plan = normalizeOptionalComponentsPlan(config, plan)
 
 	// When component selection changes, mark deployment-derived computed outputs as unknown
 	// so Terraform doesn't hold the provider to prior known values that may change after apply.
@@ -868,6 +966,11 @@ func (r *PackageResource) ImportState(ctx context.Context, req resource.ImportSt
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
+// ConfigValidators returns resource-level validators run before CRUD operations.
+func (r *PackageResource) ConfigValidators(_ context.Context) []resource.ConfigValidator {
+	return []resource.ConfigValidator{timeoutPositiveValidator{}}
+}
+
 func (r *PackageResource) getRemoteOptions() zarfTypes.RemoteOptions {
 	return zarfTypes.RemoteOptions{
 		PlainHTTP:             r.providerConfig.InsecureForceHTTP,
@@ -875,19 +978,8 @@ func (r *PackageResource) getRemoteOptions() zarfTypes.RemoteOptions {
 	}
 }
 
-func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
+func (r *PackageResource) loadPackageLayoutFromSource(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
 	packageSource, err := getPackageSource(model, *r.providerConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	tmpDir, err := os.MkdirTemp("", "uds-package-verify-*")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp dir for package verification: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	verifyBlobOpts, err := buildVerifyBlobOptions(ctx, model, tmpDir)
 	if err != nil {
 		return nil, err
 	}
@@ -896,7 +988,6 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 	loadOpt := zarfPackager.LoadOptions{
 		Filter:               zarfFilters.Empty(),
 		Architecture:         getArchitecture(model, *r.providerConfig),
-		VerifyBlobOptions:    verifyBlobOpts,
 		VerificationStrategy: layout.VerifyNever,
 		RemoteOptions:        r.getRemoteOptions(),
 		CachePath:            r.providerConfig.ZarfCachePath,
@@ -907,18 +998,36 @@ func (r *PackageResource) getPackageLayoutFromSource(ctx context.Context, model 
 		return nil, err
 	}
 
-	// Verify package signature
+	return pkgLayout, nil
+}
+
+func (r *PackageResource) verifyPackageSignature(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) error {
 	enforceSignatureVerification := getEffectiveSignatureVerification(ctx, model)
+	if !enforceSignatureVerification {
+		return nil
+	}
+
+	tmpDir, err := os.MkdirTemp("", "uds-package-verify-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir for package verification: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	verifyBlobOpts, err := buildVerifyBlobOptions(ctx, model, tmpDir)
+	if err != nil {
+		return err
+	}
+
 	verifyOpts := zarfSigning.DefaultVerifyBlobOptions()
 	if verifyBlobOpts != nil {
 		verifyOpts = *verifyBlobOpts
 	}
-	verifyErr := pkgLayout.VerifyPackageSignature(ctx, verifyOpts)
-	if err := handleVerifyResult(ctx, verifyErr, pkgLayout.IsSigned(), enforceSignatureVerification); err != nil {
-		return nil, err
+	verifyPackageSignatureFunc := r.verifyPackageSignatureFunc
+	if verifyPackageSignatureFunc == nil {
+		verifyPackageSignatureFunc = defaultPackageSignatureVerifier
 	}
-
-	return pkgLayout, nil
+	verifyErr := verifyPackageSignatureFunc(ctx, pkgLayout, verifyOpts)
+	return handleVerifyResult(ctx, verifyErr, pkgLayout.IsSigned(), enforceSignatureVerification)
 }
 
 // handleVerifyResult interprets the error from VerifyPackageSignature and either
@@ -957,33 +1066,25 @@ func getEffectiveSignatureVerification(ctx context.Context, model PackageResourc
 	return sig.Verify.ValueBool()
 }
 
-func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string, resp *resource.UpdateResponse) {
+func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string) error {
 	if len(componentsToRemove) == 0 {
-		return
+		return nil
 	}
 
 	namespaceOverride := plan.Namespace.ValueString()
 
 	// get a reference to the k8s cluster
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	clusterCtx, cancel := withClusterTimeout(ctx)
 	defer cancel()
-	zarfCluster, err := r.cluster.NewWithWait(timeoutCtx)
+	zarfCluster, err := r.cluster.NewWithWait(clusterCtx)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error loading Zarf cluster",
-			"Could not Zarf cluster: "+err.Error(),
-		)
-		return
+		return fmt.Errorf("could not connect to cluster: %w", err)
 	}
 
 	// get a reference to the ZarfPackage
 	packageSource, err := getPackageSource(plan, *r.providerConfig)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error getting package source",
-			"Could not get package source: "+err.Error(),
-		)
-		return
+		return fmt.Errorf("could not get package source: %w", err)
 	}
 	loadOpts := zarfPackager.LoadOptions{
 		Architecture: getArchitecture(plan, *r.providerConfig),
@@ -992,11 +1093,7 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	}
 	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error loading package",
-			"Could not load package: "+err.Error(),
-		)
-		return
+		return fmt.Errorf("could not load package: %w", err)
 	}
 
 	// Check if any of the components provided are 'required' and remove them from the list of components we are removing
@@ -1015,6 +1112,10 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 
 	// Fetch a new zarfPackage from the cluster, with a new filter of components
 	if foundRequired {
+		if len(newComponentsToRemove) == 0 {
+			// All requested components were required; nothing safe to remove.
+			return nil
+		}
 		loadOpts := zarfPackager.LoadOptions{
 			Architecture: getArchitecture(plan, *r.providerConfig),
 			Filter:       r.packageFilter.ForRemove(newComponentsToRemove),
@@ -1023,36 +1124,23 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 
 		pkg, err = r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
 		if err != nil {
-			resp.Diagnostics.AddError(
-				"Error loading package",
-				"Could not load package: "+err.Error(),
-			)
-			return
+			return fmt.Errorf("could not load package: %w", err)
 		}
 	}
 
-	// Remove the component from the cluster
-	deleteTimeout, err := time.ParseDuration(plan.Timeout.ValueString())
+	zarfTimeout, err := zarfOperationTimeout(ctx)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error parsing timeout duration",
-			"Could not parse timeout duration: "+err.Error(),
-		)
-		return
-
+		return fmt.Errorf("insufficient time remaining before component removal: %w", err)
 	}
 	removeOpt := zarfPackager.RemoveOptions{
 		Cluster:           zarfCluster,
-		Timeout:           deleteTimeout,
+		Timeout:           zarfTimeout,
 		NamespaceOverride: namespaceOverride,
 	}
 	if err := r.packager.Remove(ctx, pkg, removeOpt); err != nil {
-		resp.Diagnostics.AddError(
-			"Error removing components from package",
-			"Could not remove components from package: "+err.Error(),
-		)
-		return
+		return fmt.Errorf("could not remove components from package: %w", err)
 	}
+	return nil
 }
 
 func (r *PackageResource) getDeployedPackage(ctx context.Context, name string, namespace string) (zarfState.DeployedPackage, bool, error) {
@@ -1084,9 +1172,8 @@ func (r *PackageResource) getDeployedPackage(ctx context.Context, name string, n
 }
 
 func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
-
 	// Get the package name from the source package metadata
-	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
+	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
 	if err != nil {
 		return plan, err
 	}
@@ -1095,6 +1182,9 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
 		}
 	}()
+	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
+		return plan, err
+	}
 
 	packageNamespace := plan.Namespace.ValueString()
 	packageName := pkgLayout.Pkg.Metadata.Name
@@ -1105,6 +1195,9 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 
 	_, found, err := r.getDeployedPackage(clusterTimeoutCtx, packageName, packageNamespace)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return plan, err
+		}
 		tflog.Warn(ctx, "could not check for existing package, proceeding with deploy", map[string]interface{}{"error": err.Error()})
 	}
 	if found {
@@ -1114,11 +1207,9 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	return r.upsert(ctx, plan)
 }
 
-// TODO(erickson): Remove response parameter and return an error after refactoring removeComponents to do the same
-func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel, resp *resource.UpdateResponse) (PackageResourceModel, error) {
-
+func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel) (PackageResourceModel, error) {
 	// TODO(erickson): Need to revisit this logic. If deploy errors, can we recover?
-	// Generate list of components to remove after the update is complete.
+	// Generate list of components to remove before the update.
 	// Combines legacy component-block removals with optional_components removals.
 	// Removal happens before upsert because removing a required component removes the entire package.
 	componentsToRemove := getMissingComponents(plan, oldPlan) // TODO: remove when component block is removed
@@ -1132,9 +1223,8 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 		}
 	}
 	if len(componentsToRemove) > 0 {
-		r.removeComponents(ctx, plan, componentsToRemove, resp)
-		if resp.Diagnostics.HasError() {
-			return plan, nil
+		if err := r.removeComponents(ctx, plan, componentsToRemove); err != nil {
+			return plan, err
 		}
 	}
 
@@ -1145,14 +1235,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if plan.OptionalComponents.IsUnknown() {
 		return plan, fmt.Errorf("optional_components must be known before apply")
 	}
-
-	// convert the terraform timeout to a time.Duration
-	timeout, err := time.ParseDuration(plan.Timeout.ValueString())
-	if err != nil {
-		return plan, err
-	}
-
-	pkgLayout, err := r.getPackageLayoutFromSource(ctx, plan)
+	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
 	if err != nil {
 		return plan, err
 	}
@@ -1161,34 +1244,40 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
 		}
 	}()
+	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
+		return plan, err
+	}
 
-	// Alpha: if optional_components is set, use it directly; otherwise fall back to component blocks.
-	// TODO: remove branch when component block is removed; always use optional_components.
-	var optionalComponents []string
-	if !plan.OptionalComponents.IsNull() {
-		if diags := plan.OptionalComponents.ElementsAs(ctx, &optionalComponents, false); diags.HasError() {
-			return plan, fmt.Errorf("failed to read optional_components: %v", diags)
-		}
-		if len(optionalComponents) > 0 {
-			if err := validateOptionalComponentsAgainstPackage(optionalComponents, pkgLayout.Pkg.Components); err != nil {
-				return plan, err
-			}
-		}
-	} else {
-		_, optionalComponents, err = getRequiredAndOptionalPackageComponentsNames(plan, pkgLayout)
-		if err != nil {
-			return plan, err
-		}
+	optionalComponents, err := getOptionalComponentsForDeploy(ctx, plan, pkgLayout)
+	if err != nil {
+		return plan, err
 	}
 
 	// TODO: remove when component block is removed (components extraction, flattenComponentOverrides, and ValuesOverridesMap)
 	var components []ComponentModel
 	if !plan.Components.IsNull() && !plan.Components.IsUnknown() {
-		plan.Components.ElementsAs(ctx, &components, false)
+		if diags := plan.Components.ElementsAs(ctx, &components, false); diags.HasError() {
+			return plan, fmt.Errorf("failed to read component blocks: %v", diags)
+		}
 	}
 
 	valuesOverridesMap, err := flattenComponentOverrides(ctx, components)
 	if err != nil {
+		return plan, err
+	}
+	values, err := dynamicToValues("values", plan.Values)
+	if err != nil {
+		return plan, fmt.Errorf("invalid package values for apply: %w", err)
+	}
+	sensitiveValues, err := dynamicToValues("sensitive_values", plan.SensitiveValues)
+	if err != nil {
+		return plan, fmt.Errorf("invalid sensitive package values for apply: %w", err)
+	}
+	deployValues, err := mergePackageValues(values, sensitiveValues)
+	if err != nil {
+		return plan, err
+	}
+	if err := r.validatePackageValuesAgainstSourcePaths(ctx, plan, pkgLayout, deployValues); err != nil {
 		return plan, err
 	}
 
@@ -1196,10 +1285,10 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	deployOpts := zarfPackager.DeployOptions{
 		AdoptExistingResources: false,
 		SetVariables:           buildSetVariableMap(plan),
+		Values:                 deployValues,
 		ValuesOverridesMap:     valuesOverridesMap,
 		RemoteOptions:          r.getRemoteOptions(),
 		NamespaceOverride:      plan.Namespace.ValueString(),
-		Timeout:                timeout,
 		GitServer: zarfState.GitServerInfo{
 			PushUsername: zarfState.ZarfGitPushUser,
 		},
@@ -1216,6 +1305,12 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if err != nil {
 		return plan, err
 	}
+
+	zarfTimeout, err := zarfOperationTimeout(ctx)
+	if err != nil {
+		return plan, fmt.Errorf("insufficient time remaining before deployment: %w", err)
+	}
+	deployOpts.Timeout = zarfTimeout
 
 	tflog.Debug(ctx, "starting deploy")
 	deployResult, err := r.packager.Deploy(ctx, pkgLayout, deployOpts)
@@ -1401,6 +1496,668 @@ func flattenComponentOverrides(ctx context.Context, components []ComponentModel)
 	return result, nil
 }
 
+func dynamicToValues(attrName string, value types.Dynamic) (zarfValue.Values, error) {
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return zarfValue.Values{}, nil
+	}
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return zarfValue.Values{}, fmt.Errorf("%s must be known", attrName)
+	}
+
+	converted, err := terraformValueToGoValue(value.UnderlyingValue())
+	if err != nil {
+		return zarfValue.Values{}, fmt.Errorf("failed to convert %s: %w", attrName, err)
+	}
+
+	values, ok := converted.(map[string]any)
+	if !ok {
+		return zarfValue.Values{}, fmt.Errorf("%s must be a map or object", attrName)
+	}
+
+	return zarfValue.Values(values), nil
+}
+
+func terraformValueToGoValue(value attr.Value) (any, error) {
+	if value == nil || value.IsNull() {
+		return nil, nil
+	}
+	if value.IsUnknown() {
+		return nil, fmt.Errorf("unknown values cannot be converted")
+	}
+
+	switch v := value.(type) {
+	case types.String:
+		return v.ValueString(), nil
+	case types.Bool:
+		return v.ValueBool(), nil
+	case types.Number:
+		return numberToGoValue(v.ValueBigFloat())
+	case types.Map:
+		return terraformMapToGoMap(v.Elements())
+	case types.Object:
+		return terraformMapToGoMap(v.Attributes())
+	case types.List:
+		return terraformCollectionToGoSlice(v.Elements())
+	case types.Set:
+		return terraformCollectionToGoSlice(v.Elements())
+	case types.Tuple:
+		return terraformCollectionToGoSlice(v.Elements())
+	case types.Dynamic:
+		return terraformValueToGoValue(v.UnderlyingValue())
+	default:
+		return nil, fmt.Errorf("unsupported value type %T", value)
+	}
+}
+
+func terraformMapToGoMap(elements map[string]attr.Value) (map[string]any, error) {
+	result := make(map[string]any, len(elements))
+	for key, value := range elements {
+		converted, err := terraformValueToGoValue(value)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", key, err)
+		}
+		result[key] = converted
+	}
+	return result, nil
+}
+
+func terraformCollectionToGoSlice(elements []attr.Value) ([]any, error) {
+	result := make([]any, 0, len(elements))
+	for idx, value := range elements {
+		converted, err := terraformValueToGoValue(value)
+		if err != nil {
+			return nil, fmt.Errorf("%d: %w", idx, err)
+		}
+		result = append(result, converted)
+	}
+	return result, nil
+}
+
+func numberToGoValue(value *big.Float) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
+
+	if intValue, accuracy := value.Int(nil); accuracy == big.Exact {
+		if intValue.IsInt64() {
+			return intValue.Int64(), nil
+		}
+		return nil, fmt.Errorf("Terraform number %s cannot be represented as an int64 Zarf/Helm value without precision loss; quote large numeric identifiers as strings", intValue.String())
+	}
+
+	floatValue, _ := value.Float64()
+	return floatValue, nil
+}
+
+func validateNoValueConflicts(values zarfValue.Values, sensitiveValues zarfValue.Values) error {
+	return validateNoValueConflictsAtPath(map[string]any(values), map[string]any(sensitiveValues), "")
+}
+
+func validateNoValueConflictsAtPath(values map[string]any, sensitiveValues map[string]any, prefix string) error {
+	for key, sensitiveValue := range sensitiveValues {
+		path := joinValuePath(prefix, key)
+		value, exists := values[key]
+		if !exists {
+			continue
+		}
+
+		valueMap, valueIsMap := value.(map[string]any)
+		sensitiveValueMap, sensitiveValueIsMap := sensitiveValue.(map[string]any)
+		if valueIsMap && sensitiveValueIsMap {
+			if err := validateNoValueConflictsAtPath(valueMap, sensitiveValueMap, path); err != nil {
+				return err
+			}
+			continue
+		}
+
+		return fmt.Errorf("duplicate or conflicting value path %q found in both values and sensitive_values", path)
+	}
+
+	return nil
+}
+
+func mergePackageValues(values zarfValue.Values, sensitiveValues zarfValue.Values) (zarfValue.Values, error) {
+	if err := validateNoValueConflicts(values, sensitiveValues); err != nil {
+		return zarfValue.Values{}, err
+	}
+
+	merged := zarfValue.Values{}
+	merged.DeepMerge(values)
+	merged.DeepMerge(sensitiveValues)
+	return merged, nil
+}
+
+func joinValuePath(prefix string, key string) string {
+	if prefix == "" {
+		return key
+	}
+	return prefix + "." + key
+}
+
+// collectConfiguredPackageValuePaths returns configured package value paths for
+// package-dependent sourcePath validation. Unknown root values return no paths
+// so package-dependent validation can defer until apply.
+func collectConfiguredPackageValuePaths(model PackageResourceModel, resp *resource.ModifyPlanResponse) []plannedPackageValuePath {
+	valuePaths, _, err := collectDynamicValuePaths(model.Values, "values")
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
+		return nil
+	}
+	sensitiveValuePaths, _, err := collectDynamicValuePaths(model.SensitiveValues, "sensitive_values")
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
+		return nil
+	}
+
+	allValuePaths := slices.Concat(valuePaths, sensitiveValuePaths)
+	if len(allValuePaths) == 0 {
+		return nil
+	}
+	return allValuePaths
+}
+
+// validateConfiguredPackageValueConflicts checks local conflicts between
+// configured values and sensitive_values. It should be called with config so
+// best-effort plan-time validation can use authored paths even when planned
+// DynamicAttribute values become unknown.
+func validateConfiguredPackageValueConflicts(model PackageResourceModel, resp *resource.ModifyPlanResponse) {
+	containsUnknown := dynamicContainsUnknown(model.Values) || dynamicContainsUnknown(model.SensitiveValues)
+
+	if !containsUnknown {
+		// Fully known values can use the normal conversion path and exact conflict validation.
+		values, err := dynamicToValues("values", model.Values)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
+			return
+		}
+		sensitiveValues, err := dynamicToValues("sensitive_values", model.SensitiveValues)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
+			return
+		}
+		if err := validateNoValueConflicts(values, sensitiveValues); err != nil {
+			resp.Diagnostics.AddError("Conflicting package values", err.Error())
+			return
+		}
+		return
+	}
+
+	// With unknowns, validate only the structure that is known at plan time.
+	// Unknown object/map subtrees defer to apply so we don't report conflicts
+	// for children that may resolve to disjoint paths.
+	values, err := dynamicToConflictCheckValues("values", model.Values)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("values"), "Invalid package values", err.Error())
+		return
+	}
+	sensitiveValues, err := dynamicToConflictCheckValues("sensitive_values", model.SensitiveValues)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("sensitive_values"), "Invalid sensitive package values", err.Error())
+		return
+	}
+	if err := validateNoValueConflicts(values, sensitiveValues); err != nil {
+		resp.Diagnostics.AddError("Conflicting package values", err.Error())
+		return
+	}
+}
+
+// conflictCheckValuePlaceholder marks a configured plan-time leaf value. The
+// concrete value is irrelevant because these Values are only used for conflict
+// validation and are never deployed.
+type conflictCheckValuePlaceholder struct{}
+
+// dynamicToConflictCheckValues converts Terraform dynamic values into a
+// temporary Values tree used only for best-effort plan-time conflict checks.
+// Leaf values are placeholders because validateNoValueConflicts only needs path
+// shape, not concrete deploy values.
+func dynamicToConflictCheckValues(attrName string, value types.Dynamic) (zarfValue.Values, error) {
+	if value.IsNull() || value.IsUnderlyingValueNull() || value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return zarfValue.Values{}, nil
+	}
+
+	converted, includeInConflictCheck, err := terraformValueToConflictCheckValue(value.UnderlyingValue())
+	if err != nil {
+		return zarfValue.Values{}, fmt.Errorf("failed to convert %s: %w", attrName, err)
+	}
+	if !includeInConflictCheck {
+		return zarfValue.Values{}, nil
+	}
+
+	values, ok := converted.(map[string]any)
+	if !ok {
+		return zarfValue.Values{}, fmt.Errorf("%s must be a map or object", attrName)
+	}
+	return zarfValue.Values(values), nil
+}
+
+// terraformValueToConflictCheckValue preserves known object/map structure,
+// replaces known or scalar unknown leaves with placeholders, and omits unknown
+// object/map subtrees so potentially disjoint child paths defer until apply.
+func terraformValueToConflictCheckValue(value attr.Value) (converted any, includeInConflictCheck bool, err error) {
+	if value == nil || value.IsNull() {
+		return conflictCheckValuePlaceholder{}, true, nil
+	}
+	if value.IsUnknown() {
+		if isUnknownSubtreeValue(value) {
+			return nil, false, nil
+		}
+		return conflictCheckValuePlaceholder{}, true, nil
+	}
+
+	switch v := value.(type) {
+	case types.Dynamic:
+		return terraformDynamicToConflictCheckValue(v)
+	case types.Map:
+		return terraformMapToConflictCheckValue(v.Elements())
+	case types.Object:
+		return terraformMapToConflictCheckValue(v.Attributes())
+	case types.List, types.Set, types.Tuple:
+		return conflictCheckValuePlaceholder{}, true, nil
+	default:
+		return conflictCheckValuePlaceholder{}, true, nil
+	}
+}
+
+// terraformDynamicToConflictCheckValue unwraps dynamic values for conflict
+// checks. Fully unknown dynamic values are treated as unknown subtrees because
+// their eventual shape cannot be safely inferred at plan time.
+func terraformDynamicToConflictCheckValue(value types.Dynamic) (converted any, includeInConflictCheck bool, err error) {
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return conflictCheckValuePlaceholder{}, true, nil
+	}
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return nil, false, nil
+	}
+	return terraformValueToConflictCheckValue(value.UnderlyingValue())
+}
+
+// terraformMapToConflictCheckValue recursively converts known map/object
+// entries while preserving their original keys exactly.
+func terraformMapToConflictCheckValue(elements map[string]attr.Value) (converted map[string]any, includeInConflictCheck bool, err error) {
+	result := make(map[string]any, len(elements))
+	for key, value := range elements {
+		converted, includeInConflictCheck, err := terraformValueToConflictCheckValue(value)
+		if err != nil {
+			return nil, false, fmt.Errorf("%s: %w", key, err)
+		}
+		if includeInConflictCheck {
+			result[key] = converted
+		}
+	}
+	return result, true, nil
+}
+
+func dynamicContainsUnknown(value types.Dynamic) bool {
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return true
+	}
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return false
+	}
+
+	return attrValueContainsUnknown(value.UnderlyingValue())
+}
+
+func attrValueContainsUnknown(value attr.Value) bool {
+	if value == nil || value.IsNull() {
+		return false
+	}
+	if value.IsUnknown() {
+		return true
+	}
+
+	switch v := value.(type) {
+	case types.Dynamic:
+		return dynamicContainsUnknown(v)
+	case types.Map:
+		return collectionMapContainsUnknown(v.Elements())
+	case types.Object:
+		return collectionMapContainsUnknown(v.Attributes())
+	case types.List:
+		return collectionSliceContainsUnknown(v.Elements())
+	case types.Set:
+		return collectionSliceContainsUnknown(v.Elements())
+	case types.Tuple:
+		return collectionSliceContainsUnknown(v.Elements())
+	default:
+		return false
+	}
+}
+
+func collectionMapContainsUnknown(elements map[string]attr.Value) bool {
+	for _, value := range elements {
+		if attrValueContainsUnknown(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func collectionSliceContainsUnknown(elements []attr.Value) bool {
+	for _, value := range elements {
+		if attrValueContainsUnknown(value) {
+			return true
+		}
+	}
+	return false
+}
+
+type dynamicValuePathResult struct {
+	paths      []plannedPackageValuePath
+	hasUnknown bool
+	validRoot  bool
+}
+
+type plannedPackageValuePath struct {
+	path           string
+	unknownSubtree bool
+}
+
+// collectDynamicValuePaths returns the configured leaf paths that can be validated
+// against Zarf chart value source paths during plan. Root unknowns expose no paths,
+// so validation defers; nested unknowns still expose their configured path; and
+// collections are treated as leaf values because source paths do not address items.
+func collectDynamicValuePaths(value types.Dynamic, attrName string) ([]plannedPackageValuePath, bool, error) {
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return []plannedPackageValuePath{}, true, nil
+	}
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return []plannedPackageValuePath{}, false, nil
+	}
+
+	result := collectAttrValuePaths(value.UnderlyingValue(), "")
+	if !result.validRoot {
+		return []plannedPackageValuePath{}, false, fmt.Errorf("%s must be a map or object", attrName)
+	}
+	return result.paths, result.hasUnknown, nil
+}
+
+func collectAttrValuePaths(value attr.Value, prefix string) dynamicValuePathResult {
+	if value == nil || value.IsNull() {
+		if prefix == "" {
+			return dynamicValuePathResult{validRoot: true}
+		}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix}}, validRoot: true}
+	}
+	if value.IsUnknown() {
+		if prefix == "" {
+			return dynamicValuePathResult{hasUnknown: true, validRoot: true}
+		}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix, unknownSubtree: isUnknownSubtreeValue(value)}}, hasUnknown: true, validRoot: true}
+	}
+
+	switch v := value.(type) {
+	case types.Dynamic:
+		return collectDynamicAttrValuePaths(v, prefix)
+	case types.Map:
+		return collectAttrMapValuePaths(v.Elements(), prefix)
+	case types.Object:
+		return collectAttrMapValuePaths(v.Attributes(), prefix)
+	case types.List:
+		return collectAttrCollectionValuePaths(v.Elements(), prefix)
+	case types.Set:
+		return collectAttrCollectionValuePaths(v.Elements(), prefix)
+	case types.Tuple:
+		return collectAttrCollectionValuePaths(v.Elements(), prefix)
+	default:
+		if prefix == "" {
+			return dynamicValuePathResult{}
+		}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix}}, validRoot: true}
+	}
+}
+
+func isUnknownSubtreeValue(value attr.Value) bool {
+	valueType := value.Type(context.Background())
+	if valueType.Equal(types.DynamicType) {
+		return true
+	}
+	switch valueType.(type) {
+	case types.MapType, types.ObjectType:
+		return true
+	default:
+		return false
+	}
+}
+
+func collectDynamicAttrValuePaths(value types.Dynamic, prefix string) dynamicValuePathResult {
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		if prefix == "" {
+			return dynamicValuePathResult{hasUnknown: true, validRoot: true}
+		}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix, unknownSubtree: true}}, hasUnknown: true, validRoot: true}
+	}
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		if prefix == "" {
+			return dynamicValuePathResult{validRoot: true}
+		}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix}}, validRoot: true}
+	}
+	return collectAttrValuePaths(value.UnderlyingValue(), prefix)
+}
+
+func collectAttrMapValuePaths(elements map[string]attr.Value, prefix string) dynamicValuePathResult {
+	if len(elements) == 0 {
+		if prefix == "" {
+			return dynamicValuePathResult{validRoot: true}
+		}
+		return dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix}}, validRoot: true}
+	}
+
+	result := dynamicValuePathResult{validRoot: true}
+	for key, value := range elements {
+		childResult := collectAttrValuePaths(value, joinValuePath(prefix, key))
+		result.paths = append(result.paths, childResult.paths...)
+		result.hasUnknown = result.hasUnknown || childResult.hasUnknown
+	}
+	return result
+}
+
+func collectAttrCollectionValuePaths(elements []attr.Value, prefix string) dynamicValuePathResult {
+	if prefix == "" {
+		return dynamicValuePathResult{}
+	}
+
+	result := dynamicValuePathResult{paths: []plannedPackageValuePath{{path: prefix}}, validRoot: true}
+	for _, value := range elements {
+		if attrValueContainsUnknown(value) {
+			result.hasUnknown = true
+			break
+		}
+	}
+	return result
+}
+
+func collectValuePaths(values map[string]any) []string {
+	paths := []string{}
+	collectValuePathsAtPath(values, "", &paths)
+	return paths
+}
+
+func collectValuePathsAtPath(values map[string]any, prefix string, paths *[]string) {
+	for key, value := range values {
+		currentPath := joinValuePath(prefix, key)
+		valueMap, ok := value.(map[string]any)
+		if !ok {
+			*paths = append(*paths, currentPath)
+			continue
+		}
+		if len(valueMap) == 0 {
+			*paths = append(*paths, currentPath)
+			continue
+		}
+		collectValuePathsAtPath(valueMap, currentPath, paths)
+	}
+}
+
+func (r *PackageResource) getPlannedComponentValueSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) ([]string, error) {
+	optionalComponents, err := getOptionalComponentsFromAttribute(ctx, model.OptionalComponents, pkgLayout.Pkg.Components)
+	if err != nil {
+		return []string{}, err
+	}
+
+	filter := r.packageFilter.ForDeploy(optionalComponents)
+	components, err := filter.Apply(pkgLayout.Pkg)
+	if err != nil {
+		return []string{}, err
+	}
+
+	paths := []string{}
+	for _, component := range components {
+		for _, chart := range component.Charts {
+			for _, chartValue := range chart.Values {
+				paths = append(paths, chartValue.SourcePath)
+			}
+		}
+	}
+	return paths, nil
+}
+
+func getOptionalComponentsForDeploy(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) ([]string, error) {
+	// Alpha: if optional_components is set, use it directly; otherwise fall back to component blocks.
+	// TODO: remove branch when component block is removed; always use optional_components.
+	if !model.OptionalComponents.IsNull() {
+		return getOptionalComponentsFromAttribute(ctx, model.OptionalComponents, pkgLayout.Pkg.Components)
+	}
+
+	return getComponentBlockOptionalComponentsForDeploy(ctx, model.Components, pkgLayout.Pkg.Components)
+}
+
+func getOptionalComponentsFromAttribute(ctx context.Context, optionalComponentsSet types.Set, pkgComponents []v1alpha1.ZarfComponent) ([]string, error) {
+	if optionalComponentsSet.IsUnknown() {
+		return nil, fmt.Errorf("optional_components must be known")
+	}
+
+	var optionalComponents []string
+	if diags := optionalComponentsSet.ElementsAs(ctx, &optionalComponents, false); diags.HasError() {
+		return nil, fmt.Errorf("failed to read optional_components: %v", diags)
+	}
+	if len(optionalComponents) > 0 {
+		if err := validateOptionalComponentsAgainstPackage(optionalComponents, pkgComponents); err != nil {
+			return nil, err
+		}
+	}
+	return optionalComponents, nil
+}
+
+// getComponentBlockOptionalComponentsForDeploy returns optional component names
+// selected through legacy component blocks. Required component names are ignored
+// because Zarf deploy includes required components automatically.
+// TODO: remove when component block is removed
+func getComponentBlockOptionalComponentsForDeploy(ctx context.Context, componentsSet types.Set, pkgComponents []v1alpha1.ZarfComponent) ([]string, error) {
+	if componentsSet.IsUnknown() {
+		return nil, fmt.Errorf("component blocks must be known")
+	}
+
+	var components []ComponentModel
+	if !componentsSet.IsNull() {
+		if diags := componentsSet.ElementsAs(ctx, &components, false); diags.HasError() {
+			return nil, fmt.Errorf("failed to read component blocks: %v", diags)
+		}
+	}
+
+	var componentErrors []error
+	optionalComponents := []string{}
+	for _, component := range components {
+		pkgComponent, found := findPackageComponent(pkgComponents, component.Name.ValueString())
+		if !found {
+			componentErrors = append(componentErrors, fmt.Errorf("unknown package component %s", component.Name.ValueString()))
+			continue
+		}
+		if pkgComponent.Required == nil || !*pkgComponent.Required {
+			optionalComponents = append(optionalComponents, component.Name.ValueString())
+		}
+	}
+
+	if len(componentErrors) > 0 {
+		return []string{}, errors.Join(componentErrors...)
+	}
+
+	return optionalComponents, nil
+}
+
+func (r *PackageResource) validatePackageValuesAgainstSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, values zarfValue.Values) error {
+	valuePaths := collectValuePaths(map[string]any(values))
+	return r.validatePackageValuePathsAgainstSourcePaths(ctx, model, pkgLayout, valuePaths)
+}
+
+func (r *PackageResource) validatePackageValuePathsAgainstSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, valuePaths []string) error {
+	if len(valuePaths) == 0 {
+		return nil
+	}
+
+	exposedPaths, err := r.getPlannedComponentValueSourcePaths(ctx, model, pkgLayout)
+	if err != nil {
+		return err
+	}
+
+	var validationErrors []error
+	for _, valuePath := range valuePaths {
+		if !isValuePathExposed(valuePath, exposedPaths) {
+			validationErrors = append(validationErrors, valuePathNotExposedError(valuePath))
+		}
+	}
+
+	return errors.Join(validationErrors...)
+}
+
+func (r *PackageResource) validatePlannedPackageValuePathsAgainstSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, valuePaths []plannedPackageValuePath) error {
+	if len(valuePaths) == 0 {
+		return nil
+	}
+
+	exposedPaths, err := r.getPlannedComponentValueSourcePaths(ctx, model, pkgLayout)
+	if err != nil {
+		return err
+	}
+
+	var validationErrors []error
+	for _, valuePath := range valuePaths {
+		if valuePath.unknownSubtree {
+			if !isUnknownValuePathPotentiallyExposed(valuePath.path, exposedPaths) {
+				validationErrors = append(validationErrors, valuePathNotExposedError(valuePath.path))
+			}
+			continue
+		}
+
+		if !isValuePathExposed(valuePath.path, exposedPaths) {
+			validationErrors = append(validationErrors, valuePathNotExposedError(valuePath.path))
+		}
+	}
+
+	return errors.Join(validationErrors...)
+}
+
+func valuePathNotExposedError(valuePath string) error {
+	return fmt.Errorf("value path %q does not match any chart value sourcePath exposed by the package components planned for deployment", valuePath)
+}
+
+func isValuePathExposed(valuePath string, exposedPaths []string) bool {
+	for _, exposedPath := range exposedPaths {
+		normalized := strings.TrimPrefix(exposedPath, ".")
+		if normalized == "" {
+			return true
+		}
+		if valuePath == normalized || strings.HasPrefix(valuePath, normalized+".") {
+			return true
+		}
+	}
+	return false
+}
+
+func isUnknownValuePathPotentiallyExposed(valuePath string, exposedPaths []string) bool {
+	for _, exposedPath := range exposedPaths {
+		normalized := strings.TrimPrefix(exposedPath, ".")
+		if normalized == "" {
+			return true
+		}
+		if valuePath == normalized || strings.HasPrefix(normalized, valuePath+".") || strings.HasPrefix(valuePath, normalized+".") {
+			return true
+		}
+	}
+	return false
+}
+
 // getMissingComponents compares two Package plans and returns a list of components that was specified in the
 // 'oldPlan' but not specified in the newer plan.
 // TODO: remove when component block is removed; use getMissingOptionalComponents exclusively
@@ -1465,12 +2222,121 @@ func getMissingOptionalComponents(plan, oldPlan PackageResourceModel) []string {
 	return toRemove
 }
 
+// isStateOnlyUpdate reports whether every configurable change is explicitly
+// allowlisted as state-only. New configurable attributes default to requiring
+// a package update, while computed-only differences are ignored.
+func isStateOnlyUpdate(plan tfsdk.Plan, state tfsdk.State) (bool, error) {
+	diffs, err := plan.Raw.Diff(state.Raw)
+	if err != nil {
+		return false, fmt.Errorf("could not compare planned and prior state: %w", err)
+	}
+
+	stateOnlyAttributes := map[string]struct{}{
+		"timeouts": {},
+	}
+	attributes := plan.Schema.GetAttributes()
+	foundStateOnlyChange := false
+
+	for _, diff := range diffs {
+		steps := diff.Path.Steps()
+		if len(steps) == 0 {
+			continue
+		}
+		name, ok := steps[0].(tftypes.AttributeName)
+		if !ok {
+			return false, fmt.Errorf("unexpected update path: %s", diff.Path)
+		}
+		attributeName := string(name)
+		if _, ok := stateOnlyAttributes[attributeName]; ok {
+			foundStateOnlyChange = true
+			continue
+		}
+		attribute, ok := attributes[attributeName]
+		if ok && attribute.IsComputed() && !attribute.IsOptional() && !attribute.IsRequired() {
+			continue
+		}
+		return false, nil
+	}
+
+	return foundStateOnlyChange, nil
+}
+
+// preserveComputedState keeps computed-only values known when an update cannot
+// change the deployed package.
+func preserveComputedState(ctx context.Context, state tfsdk.State, plan *tfsdk.Plan) diag.Diagnostics {
+	var diags diag.Diagnostics
+	for name, attribute := range plan.Schema.GetAttributes() {
+		if !attribute.IsComputed() || attribute.IsOptional() || attribute.IsRequired() {
+			continue
+		}
+
+		terraformPath := tftypes.NewAttributePath().WithAttributeName(name)
+		stateValue, _, err := tftypes.WalkAttributePath(state.Raw, terraformPath)
+		if err != nil {
+			diags.AddError("Error reading prior state", fmt.Sprintf("Could not read %q: %s", name, err))
+			continue
+		}
+		value, ok := stateValue.(tftypes.Value)
+		if !ok {
+			diags.AddError("Error reading prior state", fmt.Sprintf("Unexpected value type for %q: %T", name, stateValue))
+			continue
+		}
+		frameworkValue, err := attribute.GetType().ValueFromTerraform(ctx, value)
+		if err != nil {
+			diags.AddError("Error reading prior state", fmt.Sprintf("Could not convert %q: %s", name, err))
+			continue
+		}
+		diags.Append(plan.SetAttribute(ctx, path.Root(name), frameworkValue)...)
+	}
+	return diags
+}
+
 // withClusterTimeout returns a context with a timeout
 func withClusterTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, clusterTimeoutMinutes*time.Minute)
 }
 
-// TODO: remove when component block is removed
+// zarfOperationTimeout derives the full time budget for a Zarf Deploy or Remove
+// call from the remaining context deadline.
+// Returns an error when the context is already done or has no usable budget.
+func zarfOperationTimeout(ctx context.Context) (time.Duration, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("context already done: %w", err)
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0, fmt.Errorf("context has no deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return 0, fmt.Errorf("operation deadline exceeded before Zarf call")
+	}
+
+	// If Zarf ever needs a shorter deadline than the parent lifecycle context,
+	// subtract that reserve here and reject a non-positive result before returning.
+
+	return remaining, nil
+}
+
+// lifecycleErrorDetail returns a detail string for CRUD operation errors,
+// distinguishing timeout from cancellation from unexpected failures.
+func lifecycleErrorDetail(ctx context.Context, op string, err error) string {
+	switch ctx.Err() {
+	case context.DeadlineExceeded:
+		return fmt.Sprintf("package %s timed out: %s", op, err)
+	case context.Canceled:
+		return fmt.Sprintf("package %s was canceled: %s", op, err)
+	default:
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Sprintf("package %s timed out (sub-operation deadline exceeded): %s", op, err)
+		}
+		if errors.Is(err, context.Canceled) {
+			return fmt.Sprintf("package %s was canceled (sub-operation): %s", op, err)
+		}
+		return fmt.Sprintf("could not %s package: %s", op, err)
+	}
+}
+
 // Inserts a nested value based on the dot-separated path
 func insertNestedValue(root map[string]any, path string, value any) {
 	parts := strings.Split(path, ".")
@@ -1537,7 +2403,6 @@ func getPackageSource(pkg PackageResourceModel, providerConfig udsProviderConfig
 // getPackageOverrideName generates a deterministic tarball filename for a package based on its original source value.
 // Returns a filename in the format "zarf-package-{sha1-checksum}.tar.zst".
 func getPackageOverrideName(pkg PackageResourceModel) string {
-
 	sourceString := pkg.Source.ValueString()
 	if !strings.HasPrefix(sourceString, "oci://") {
 		sourceString = filepath.Base(sourceString)
@@ -1727,6 +2592,36 @@ func componentBlocksMayBePresent(components types.Set) bool {
 	return !components.IsNull() && (components.IsUnknown() || len(components.Elements()) > 0)
 }
 
+func validateValuesComponentMutualExclusivity(model PackageResourceModel, resp *resource.ValidateConfigResponse) {
+	if !componentBlocksMayBePresent(model.Components) {
+		return
+	}
+
+	if isDynamicAttributeConfigured(model.Values) {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("values"),
+			"Invalid package values configuration",
+			"values cannot be specified together with component blocks",
+		)
+	}
+
+	if isDynamicAttributeConfigured(model.SensitiveValues) {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("sensitive_values"),
+			"Invalid package values configuration",
+			"sensitive_values cannot be specified together with component blocks",
+		)
+	}
+}
+
+func isDynamicAttributeConfigured(value types.Dynamic) bool {
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return false
+	}
+
+	return true
+}
+
 // buildVerifyBlobOptions constructs signing.VerifyBlobOptions from the model.
 // Writes any inline key or trusted-root content to files under tmpDir (caller owns cleanup).
 // Returns nil when no verification material is configured.
@@ -1743,7 +2638,7 @@ func buildVerifyBlobOptions(ctx context.Context, model PackageResourceModel, tmp
 
 	if !sig.PublicKey.IsNull() && !sig.PublicKey.IsUnknown() && sig.PublicKey.ValueString() != "" {
 		keyPath := filepath.Join(tmpDir, "key.pub")
-		if err := os.WriteFile(keyPath, []byte(sig.PublicKey.ValueString()), 0600); err != nil {
+		if err := os.WriteFile(keyPath, []byte(sig.PublicKey.ValueString()), 0o600); err != nil {
 			return nil, fmt.Errorf("failed to write public key file: %w", err)
 		}
 		opts := zarfSigning.DefaultVerifyBlobOptions()
@@ -1767,7 +2662,7 @@ func buildVerifyBlobOptions(ctx context.Context, model PackageResourceModel, tmp
 
 		if !keyless.TrustedRoot.IsNull() && !keyless.TrustedRoot.IsUnknown() && keyless.TrustedRoot.ValueString() != "" {
 			rootPath := filepath.Join(tmpDir, "trusted-root.json")
-			if err := os.WriteFile(rootPath, []byte(keyless.TrustedRoot.ValueString()), 0600); err != nil {
+			if err := os.WriteFile(rootPath, []byte(keyless.TrustedRoot.ValueString()), 0o600); err != nil {
 				return nil, fmt.Errorf("failed to write trusted root file: %w", err)
 			}
 			opts.CommonVerifyOptions.TrustedRootPath = rootPath
@@ -1801,38 +2696,6 @@ func buildSetVariableMap(model PackageResourceModel) map[string]string {
 	}
 
 	return setVariables
-}
-
-// TODO: remove when component block is removed
-func getRequiredAndOptionalPackageComponentsNames(model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) (required []string, optional []string, err error) {
-	var componentErrors []error
-	requiredComponents := []string{}
-	optionalComponents := []string{}
-
-	// Extract components from Set
-	var components []ComponentModel
-	if !model.Components.IsNull() && !model.Components.IsUnknown() {
-		model.Components.ElementsAs(context.Background(), &components, false)
-	}
-
-	for _, component := range components {
-		pkgComponent, found := findPackageComponent(pkgLayout.Pkg.Components, component.Name.ValueString())
-		if !found {
-			componentErrors = append(componentErrors, fmt.Errorf("unknown package component %s", component.Name.ValueString()))
-			continue
-		}
-		if pkgComponent.Required == nil || !*pkgComponent.Required {
-			optionalComponents = append(optionalComponents, component.Name.ValueString())
-		} else {
-			requiredComponents = append(requiredComponents, component.Name.ValueString())
-		}
-	}
-
-	if len(componentErrors) > 0 {
-		return []string{}, []string{}, errors.Join(componentErrors...)
-	}
-
-	return requiredComponents, optionalComponents, nil
 }
 
 func newPackageMetadata(pkgLayout *zarfLayout.PackageLayout) (types.Object, error) {
@@ -1950,6 +2813,39 @@ func emptyConnectStringSet() types.Set {
 	)
 }
 
+type timeoutPositiveValidator struct{}
+
+func (v timeoutPositiveValidator) Description(_ context.Context) string {
+	return "timeout values must be positive durations"
+}
+
+func (v timeoutPositiveValidator) MarkdownDescription(_ context.Context) string {
+	return "timeout values must be positive durations"
+}
+
+func (v timeoutPositiveValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var timeoutsObj timeouts.Value
+	diags := req.Config.GetAttribute(ctx, path.Root("timeouts"), &timeoutsObj)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() || timeoutsObj.IsNull() || timeoutsObj.IsUnknown() {
+		return
+	}
+
+	dv := udsValidator.DurationGreaterThanValidator(0)
+	for _, name := range []string{"create", "read", "update", "delete"} {
+		p := path.Root("timeouts").AtName(name)
+		var val types.String
+		attrDiags := req.Config.GetAttribute(ctx, p, &val)
+		resp.Diagnostics.Append(attrDiags...)
+		if attrDiags.HasError() || val.IsNull() || val.IsUnknown() {
+			continue
+		}
+		var vResp validator.StringResponse
+		dv.ValidateString(ctx, validator.StringRequest{Path: p, ConfigValue: val}, &vResp)
+		resp.Diagnostics.Append(vResp.Diagnostics...)
+	}
+}
+
 // loadPackageLayoutForInspection loads the package for metadata inspection only, without signature verification.
 // Use when only component metadata is needed (e.g., optional_components validation).
 func (r *PackageResource) loadPackageLayoutForInspection(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
@@ -1976,11 +2872,14 @@ type packagePlanCheckResult struct {
 	LoadErr          error
 	SigErr           error
 	OptComponentsErr error
+	ValuePathsErr    error
 }
 
-// runPackagePlanChecks loads the package once and runs all plan-time validation checks.
+// runPackagePlanChecks loads the package once and runs package-dependent plan
+// checks. If valuePaths is non-empty, those paths are validated against chart
+// value sourcePaths for the components planned for deployment.
 // Skipped when source is unknown, packager/providerConfig are nil, or no checks are needed.
-func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel) packagePlanCheckResult {
+func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel, valuePaths []plannedPackageValuePath) packagePlanCheckResult {
 	if plan.Source.IsUnknown() || plan.Source.IsNull() {
 		return packagePlanCheckResult{}
 	}
@@ -1997,8 +2896,9 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 	if canValidateOptionalComponents {
 		plan.OptionalComponents.ElementsAs(ctx, &requestedOptionals, false)
 	}
+	canValidateValuePaths := len(valuePaths) > 0 && !plan.OptionalComponents.IsNull() && !plan.OptionalComponents.IsUnknown()
 
-	if !needsSigVerification && !canValidateOptionalComponents {
+	if !needsSigVerification && !canValidateOptionalComponents && !canValidateValuePaths {
 		return packagePlanCheckResult{}
 	}
 
@@ -2011,29 +2911,21 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 	}
 
 	if needsSigVerification {
-		tmpDir, err := os.MkdirTemp("", "uds-package-verify-*")
-		if err != nil {
-			return packagePlanCheckResult{SigErr: fmt.Errorf("failed to create temp dir for package verification: %w", err)}
-		}
-		defer os.RemoveAll(tmpDir)
-
-		verifyBlobOpts, err := buildVerifyBlobOptions(ctx, plan, tmpDir)
-		if err != nil {
-			return packagePlanCheckResult{SigErr: err}
-		}
-
-		verifyOpts := zarfSigning.DefaultVerifyBlobOptions()
-		if verifyBlobOpts != nil {
-			verifyOpts = *verifyBlobOpts
-		}
-		verifyErr := pkgLayout.VerifyPackageSignature(ctx, verifyOpts)
-		if sigErr := handleVerifyResult(ctx, verifyErr, pkgLayout.IsSigned(), true); sigErr != nil {
+		if sigErr := r.verifyPackageSignature(ctx, plan, pkgLayout); sigErr != nil {
 			return packagePlanCheckResult{SigErr: sigErr}
 		}
 	}
 
 	if canValidateOptionalComponents {
-		return packagePlanCheckResult{OptComponentsErr: validateOptionalComponentsAgainstPackage(requestedOptionals, pkgLayout.Pkg.Components)}
+		if err := validateOptionalComponentsAgainstPackage(requestedOptionals, pkgLayout.Pkg.Components); err != nil {
+			return packagePlanCheckResult{OptComponentsErr: err}
+		}
+	}
+
+	if canValidateValuePaths {
+		if err := r.validatePlannedPackageValuePathsAgainstSourcePaths(ctx, plan, pkgLayout, valuePaths); err != nil {
+			return packagePlanCheckResult{ValuePathsErr: err}
+		}
 	}
 
 	return packagePlanCheckResult{}
