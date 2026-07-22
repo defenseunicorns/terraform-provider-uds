@@ -15,7 +15,7 @@ components:
   - name: podinfo
     required: true
     images:
-      - ghcr.io/stefanprodan/podinfo:6.14.0
+      - ghcr.io/stefanprodan/podinfo:6.14.1
     charts:
       - name: podinfo
         version: 6.14.0
