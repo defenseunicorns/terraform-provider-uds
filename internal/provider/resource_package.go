@@ -1417,7 +1417,8 @@ func convertPathValuesToOverridesMap(ctx context.Context, pathValues types.Set, 
 		var yamlVal any
 		err := yaml.Unmarshal([]byte(val.Value.ValueString()), &yamlVal)
 		if err != nil {
-			return fmt.Errorf("failed to parse YAML value %s: %w", val.Value.ValueString(), err)
+			// The yaml error can echo the value, which may be sensitive, so omit it.
+			return fmt.Errorf("failed to parse YAML for %s at path '%s' in chart '%s' of component '%s'", valueType, path, chartName, componentName)
 		}
 
 		// Convert YAML types to JSON-compatible types
