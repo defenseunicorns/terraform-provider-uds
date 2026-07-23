@@ -812,26 +812,16 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 
-	packageSource := data.Name.ValueString()
-	remoteOpts, err := r.getPackageSourceRemoteOptions(timeoutCtx, packageSource)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Package registry connection error",
-			lifecycleErrorDetail(timeoutCtx, "delete", err),
-		)
-		return
-	}
-
+	packageName := data.Name.ValueString()
 	loadOpts := zarfPackager.LoadOptions{
 		Filter:               r.packageFilter.ForRemove([]string{}),
 		Architecture:         getArchitecture(data, *r.providerConfig),
 		VerifyBlobOptions:    verifyBlobOpts,
 		VerificationStrategy: layout.VerifyNever,
-		RemoteOptions:        remoteOpts,
 		CachePath:            r.providerConfig.ZarfCachePath,
 	}
 
-	pkg, err := r.packager.GetPackageFromSourceOrCluster(timeoutCtx, c, packageSource, data.Namespace.ValueString(), loadOpts)
+	pkg, err := r.packager.GetPackageFromSourceOrCluster(timeoutCtx, c, packageName, data.Namespace.ValueString(), loadOpts)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error loading package",
@@ -996,7 +986,8 @@ func (r *PackageResource) getPackageSourceRemoteOptions(ctx context.Context, sou
 	opts := zarfTypes.RemoteOptions{
 		InsecureSkipTLSVerify: r.providerConfig.InsecureSkipTLSVerification,
 	}
-	if !r.providerConfig.InsecureForceHTTP || !strings.HasPrefix(source, "oci://") {
+	shouldNegotiate := r.providerConfig.InsecureForceHTTP && strings.HasPrefix(source, "oci://")
+	if !shouldNegotiate {
 		return opts, nil
 	}
 

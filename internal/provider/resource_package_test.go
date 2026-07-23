@@ -7083,6 +7083,45 @@ func TestDelete_ClusterContextCappedAt5Minutes(t *testing.T) {
 		"cluster context must be capped at 5m regardless of configured delete timeout")
 }
 
+func TestDelete_LoadsNamespacedPackageFromClusterAndDoesNotSetRemoteOptions(t *testing.T) {
+	mockCluster := &MockCluster{}
+	mockPackager := &MockPackager{}
+	mockFilter := &MockPackageComponentFilter{}
+
+	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, nil)
+	mockFilter.On("ForRemove", []string{}).Return(mock.Anything)
+	mockPackager.On("GetPackageFromSourceOrCluster",
+		mock.Anything, mock.Anything, "test-pkg", "package-namespace", mock.Anything).
+		Run(func(args mock.Arguments) {
+			loadOpts := args.Get(4).(zarfPackager.LoadOptions)
+			assert.False(t, loadOpts.PlainHTTP)
+			assert.False(t, loadOpts.InsecureSkipTLSVerify)
+		}).
+		Return(v1alpha1.ZarfPackage{}, nil)
+	mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			removeOpts := args.Get(2).(zarfPackager.RemoveOptions)
+			assert.Equal(t, "package-namespace", removeOpts.NamespaceOverride)
+		}).
+		Return(nil)
+
+	r := NewPackageResource(
+		&udsProviderConfig{InsecureForceHTTP: true, InsecureSkipTLSVerification: true},
+		mockPackager,
+		mockFilter,
+		mockCluster,
+	).(*PackageResource)
+	model := NewTestPackageResourceModel(WithDeployedState(), WithNamespace("package-namespace"))
+	model.ID = types.StringValue("package-namespace:test-pkg")
+	state := buildTestState(t, r, model)
+
+	var resp resource.DeleteResponse
+	r.Delete(context.Background(), resource.DeleteRequest{State: state}, &resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "expected no error: %v", resp.Diagnostics)
+	mockPackager.AssertExpectations(t)
+}
+
 // TestDelete_ZarfHandoffUsesRemainingBudget verifies that RemoveOptions.Timeout is
 // derived from the remaining lifecycle budget via zarfOperationTimeout, not a fixed value.
 func TestDelete_ZarfHandoffUsesRemainingBudget(t *testing.T) {
