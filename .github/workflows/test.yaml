@@ -29,9 +29,12 @@ concurrency:
 
 jobs:
   lint:
+    name: Lint
     runs-on: uds-ubuntu-big-boy-4-core
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-golang
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
@@ -39,10 +42,13 @@ jobs:
           version: latest
 
   acceptance:
+    name: Acceptance tests
     runs-on: uds-ubuntu-big-boy-4-core
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install UDS CLI
         uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1.0.1
@@ -75,10 +81,13 @@ jobs:
           suffix: acc
 
   unit:
+    name: Unit tests
     runs-on: uds-ubuntu-big-boy-4-core
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install UDS CLI
         uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1.0.1
