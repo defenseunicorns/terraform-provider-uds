@@ -7,12 +7,19 @@ on:
     branches:
       - main
 
+permissions: {}
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release-please:
+    name: Create release tag
     permissions:
-      contents: write
-      issues: write
-      pull-requests: write
+      contents: write # Required to update the release pull request and create its release.
+      issues: write # Required to update the release pull request.
+      pull-requests: write # Required to update the release pull request.
     runs-on: ubuntu-latest
     # Only run in the upstream repository
     if: github.repository == 'defenseunicorns/terraform-provider-uds'
@@ -29,12 +36,15 @@ jobs:
           manifest-file: .release-please-manifest.json
 
   release:
+    name: Publish release
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     permissions:
-      contents: write
-      packages: write
+      contents: write # Required by GoReleaser to create the GitHub release.
+      packages: write # Required to publish the provider to GHCR.
     uses: ./.github/workflows/release.yml
     with:
       tag_name: ${{ needs.release-please.outputs.tag_name }}
-    secrets: inherit
+    secrets:
+      UDS_REGISTRY_USER: ${{ secrets.UDS_REGISTRY_USER }}
+      UDS_REGISTRY_TOKEN: ${{ secrets.UDS_REGISTRY_TOKEN }}
