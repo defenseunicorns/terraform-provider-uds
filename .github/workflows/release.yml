@@ -23,6 +23,12 @@ on:
       UDS_REGISTRY_TOKEN:
         required: true
         description: "Token for UDS registry authentication"
+      GPG_PRIVATE_KEY:
+        required: true
+        description: "ASCII-armored GPG private key used to sign release checksums"
+      PASSPHRASE:
+        required: true
+        description: "Passphrase for the GPG private key"
 
 permissions: {}
 
@@ -57,12 +63,29 @@ jobs:
           # renovate: datasource=github-tags depName=anchore/syft versioning=semver
           syft-version: v1.49.0
 
-      # - name: Import GPG key
-      #   uses: crazy-max/ghaction-import-gpg@cb9bde2e2525e640591a934b1fd28eef1dcaf5e5 # v6.2.0
-      #   id: import_gpg
-      #   with:
-      #     gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-      #     passphrase: ${{ secrets.PASSPHRASE }}
+      - name: Import GPG key
+        shell: bash
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          gpg_home="$RUNNER_TEMP/terraform-provider-uds-gnupg"
+
+          install -d -m 0700 "$gpg_home"
+          printf '%s' "$GPG_PRIVATE_KEY" |
+            gpg --batch --no-tty --homedir "$gpg_home" --import
+
+          fingerprint="$(
+            gpg --batch --no-tty --homedir "$gpg_home" --with-colons --list-secret-keys |
+              awk -F: '$1 == "fpr" { print $10; exit }'
+          )"
+          test -n "$fingerprint"
+
+          {
+            printf 'GNUPGHOME=%s\n' "$gpg_home"
+            printf 'GPG_FINGERPRINT=%s\n' "$fingerprint"
+          } >> "$GITHUB_ENV"
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
@@ -71,7 +94,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOTMPDIR: ${{ runner.temp }}
-          # GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+          GPG_PASSPHRASE: ${{ secrets.PASSPHRASE }}
 
       - name: Login to UDS Registry
         run: echo "$UDS_REGISTRY_TOKEN" | go tool oras login -u "$UDS_REGISTRY_USER" --password-stdin registry.defenseunicorns.com
@@ -158,3 +181,10 @@ jobs:
           name: goreleaser-dist
           path: dist/
           retention-days: 5
+
+      - name: Remove GPG key material
+        if: always()
+        shell: bash
+        run: |
+          gpgconf --homedir "$RUNNER_TEMP/terraform-provider-uds-gnupg" --kill all || true
+          rm -rf "$RUNNER_TEMP/terraform-provider-uds-gnupg"

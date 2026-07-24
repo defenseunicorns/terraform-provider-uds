@@ -37,6 +37,23 @@ checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_SHA256SUMS"
   algorithm: sha256
 
+signs:
+  - artifacts: checksum
+    stdin: "{{ .Env.GPG_PASSPHRASE }}"
+    args:
+      - "--batch"
+      - "--no-tty"
+      - "--pinentry-mode"
+      - "loopback"
+      - "--passphrase-fd"
+      - "0"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+
 sboms:
   - artifacts: archive
     documents:

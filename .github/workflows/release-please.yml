@@ -48,3 +48,5 @@ jobs:
     secrets:
       UDS_REGISTRY_USER: ${{ secrets.UDS_REGISTRY_USER }}
       UDS_REGISTRY_TOKEN: ${{ secrets.UDS_REGISTRY_TOKEN }}
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      PASSPHRASE: ${{ secrets.PASSPHRASE }}
