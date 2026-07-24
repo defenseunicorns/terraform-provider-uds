@@ -10,6 +10,11 @@
   "postUpdateOptions": ["gomodTidy"],
   "packageRules": [
     {
+      "matchDatasources": ["terraform-provider"],
+      "matchPackageNames": ["defenseunicorns/uds"],
+      "enabled": false
+    },
+    {
       "matchFileNames": ["go.mod", "go.sum"],
       "groupName": "application-deps",
       "commitMessageTopic": "application dependencies"
@@ -37,9 +42,8 @@
   "customManagers": [
     {
       "customType": "regex",
-      "managerFilePatterns": ["/\\.(go|hcl|json|md|sh|tf|ya?ml)$/"],
-      "matchStrings": ["ghcr\\.io/zarf-dev/packages/(?<packageName>[a-z0-9][a-z0-9._-]*):(?<currentValue>v?\\d+\\.\\d+\\.\\d+)"],
-      "depNameTemplate": "ghcr.io/zarf-dev/packages/{{{packageName}}}",
+      "fileMatch": ["/\\.(go|hcl|json|md|sh|tf|ya?ml)$/"],
+      "matchStrings": ["(?<depName>ghcr\\.io/zarf-dev/packages/[a-z0-9][a-z0-9._-]*):(?<currentValue>v?\\d+\\.\\d+\\.\\d+)"],
       "datasourceTemplate": "docker",
       "versioningTemplate": "semver",
       "extractVersionTemplate": "^v?(?<version>.*)$"
