@@ -31,7 +31,7 @@ jobs:
   lint:
     runs-on: uds-ubuntu-big-boy-4-core
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-golang
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
@@ -42,13 +42,13 @@ jobs:
     runs-on: uds-ubuntu-big-boy-4-core
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install UDS CLI
         uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1.0.1
         with:
           # renovate: datasource=github-tags depName=defenseunicorns/uds-cli versioning=semver
-          version: v0.34.2
+          version: v0.34.3
 
       - name: Install k3d
         shell: bash
@@ -62,7 +62,7 @@ jobs:
         uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
           # renovate: datasource=github-tags depName=opentofu/opentofu versioning=semver
-          tofu_version: v1.12.4
+          tofu_version: v1.12.5
           tofu_wrapper: false
 
       - name: Run acceptance tests
@@ -78,13 +78,13 @@ jobs:
     runs-on: uds-ubuntu-big-boy-4-core
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install UDS CLI
         uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1.0.1
         with:
           # renovate: datasource=github-tags depName=defenseunicorns/uds-cli versioning=semver
-          version: v0.34.2
+          version: v0.34.3
 
       - name: Setup golang
         uses: ./.github/actions/setup-golang
