@@ -24,15 +24,20 @@ on:
         required: true
         description: "Token for UDS registry authentication"
 
-# Releases need permissions to read and write the repository contents.
-permissions:
-  contents: write
-  packages: write # Added for GHCR
+permissions: {}
+
+concurrency:
+  group: release-${{ inputs.tag_name || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   goreleaser:
+    name: Build and publish release
     runs-on: uds-ubuntu-big-boy-4-core
     timeout-minutes: 60 # Match the timeout in the goreleaser command
+    permissions:
+      contents: write # Required by GoReleaser to create the GitHub release.
+      packages: write # Required to publish the provider to GHCR.
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -41,13 +46,16 @@ jobs:
           # Allow goreleaser to access older tag information
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       - name: Setup golang
         uses: ./.github/actions/setup-golang
 
       - name: Install syft
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          # renovate: datasource=github-tags depName=anchore/syft versioning=semver
+          syft-version: v1.44.0
 
       # - name: Import GPG key
       #   uses: crazy-max/ghaction-import-gpg@cb9bde2e2525e640591a934b1fd28eef1dcaf5e5 # v6.2.0
@@ -72,12 +80,17 @@ jobs:
           UDS_REGISTRY_TOKEN: ${{ secrets.UDS_REGISTRY_TOKEN }}
 
       - name: Login to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | go tool oras login -u "${{ github.actor }}" --password-stdin ghcr.io
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: echo "$GHCR_TOKEN" | go tool oras login -u "$GHCR_USER" --password-stdin ghcr.io
 
       # https://github.com/opentofu/opentofu/blob/main/website/docs/cli/oci_registries/provider-mirror.mdx
       - name: Publish to OCI Registries
         shell: bash
         working-directory: dist
+        env:
+          GHCR_NAMESPACE: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
 
@@ -133,9 +146,9 @@ jobs:
           go tool oras cp --from-oci-layout "$layout:$version" "$uds_registry_url:$version"
 
           # Publish to GHCR
-          namespace="${{ github.repository_owner }}"
+          namespace="$GHCR_NAMESPACE"
           type_name="${name#terraform-provider-}"
-          ghcr_url="ghcr.io/${{ github.repository_owner }}/opentofu-providers/$namespace/$type_name"
+          ghcr_url="ghcr.io/$GHCR_NAMESPACE/opentofu-providers/$namespace/$type_name"
           go tool oras cp --from-oci-layout "$layout:$version" "$ghcr_url:$version"
 
       - name: Upload release assets (if any failed)
