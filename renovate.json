@@ -41,7 +41,8 @@
       "matchStrings": ["ghcr\\.io/zarf-dev/packages/(?<packageName>[a-z0-9][a-z0-9._-]*):(?<currentValue>v?\\d+\\.\\d+\\.\\d+)"],
       "depNameTemplate": "ghcr.io/zarf-dev/packages/{{{packageName}}}",
       "datasourceTemplate": "docker",
-      "versioningTemplate": "semver"
+      "versioningTemplate": "semver",
+      "extractVersionTemplate": "^v?(?<version>.*)$"
     }
   ]
 }
