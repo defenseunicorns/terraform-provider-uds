@@ -86,15 +86,12 @@ Once your OpenTofu client is configured with the OCI mirror, you can use the UDS
 
 Example configuration:
 
-<!-- renovate: datasource=github-tags depName=zarf-dev/zarf versioning=semver -->
-<!-- renovate: datasource=github-releases depName=defenseunicorns/terraform-provider-uds -->
 ```hcl
 terraform {
   required_providers {
     uds = {
       source  = "defenseunicorns/uds"
-      version = "~> 0.1.0"
-      # Use the ~> operator for latest stable releases (e.g. ~> 0.1.x), or specify an exact version for nightly builds (e.g. = 0.2.0-nightly)
+      version = "~> 0.4.0" # x-release-please-version
     }
   }
 }
