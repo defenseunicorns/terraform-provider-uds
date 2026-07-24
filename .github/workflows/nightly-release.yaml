@@ -7,9 +7,7 @@ on:
   schedule:
     - cron: "0 3 * * *" ## nightly at 3am UTC
 
-permissions:
-  contents: write
-  packages: write
+permissions: {}
 
 # Abort prior jobs in the same workflow / PR
 concurrency:
@@ -18,17 +16,21 @@ concurrency:
 
 jobs:
   nightly:
+    name: Update nightly tag
     runs-on: ubuntu-latest
     environment: release-nightly
     timeout-minutes: 15 # Add timeout to prevent stuck workflows
+    permissions:
+      contents: write # Required to replace the nightly release and tag through the GitHub API.
     outputs:
       tag_name: ${{ steps.update_tag.outputs.tag }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       - name: Setup golang
         uses: ./.github/actions/setup-golang
@@ -36,12 +38,8 @@ jobs:
       - name: Update nightly tag
         id: update_tag
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Configure git
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
           # Find latest stable version and increment minor for nightly
           LATEST_STABLE=$(git tag -l --sort=-v:refname | grep -v nightly | head -n 1)
           MAJOR_VERSION=$(echo "$LATEST_STABLE" | awk -F. '{print $1}')
@@ -52,19 +50,27 @@ jobs:
           # Clean up any existing nightly releases/tags
           gh release delete "${TAG}" --cleanup-tag -y || true
 
-          # Ensure tag is deleted locally and remotely (in case --cleanup-tag didn't work)
-          git tag -d "${TAG}" 2>/dev/null || true
-          git push origin --delete "${TAG}" 2>/dev/null || true
+          # Ensure the remote tag is deleted in case --cleanup-tag did not remove it
+          gh api \
+            --method DELETE \
+            "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" || true
 
-          # Create new tag and push it
-          git tag "${TAG}"
-          git push origin "${TAG}"
+          # Recreate the lightweight tag at this workflow's commit
+          gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/git/refs" \
+            --raw-field ref="refs/tags/${TAG}" \
+            --raw-field sha="${GITHUB_SHA}"
 
           # Set output for next job
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
   trigger-nightly-release:
+    name: Publish nightly release
     needs: nightly
+    permissions:
+      contents: write # Required by GoReleaser to create the GitHub release.
+      packages: write # Required to publish the provider to GHCR.
     uses: ./.github/workflows/release.yml
     with:
       tag_name: ${{ needs.nightly.outputs.tag_name }}
