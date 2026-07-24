@@ -42,11 +42,11 @@
   "customManagers": [
     {
       "customType": "regex",
-      "fileMatch": ["/\\.(go|hcl|json|md|sh|tf|ya?ml)$/"],
-      "matchStrings": ["(?<depName>ghcr\\.io/zarf-dev/packages/[a-z0-9][a-z0-9._-]*):(?<currentValue>v?\\d+\\.\\d+\\.\\d+)"],
+      "description": "Extends the uds-common bundle OCI package matcher to source assignments in this repository's Go, HCL, JSON, Markdown, shell, Terraform, and YAML files: https://github.com/defenseunicorns/uds-common/blob/1b0c23314df0fbc002e0ad28ac1debf40e43002f/config/renovate.json5#L141-L153",
+      "fileMatch": [".*(\\.go|\\.hcl|\\.json|\\.md|\\.sh|\\.tf|\\.ya?ml)$"],
+      "matchStrings": ["(?m)^\\s*source\\s*=\\s*\"(?:oci:\\/\\/)?(?<depName>[A-Za-z0-9._-]+(?:\\/[A-Za-z0-9._-]+)+):(?<currentValue>[A-Za-z0-9_][A-Za-z0-9._-]*)\"\\s*$"],
       "datasourceTemplate": "docker",
-      "versioningTemplate": "semver",
-      "extractVersionTemplate": "^v?(?<version>.*)$"
+      "versioningTemplate": "docker"
     }
   ]
 }
