@@ -19,7 +19,12 @@
         { "type": "ci", "section": "CI/CD", "hidden": true },
         { "type": "build", "section": "Build", "hidden": true }
       ],
-      "extra-files": []
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "README.md"
+        }
+      ]
     }
   },
   "include-component-in-tag": false
