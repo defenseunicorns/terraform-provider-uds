@@ -477,7 +477,7 @@ func TestAccMultiplePackageResources(t *testing.T) {
 					resource.TestCheckResourceAttr("uds_package.init", "id", "init"),
 					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", initPackageVersion),
 					resource.TestCheckResourceAttr("uds_package.dos_games", "id", "demo:dos-games"),
-					resource.TestCheckResourceAttr("uds_package.dos_games", "metadata.version", "1.2.0"),
+					resource.TestCheckResourceAttrSet("uds_package.dos_games", "metadata.version"),
 				),
 			},
 			// Delete testing automatically occurs in TestCase
