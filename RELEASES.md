@@ -4,6 +4,10 @@ This document provides guidance on how to create releases of the UDS Tofu provid
 
 This project uses [Release Please](https://github.com/googleapis/release-please) to automate release management and [GoReleaser](https://github.com/goreleaser/goreleaser-action) to build and publish release artifacts.
 
+## Release Signing
+
+GoReleaser signs the release checksum file with a dedicated GPG key. This is required for publishing the provider to the public Terraform Registry and allows users and registries to verify the release artifacts.
+
 ## How Releases Work
 
 ### Automated Releases (Release Please)
