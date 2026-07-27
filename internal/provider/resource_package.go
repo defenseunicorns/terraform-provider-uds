@@ -1437,6 +1437,9 @@ func convertYAMLToJSONCompatible(o any) any {
 		}
 		return int(x)
 	case int64:
+		if x < math.MinInt || x > math.MaxInt {
+			return x
+		}
 		return int(x)
 	}
 	return o
