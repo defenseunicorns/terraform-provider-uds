@@ -45,7 +45,7 @@ resource "uds_package" "init" {
 
 resource "uds_package" "dos_games" {
   depends_on = [uds_package.init]
-  source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
+  source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.3.0"
   namespace  = "demo"
 
   # dos-games is key-signed. This example skips verification for brevity.
