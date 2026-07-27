@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -21,6 +22,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
+	"github.com/zarf-dev/zarf/src/pkg/ocischeme"
 )
 
 // configSource represents where a configuration value came from
@@ -32,6 +34,7 @@ const (
 	configSourceDefault                          configSource = "default value"
 	configErrorSummaryUnknownProviderConfigValue string       = "Unknown Provider Config Value"
 	configErrorSummaryInvalidProviderConfigValue string       = "Invalid Provider Config Value"
+	ociSchemeNegotiatorTTL                                    = 5 * time.Minute
 )
 
 type udsProviderConfig struct {
@@ -42,6 +45,7 @@ type udsProviderConfig struct {
 	ZarfCachePath               string
 	ForceHelmSSAConflicts       bool
 	ValidatePackagesOnPlan      bool
+	OCISchemeNegotiator         *ocischeme.Negotiator
 }
 
 type udsProviderModel struct {
@@ -80,11 +84,11 @@ func (p *udsProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *
 			},
 			"insecure_force_http": schema.BoolAttribute{
 				Optional:            true,
-				MarkdownDescription: "Force remote package fetching over HTTP instead of HTTPS. Defaults to `false`. Can also be configured with the `UDS_INSECURE_FORCE_HTTP` environment variable.",
+				MarkdownDescription: "Allow plain HTTP for OCI package sources and force plain HTTP for external Zarf registry pushes. Package sources continue to use HTTPS when available, while Zarf-managed registries use the transport recorded in cluster state. Defaults to `false`. Can also be configured with the `UDS_INSECURE_FORCE_HTTP` environment variable.",
 			},
 			"insecure_skip_tls_verification": schema.BoolAttribute{
 				Optional:            true,
-				MarkdownDescription: "Skip TLS certificate verification when fetching remote packages over HTTPS. Defaults to `false`. Can also be configured with the `UDS_INSECURE_SKIP_TLS_VERIFICATION` environment variable.",
+				MarkdownDescription: "Skip TLS certificate verification for HTTPS package sources and external Zarf registry pushes. Zarf-managed mTLS registries continue to use their managed trust configuration. Defaults to `false`. Can also be configured with the `UDS_INSECURE_SKIP_TLS_VERIFICATION` environment variable.",
 			},
 			"zarf_cache_path": schema.StringAttribute{
 				Optional:            true,
@@ -229,6 +233,7 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 		ZarfCachePath:               zarfCachePath,
 		ForceHelmSSAConflicts:       forceHelmSSAConflicts,
 		ValidatePackagesOnPlan:      validatePackagesOnPlan,
+		OCISchemeNegotiator:         ocischeme.New(ocischeme.Options{TTL: ociSchemeNegotiatorTTL}),
 	}
 
 	tflog.Info(ctx, "Provider configured", map[string]interface{}{

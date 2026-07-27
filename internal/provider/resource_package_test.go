@@ -9,10 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,6 +55,103 @@ func testCtx(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+func testOCISource(rawURL string) string {
+	host := strings.TrimPrefix(rawURL, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	return "oci://" + host + "/packages/test:v1.0.0"
+}
+
+func TestPackageResource_GetPackageSourceRemoteOptions(t *testing.T) {
+	t.Run("disabled leaves HTTPS default without probing", func(t *testing.T) {
+		var requests atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			requests.Add(1)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		resource := NewPackageResource(&udsProviderConfig{}, nil, nil, nil).(*PackageResource)
+		opts, err := resource.getPackageSourceRemoteOptions(testCtx(t), testOCISource(server.URL))
+
+		require.NoError(t, err)
+		assert.False(t, opts.PlainHTTP)
+		assert.Zero(t, requests.Load())
+	})
+
+	t.Run("HTTP-only source resolves to plain HTTP", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer server.Close()
+
+		resource := NewPackageResource(&udsProviderConfig{InsecureForceHTTP: true}, nil, nil, nil).(*PackageResource)
+		opts, err := resource.getPackageSourceRemoteOptions(testCtx(t), testOCISource(server.URL))
+
+		require.NoError(t, err)
+		assert.True(t, opts.PlainHTTP)
+	})
+
+	t.Run("self-signed HTTPS source remains HTTPS when verification is skipped", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer server.Close()
+
+		resource := NewPackageResource(&udsProviderConfig{
+			InsecureForceHTTP:           true,
+			InsecureSkipTLSVerification: true,
+		}, nil, nil, nil).(*PackageResource)
+		opts, err := resource.getPackageSourceRemoteOptions(testCtx(t), testOCISource(server.URL))
+
+		require.NoError(t, err)
+		assert.False(t, opts.PlainHTTP)
+		assert.True(t, opts.InsecureSkipTLSVerify)
+	})
+
+	t.Run("certificate failure does not downgrade to HTTP", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		resource := NewPackageResource(&udsProviderConfig{InsecureForceHTTP: true}, nil, nil, nil).(*PackageResource)
+		opts, err := resource.getPackageSourceRemoteOptions(testCtx(t), testOCISource(server.URL))
+
+		require.Error(t, err)
+		assert.False(t, opts.PlainHTTP)
+		assert.Contains(t, err.Error(), "unable to determine transport for package source")
+	})
+
+	t.Run("local source does not negotiate", func(t *testing.T) {
+		resource := NewPackageResource(&udsProviderConfig{InsecureForceHTTP: true}, nil, nil, nil).(*PackageResource)
+		opts, err := resource.getPackageSourceRemoteOptions(testCtx(t), "./zarf-package-test.tar.zst")
+
+		require.NoError(t, err)
+		assert.False(t, opts.PlainHTTP)
+	})
+
+	t.Run("provider aliases do not share cached failures", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+		source := testOCISource(server.URL)
+
+		strictResource := NewPackageResource(&udsProviderConfig{InsecureForceHTTP: true}, nil, nil, nil).(*PackageResource)
+		_, err := strictResource.getPackageSourceRemoteOptions(testCtx(t), source)
+		require.Error(t, err)
+
+		skipVerifyResource := NewPackageResource(&udsProviderConfig{
+			InsecureForceHTTP:           true,
+			InsecureSkipTLSVerification: true,
+		}, nil, nil, nil).(*PackageResource)
+		opts, err := skipVerifyResource.getPackageSourceRemoteOptions(testCtx(t), source)
+
+		require.NoError(t, err)
+		assert.False(t, opts.PlainHTTP)
+	})
 }
 
 type MockCluster struct {
@@ -673,6 +773,72 @@ func TestPackageResource_Upsert_ForceHelmSSAConflicts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPackageResource_UpsertNegotiatesPackageSourceAndPreservesRegistryOptions(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	mockPackager := &MockPackager{}
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).
+		Return(newValidLoadPackageResult().Layout, nil)
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).
+		Return(packager.DeployResult{}, nil)
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	providerConfig := &udsProviderConfig{
+		InsecureForceHTTP:           true,
+		InsecureSkipTLSVerification: true,
+	}
+	packageResource := NewPackageResource(providerConfig, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+	model := NewTestPackageResourceModel(WithSource(testOCISource(server.URL)))
+
+	_, err := packageResource.upsert(testCtx(t), model)
+	require.NoError(t, err)
+
+	var loadOptions zarfPackager.LoadOptions
+	var deployOptions zarfPackager.DeployOptions
+	for _, call := range mockPackager.Calls {
+		switch call.Method {
+		case "LoadPackage":
+			loadOptions = call.Arguments[2].(zarfPackager.LoadOptions)
+		case "Deploy":
+			deployOptions = call.Arguments[2].(zarfPackager.DeployOptions)
+		}
+	}
+	assert.False(t, loadOptions.PlainHTTP, "working HTTPS package source must not be downgraded")
+	assert.True(t, loadOptions.InsecureSkipTLSVerify)
+	assert.True(t, deployOptions.PlainHTTP, "external HTTP Zarf registry compatibility must be preserved")
+	assert.True(t, deployOptions.InsecureSkipTLSVerify)
+}
+
+func TestPackageResource_LoadPackageLayoutForInspectionUsesNegotiatedSourceOptions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).
+		Return(newValidLoadPackageResult().Layout, nil)
+	packageResource := NewPackageResource(
+		&udsProviderConfig{InsecureForceHTTP: true},
+		mockPackager,
+		nil,
+		nil,
+	).(*PackageResource)
+
+	_, err := packageResource.loadPackageLayoutForInspection(
+		testCtx(t),
+		NewTestPackageResourceModel(WithSource(testOCISource(server.URL))),
+	)
+	require.NoError(t, err)
+
+	loadOptions := mockPackager.Calls[0].Arguments[2].(zarfPackager.LoadOptions)
+	assert.True(t, loadOptions.PlainHTTP)
 }
 
 func TestPackageResource_Upsert_SetVariables(t *testing.T) {
@@ -2747,6 +2913,37 @@ func TestUpdate_RemoveComponents(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPackageResource_RemoveComponentsUsesNegotiatedSourceOptions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+	mockPackageComponentFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
+	mockCluster := &MockCluster{}
+	zarfCluster := zarfCluster.Cluster{}
+	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster, nil)
+	mockPackager := &MockPackager{}
+	mockPackager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(v1alpha1.ZarfPackage{}, nil)
+	mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+	packageResource := NewPackageResource(
+		&udsProviderConfig{InsecureForceHTTP: true},
+		mockPackager,
+		mockPackageComponentFilter,
+		mockCluster,
+	).(*PackageResource)
+	plan := NewTestPackageResourceModel(WithSource(testOCISource(server.URL)))
+
+	err := packageResource.removeComponents(testCtx(t), plan, []string{"component-a"})
+	require.NoError(t, err)
+
+	loadOptions := mockPackager.Calls[0].Arguments[4].(zarfPackager.LoadOptions)
+	assert.True(t, loadOptions.PlainHTTP)
 }
 
 func TestUpdate_TimeoutOnlyChangeSkipsPackageOperations(t *testing.T) {
@@ -6931,6 +7128,45 @@ func TestDelete_ClusterContextCappedAt5Minutes(t *testing.T) {
 	remaining := time.Until(deadline)
 	assert.LessOrEqual(t, remaining.Seconds(), (5*time.Minute + 5*time.Second).Seconds(),
 		"cluster context must be capped at 5m regardless of configured delete timeout")
+}
+
+func TestDelete_LoadsNamespacedPackageFromClusterAndDoesNotSetRemoteOptions(t *testing.T) {
+	mockCluster := &MockCluster{}
+	mockPackager := &MockPackager{}
+	mockFilter := &MockPackageComponentFilter{}
+
+	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, nil)
+	mockFilter.On("ForRemove", []string{}).Return(mock.Anything)
+	mockPackager.On("GetPackageFromSourceOrCluster",
+		mock.Anything, mock.Anything, "test-pkg", "package-namespace", mock.Anything).
+		Run(func(args mock.Arguments) {
+			loadOpts := args.Get(4).(zarfPackager.LoadOptions)
+			assert.False(t, loadOpts.PlainHTTP)
+			assert.False(t, loadOpts.InsecureSkipTLSVerify)
+		}).
+		Return(v1alpha1.ZarfPackage{}, nil)
+	mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			removeOpts := args.Get(2).(zarfPackager.RemoveOptions)
+			assert.Equal(t, "package-namespace", removeOpts.NamespaceOverride)
+		}).
+		Return(nil)
+
+	r := NewPackageResource(
+		&udsProviderConfig{InsecureForceHTTP: true, InsecureSkipTLSVerification: true},
+		mockPackager,
+		mockFilter,
+		mockCluster,
+	).(*PackageResource)
+	model := NewTestPackageResourceModel(WithDeployedState(), WithNamespace("package-namespace"))
+	model.ID = types.StringValue("package-namespace:test-pkg")
+	state := buildTestState(t, r, model)
+
+	var resp resource.DeleteResponse
+	r.Delete(context.Background(), resource.DeleteRequest{State: state}, &resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "expected no error: %v", resp.Diagnostics)
+	mockPackager.AssertExpectations(t)
 }
 
 // TestDelete_ZarfHandoffUsesRemainingBudget verifies that RemoveOptions.Timeout is

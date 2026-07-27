@@ -41,6 +41,7 @@ import (
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
+	"github.com/zarf-dev/zarf/src/pkg/ocischeme"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	zarfFilters "github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
@@ -50,6 +51,7 @@ import (
 	zarfValue "github.com/zarf-dev/zarf/src/pkg/value"
 	zarfZoci "github.com/zarf-dev/zarf/src/pkg/zoci"
 	zarfTypes "github.com/zarf-dev/zarf/src/types"
+	"oras.land/oras-go/v2/registry"
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
@@ -68,6 +70,9 @@ type packageSignatureVerifier func(context.Context, *zarfLayout.PackageLayout, z
 func NewPackageResource(providerConfig *udsProviderConfig, packager udsPackager.Packager, packageComponentFilter udsPackager.PackageComponentFilter, cluster udsCluster.Cluster) resource.Resource {
 	if providerConfig == nil {
 		providerConfig = &udsProviderConfig{}
+	}
+	if providerConfig.OCISchemeNegotiator == nil {
+		providerConfig.OCISchemeNegotiator = ocischeme.New(ocischeme.Options{TTL: ociSchemeNegotiatorTTL})
 	}
 	if packager == nil {
 		packager = udsPackager.NewPackager()
@@ -775,6 +780,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, deleteTimeout)
 	defer cancel()
+	timeoutCtx = r.withOCISchemeNegotiator(timeoutCtx)
 
 	clusterCtx, clusterCancel := withClusterTimeout(timeoutCtx)
 	defer clusterCancel()
@@ -806,23 +812,16 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 
-	// TODO(erickson): Do we need configurable remote options?
-	remoteOpts := zarfTypes.RemoteOptions{
-		PlainHTTP:             r.providerConfig.InsecureForceHTTP,
-		InsecureSkipTLSVerify: r.providerConfig.InsecureSkipTLSVerification,
-	}
-
+	packageName := data.Name.ValueString()
 	loadOpts := zarfPackager.LoadOptions{
 		Filter:               r.packageFilter.ForRemove([]string{}),
 		Architecture:         getArchitecture(data, *r.providerConfig),
 		VerifyBlobOptions:    verifyBlobOpts,
 		VerificationStrategy: layout.VerifyNever,
-		RemoteOptions:        remoteOpts,
 		CachePath:            r.providerConfig.ZarfCachePath,
 	}
 
-	packageSource := data.Name.ValueString()
-	pkg, err := r.packager.GetPackageFromSourceOrCluster(timeoutCtx, c, packageSource, data.Namespace.ValueString(), loadOpts)
+	pkg, err := r.packager.GetPackageFromSourceOrCluster(timeoutCtx, c, packageName, data.Namespace.ValueString(), loadOpts)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error loading package",
@@ -971,15 +970,48 @@ func (r *PackageResource) ConfigValidators(_ context.Context) []resource.ConfigV
 	return []resource.ConfigValidator{timeoutPositiveValidator{}}
 }
 
-func (r *PackageResource) getRemoteOptions() zarfTypes.RemoteOptions {
+func (r *PackageResource) getZarfRegistryRemoteOptions() zarfTypes.RemoteOptions {
 	return zarfTypes.RemoteOptions{
 		PlainHTTP:             r.providerConfig.InsecureForceHTTP,
 		InsecureSkipTLSVerify: r.providerConfig.InsecureSkipTLSVerification,
 	}
 }
 
+func (r *PackageResource) withOCISchemeNegotiator(ctx context.Context) context.Context {
+	return ocischeme.WithNegotiator(ctx, r.providerConfig.OCISchemeNegotiator)
+}
+
+func (r *PackageResource) getPackageSourceRemoteOptions(ctx context.Context, source string) (zarfTypes.RemoteOptions, error) {
+	ctx = r.withOCISchemeNegotiator(ctx)
+	opts := zarfTypes.RemoteOptions{
+		InsecureSkipTLSVerify: r.providerConfig.InsecureSkipTLSVerification,
+	}
+	shouldNegotiate := r.providerConfig.InsecureForceHTTP && strings.HasPrefix(source, "oci://")
+	if !shouldNegotiate {
+		return opts, nil
+	}
+
+	ref, err := registry.ParseReference(strings.TrimPrefix(source, "oci://"))
+	if err != nil {
+		return zarfTypes.RemoteOptions{}, fmt.Errorf("unable to parse package source %q: %w", source, err)
+	}
+	plainHTTP, err := ocischeme.From(ctx).UsePlainHTTP(ctx, ref.Registry, ocischeme.ProbeOptions{
+		InsecureSkipTLSVerify: opts.InsecureSkipTLSVerify,
+	})
+	if err != nil {
+		return zarfTypes.RemoteOptions{}, fmt.Errorf("unable to determine transport for package source %q: %w", source, err)
+	}
+	opts.PlainHTTP = plainHTTP
+	return opts, nil
+}
+
 func (r *PackageResource) loadPackageLayoutFromSource(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
+	ctx = r.withOCISchemeNegotiator(ctx)
 	packageSource, err := getPackageSource(model, *r.providerConfig)
+	if err != nil {
+		return nil, err
+	}
+	remoteOptions, err := r.getPackageSourceRemoteOptions(ctx, packageSource)
 	if err != nil {
 		return nil, err
 	}
@@ -989,7 +1021,7 @@ func (r *PackageResource) loadPackageLayoutFromSource(ctx context.Context, model
 		Filter:               zarfFilters.Empty(),
 		Architecture:         getArchitecture(model, *r.providerConfig),
 		VerificationStrategy: layout.VerifyNever,
-		RemoteOptions:        r.getRemoteOptions(),
+		RemoteOptions:        remoteOptions,
 		CachePath:            r.providerConfig.ZarfCachePath,
 	}
 
@@ -1070,6 +1102,7 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	if len(componentsToRemove) == 0 {
 		return nil
 	}
+	ctx = r.withOCISchemeNegotiator(ctx)
 
 	namespaceOverride := plan.Namespace.ValueString()
 
@@ -1086,10 +1119,15 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	if err != nil {
 		return fmt.Errorf("could not get package source: %w", err)
 	}
+	remoteOptions, err := r.getPackageSourceRemoteOptions(ctx, packageSource)
+	if err != nil {
+		return err
+	}
 	loadOpts := zarfPackager.LoadOptions{
-		Architecture: getArchitecture(plan, *r.providerConfig),
-		Filter:       r.packageFilter.ForRemove(componentsToRemove),
-		CachePath:    r.providerConfig.ZarfCachePath,
+		Architecture:  getArchitecture(plan, *r.providerConfig),
+		Filter:        r.packageFilter.ForRemove(componentsToRemove),
+		CachePath:     r.providerConfig.ZarfCachePath,
+		RemoteOptions: remoteOptions,
 	}
 	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
 	if err != nil {
@@ -1117,9 +1155,10 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 			return nil
 		}
 		loadOpts := zarfPackager.LoadOptions{
-			Architecture: getArchitecture(plan, *r.providerConfig),
-			Filter:       r.packageFilter.ForRemove(newComponentsToRemove),
-			CachePath:    r.providerConfig.ZarfCachePath,
+			Architecture:  getArchitecture(plan, *r.providerConfig),
+			Filter:        r.packageFilter.ForRemove(newComponentsToRemove),
+			CachePath:     r.providerConfig.ZarfCachePath,
+			RemoteOptions: remoteOptions,
 		}
 
 		pkg, err = r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
@@ -1232,6 +1271,7 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 }
 
 func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
+	ctx = r.withOCISchemeNegotiator(ctx)
 	if plan.OptionalComponents.IsUnknown() {
 		return plan, fmt.Errorf("optional_components must be known before apply")
 	}
@@ -1287,7 +1327,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		SetVariables:           buildSetVariableMap(plan),
 		Values:                 deployValues,
 		ValuesOverridesMap:     valuesOverridesMap,
-		RemoteOptions:          r.getRemoteOptions(),
+		RemoteOptions:          r.getZarfRegistryRemoteOptions(),
 		NamespaceOverride:      plan.Namespace.ValueString(),
 		GitServer: zarfState.GitServerInfo{
 			PushUsername: zarfState.ZarfGitPushUser,
@@ -2849,7 +2889,12 @@ func (v timeoutPositiveValidator) ValidateResource(ctx context.Context, req reso
 // loadPackageLayoutForInspection loads the package for metadata inspection only, without signature verification.
 // Use when only component metadata is needed (e.g., optional_components validation).
 func (r *PackageResource) loadPackageLayoutForInspection(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
+	ctx = r.withOCISchemeNegotiator(ctx)
 	packageSource, err := getPackageSource(model, *r.providerConfig)
+	if err != nil {
+		return nil, err
+	}
+	remoteOptions, err := r.getPackageSourceRemoteOptions(ctx, packageSource)
 	if err != nil {
 		return nil, err
 	}
@@ -2859,7 +2904,7 @@ func (r *PackageResource) loadPackageLayoutForInspection(ctx context.Context, mo
 		Architecture:         getArchitecture(model, *r.providerConfig),
 		VerificationStrategy: layout.VerifyNever,
 		LayerTypes:           []zarfZoci.LayerType{zarfZoci.MetadataLayers},
-		RemoteOptions:        r.getRemoteOptions(),
+		RemoteOptions:        remoteOptions,
 		CachePath:            r.providerConfig.ZarfCachePath,
 	}
 

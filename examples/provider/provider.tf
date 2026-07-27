@@ -2,11 +2,11 @@ provider "uds" {
   # Set a default architecture for packages if not set explicitly in the resource
   default_architecture = "arm64"
 
-  # Enable HTTP-only connections when working with non-TLS registries
-  insecure_force_http = true
+  # Allow HTTP-only OCI package sources or force HTTP for an external Zarf registry
+  # insecure_force_http = true
 
-  # Skip TLS verification when using custom or self-signed certificates
-  insecure_skip_tls_verification = true
+  # Skip TLS verification for package sources or external registries with self-signed certificates
+  # insecure_skip_tls_verification = true
 
   # Use a custom Zarf cache directory for package downloads and verification
   zarf_cache_path = "~/.zarf-cache"
