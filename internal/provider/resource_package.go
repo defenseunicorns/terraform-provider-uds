@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -1431,6 +1432,11 @@ func convertYAMLToJSONCompatible(o any) any {
 			x[i] = convertYAMLToJSONCompatible(v)
 		}
 	case uint64:
+		if x > math.MaxInt {
+			return x
+		}
+		return int(x)
+	case int64:
 		return int(x)
 	}
 	return o

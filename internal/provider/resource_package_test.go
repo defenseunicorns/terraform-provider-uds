@@ -4853,6 +4853,56 @@ func TestFlattenComponentOverrides(t *testing.T) {
 			},
 		},
 		{
+			name: "integer values are converted to int",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("replicas"), Value: types.StringValue("3")},
+								{Path: types.StringValue("port"), Value: types.StringValue("8080")},
+								{Path: types.StringValue("negative"), Value: types.StringValue("-1")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"replicas": 3,
+						"port":     8080,
+						"negative": -1,
+					},
+				},
+			},
+		},
+		{
+			name: "large unsigned integers exceeding max int are preserved as uint64",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("bigval"), Value: types.StringValue("18446744073709551615")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"bigval": uint64(18446744073709551615),
+					},
+				},
+			},
+		},
+		{
 			name: "error when component overrides values has duplicate nested paths",
 			input: []ComponentModel{
 				{
