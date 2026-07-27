@@ -1,4 +1,4 @@
-# Copyright 2025 Defense Unicorns
+# Copyright 2025-2026 Defense Unicorns
 # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
 name: Test
@@ -7,20 +7,10 @@ on:
   pull_request:
     # milestoned is added here as a workaround for release-please not triggering PR workflows (PRs should be added to a milestone to trigger the workflow).
     types: [milestoned, opened, reopened, synchronize]
-    paths-ignore:
-      - "**.md"
-      - "**.jpg"
-      - "**.png"
-      - "**.gif"
-      - "**.svg"
-      - "**.tf"
-      - ".gitignore"
-      - ".vscode/**"
-      - "CODEOWNERS"
-      - "LICENSE"
 
 permissions:
   contents: read
+  pull-requests: read
 
 # Abort prior jobs in the same workflow / PR
 concurrency:
@@ -28,8 +18,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  docs-shim:
+    name: Docs Shim
+    runs-on: ubuntu-latest
+    outputs:
+      test: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' }}
+    steps:
+      - name: Check for non-documentation changes
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+        with:
+          predicate-quantifier: every
+          filters: |
+            code:
+              - "**"
+              - "!**.md"
+              - "!**.jpg"
+              - "!**.png"
+              - "!**.gif"
+              - "!**.svg"
+              - "!.gitignore"
+              - "!.vscode/**"
+              - "!CODEOWNERS"
+              - "!LICENSE"
+
   lint:
     name: Lint
+    needs: docs-shim
+    if: needs.docs-shim.outputs.test == 'true'
     runs-on: uds-ubuntu-big-boy-4-core
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -44,6 +61,8 @@ jobs:
 
   acceptance:
     name: Acceptance tests
+    needs: docs-shim
+    if: needs.docs-shim.outputs.test == 'true'
     runs-on: uds-ubuntu-big-boy-4-core
     steps:
       - name: Checkout
@@ -83,6 +102,8 @@ jobs:
 
   unit:
     name: Unit tests
+    needs: docs-shim
+    if: needs.docs-shim.outputs.test == 'true'
     runs-on: uds-ubuntu-big-boy-4-core
     steps:
       - name: Checkout
