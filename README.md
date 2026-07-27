@@ -1,6 +1,6 @@
-# OpenTofu Provider for UDS Zarf Packages
+# OpenTofu Provider for UDS (Unified Defense Stack)
 
-Deploy and manage [UDS Zarf packages](https://docs.defenseunicorns.com/core/how-to-guides/packaging-applications/overview/) with OpenTofu.
+Manage [UDS](https://docs.defenseunicorns.com/) resources with OpenTofu. Currently, the provider supports deploying and managing [UDS packages](https://docs.defenseunicorns.com/core/how-to-guides/packaging-applications/overview/).
 
 ## Installation
 

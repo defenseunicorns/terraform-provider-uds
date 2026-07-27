@@ -1,0 +1,61 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+name: Docs Shim
+
+on:
+  pull_request:
+    # Keep these event types aligned with test.yaml.
+    types: [milestoned, opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: docs-shim-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Detect code changes
+        id: filter
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+        with:
+          predicate-quantifier: every
+          filters: |
+            code:
+              - "**"
+              - "!**.md"
+              - "!**.jpg"
+              - "!**.png"
+              - "!**.gif"
+              - "!**.svg"
+              - "!.gitignore"
+              - "!.vscode/**"
+              - "!CODEOWNERS"
+              - "!LICENSE"
+
+  required-checks:
+    needs: changes
+    name: ${{ needs.changes.outputs.code == 'false' && matrix.check || format('Docs Shim ({0})', matrix.check) }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        check:
+          - Lint
+          - Acceptance tests
+          - Unit tests
+    steps:
+      - name: Shim required check
+        if: needs.changes.outputs.code == 'false'
+        run: echo "${{ matrix.check }} skipped because this change does not affect provider code"
+
+      - name: Skip shim
+        if: needs.changes.outputs.code == 'true'
+        run: echo "${{ matrix.check }} runs in the test workflow because this change affects provider code"
