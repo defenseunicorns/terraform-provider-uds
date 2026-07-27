@@ -10,7 +10,7 @@
 
 locals {
   # renovate: datasource=docker depName=ghcr.io/zarf-dev/packages/init versioning=semver
-  zarf_init_version = "v0.81.1"
+  zarf_init_version = "v0.82.0"
 }
 
 # import package deployed without a namespace override
@@ -31,7 +31,7 @@ import {
 
 resource "uds_package" "demo_dos_games" {
   depends_on = [uds_package.init]
-  source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
+  source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.3.0"
   namespace  = "demo"
   public_key = file("dosgames.pub") # See PRE-REQUISITES above
 }

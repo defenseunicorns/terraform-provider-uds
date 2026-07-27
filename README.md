@@ -34,7 +34,8 @@ terraform {
 }
 
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.63.0"
+  source = "oci://ghcr.io/zarf-dev/packages/init:v0.82.0"
+}
 
   # init is keyless-signed. This example skips verification for brevity.
   signature_verification = {

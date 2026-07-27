@@ -27,7 +27,7 @@ provider "uds" {
 }
 
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.74.0"
+  source = "oci://ghcr.io/zarf-dev/packages/init:v0.82.0"
 
   signature_verification = {
     keyless = {
@@ -160,7 +160,7 @@ resource "uds_package" "podinfo" {
 
 resource "uds_package" "dos_games" {
   depends_on = [uds_package.init]
-  source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
+  source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.3.0"
   namespace  = "demo"
 
   # This package is signed with a key, but signature verification is disabled here with verify = false.
@@ -341,7 +341,7 @@ import {
 }
 
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.74.0"
+  source = "oci://ghcr.io/zarf-dev/packages/init:v0.82.0"
 }
 
 # import package deployed with a namespace override
@@ -352,7 +352,7 @@ import {
 
 resource "uds_package" "demo_dos_games" {
   depends_on = [uds_package.init]
-  source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
+  source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.3.0"
   namespace  = "demo"
   public_key = file("dosgames.pub") # See PRE-REQUISITES above
 }

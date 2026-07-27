@@ -13,7 +13,7 @@ provider "uds" {
 
 locals {
   # renovate: datasource=docker depName=ghcr.io/zarf-dev/packages/init versioning=semver
-  zarf_init_version = "v0.81.1"
+  zarf_init_version = "v0.82.0"
 }
 
 resource "uds_package" "init" {
@@ -150,7 +150,7 @@ resource "uds_package" "podinfo" {
 
 resource "uds_package" "dos_games" {
   depends_on = [uds_package.init]
-  source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
+  source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.3.0"
   namespace  = "demo"
 
   # This package is signed with a key, but signature verification is disabled here with verify = false.

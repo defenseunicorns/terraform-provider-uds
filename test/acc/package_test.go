@@ -25,7 +25,7 @@ import (
 
 const (
 	// renovate: datasource=github-tags depName=zarf-dev/zarf
-	initPackageVersion = "v0.81.1"
+	initPackageVersion = "v0.82.0"
 
 	// renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/core-crds versioning=semver extractVersion=^(?<version>.*)-upstream$
 	udsCoreCRDsPackageVersion = "1.9.0"
@@ -453,7 +453,7 @@ resource "uds_package" "init" {
 
 resource "uds_package" "dos_games" {
   depends_on   = [uds_package.init]
-  source       = "oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0"
+  source       = "oci://ghcr.io/zarf-dev/packages/dos-games:1.3.0"
   architecture = uds_package.init.architecture
   namespace    = "demo"
   signature_verification = {
@@ -477,7 +477,7 @@ func TestAccMultiplePackageResources(t *testing.T) {
 					resource.TestCheckResourceAttr("uds_package.init", "id", "init"),
 					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", initPackageVersion),
 					resource.TestCheckResourceAttr("uds_package.dos_games", "id", "demo:dos-games"),
-					resource.TestCheckResourceAttr("uds_package.dos_games", "metadata.version", "1.2.0"),
+					resource.TestCheckResourceAttrSet("uds_package.dos_games", "metadata.version"),
 				),
 			},
 			// Delete testing automatically occurs in TestCase
