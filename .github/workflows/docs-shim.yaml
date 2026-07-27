@@ -1,0 +1,47 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+name: Docs Shim
+
+on:
+  pull_request:
+    # Keep these event types aligned with test.yaml.
+    types: [milestoned, opened, reopened, synchronize]
+    # Keep these paths aligned with paths-ignore in test.yaml.
+    paths:
+      - "**.md"
+      - "**.jpg"
+      - "**.png"
+      - "**.gif"
+      - "**.svg"
+      - ".gitignore"
+      - ".vscode/**"
+      - "CODEOWNERS"
+      - "LICENSE"
+      - ".github/workflows/docs-shim.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-shim-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Skipped — docs-only change"
+
+  acceptance:
+    name: Acceptance tests
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Skipped — docs-only change"
+
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Skipped — docs-only change"
