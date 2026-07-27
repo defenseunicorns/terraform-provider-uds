@@ -1,0 +1,42 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+name: Test Shim
+
+on:
+  pull_request:
+    # Keep these event types aligned with test.yaml.
+    types: [milestoned, opened, reopened, synchronize]
+    # Keep these paths aligned with paths-ignore in test.yaml.
+    paths:
+      - "**.md"
+      - "**.jpg"
+      - "**.png"
+      - "**.gif"
+      - "**.svg"
+      - "**.tf"
+      - ".gitignore"
+      - ".vscode/**"
+      - "CODEOWNERS"
+      - "LICENSE"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-shim-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  required-checks:
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        check:
+          - Lint
+          - Acceptance tests
+          - Unit tests
+    steps:
+      - name: Skipped
+        run: echo "${{ matrix.check }} skipped because this change does not affect provider code"
