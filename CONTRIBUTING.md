@@ -64,7 +64,7 @@ provider "uds" {
 }
 
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.72.0"
+  source = "oci://ghcr.io/zarf-dev/packages/init:v0.82.0"
 }
 ```
 
