@@ -1,4 +1,4 @@
-# Copyright 2025 Defense Unicorns
+# Copyright 2025-2026 Defense Unicorns
 # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
 name: Test
@@ -7,17 +7,17 @@ on:
   pull_request:
     # milestoned is added here as a workaround for release-please not triggering PR workflows (PRs should be added to a milestone to trigger the workflow).
     types: [milestoned, opened, reopened, synchronize]
+    # Keep these paths aligned with the code filter in docs-shim.yaml.
     paths-ignore:
       - "**.md"
       - "**.jpg"
       - "**.png"
       - "**.gif"
       - "**.svg"
-      - "**.tf"
-      - "adr/**"
-      - "docs/**"
+      - ".gitignore"
+      - ".vscode/**"
       - "CODEOWNERS"
-      - "goreleaser.yml"
+      - "LICENSE"
 
 permissions:
   contents: read
@@ -39,7 +39,8 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: latest
+          # renovate: datasource=github-releases depName=golangci/golangci-lint versioning=semver
+          version: v2.12.2
 
   acceptance:
     name: Acceptance tests
