@@ -34,7 +34,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"gopkg.in/yaml.v2"
+	"github.com/goccy/go-yaml"
 
 	udsCluster "github.com/defenseunicorns/terraform-provider-uds/internal/cluster"
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
@@ -1430,6 +1430,8 @@ func convertYAMLToJSONCompatible(o any) any {
 		for i, v := range x {
 			x[i] = convertYAMLToJSONCompatible(v)
 		}
+	case uint64:
+		return int(x)
 	}
 	return o
 }
