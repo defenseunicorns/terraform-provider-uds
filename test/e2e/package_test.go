@@ -1,7 +1,7 @@
 // Copyright 2024 Defense Unicorns
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
-package acc
+package e2e
 
 import (
 	"bytes"
@@ -69,7 +69,7 @@ func buildZarfValuesFixture(t *testing.T) string {
 	return packagePath
 }
 
-var testAccPackageResourceConfig = fmt.Sprintf(`
+var testE2EPackageResourceConfig = fmt.Sprintf(`
 resource "uds_package" "init" {
   source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
   architecture = "%s"
@@ -82,14 +82,14 @@ resource "uds_package" "init" {
 }
 `, initPackageVersion, runtime.GOARCH)
 
-func TestAccPackageResource(t *testing.T) {
+func TestE2EPackageResource(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		PreCheck:                 func() { testE2EPreCheck(t) },
+		ProtoV6ProviderFactories: testE2EProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create and Read testing
 			{
-				Config: testAccPackageResourceConfig,
+				Config: testE2EPackageResourceConfig,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("uds_package.init", "id", "init"),
 					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", initPackageVersion),
@@ -100,7 +100,7 @@ func TestAccPackageResource(t *testing.T) {
 	})
 }
 
-var testAccPackageResourceRemoteValuesConfig = fmt.Sprintf(`
+var testE2ERemoteValuesConfig = fmt.Sprintf(`
 resource "uds_package" "nginx" {
   source       = "oci://ghcr.io/defenseunicorns/packages/uds/nginx:%s-%s"
   architecture = "%s"
@@ -113,7 +113,7 @@ resource "uds_package" "nginx" {
 }
 `, udsNginxPackageVersion, udsPackageFlavor, runtime.GOARCH)
 
-var testAccPackageResourceRemoteValuesInvalidPathConfig = fmt.Sprintf(`
+var testE2ERemoteValuesInvalidPathConfig = fmt.Sprintf(`
 resource "uds_package" "nginx" {
   source       = "oci://ghcr.io/defenseunicorns/packages/uds/nginx:%s-%s"
   architecture = "%s"
@@ -126,7 +126,7 @@ resource "uds_package" "nginx" {
 }
 `, udsNginxPackageVersion, udsPackageFlavor, runtime.GOARCH)
 
-var testAccPackageResourcePlanValidationDisabledConfig = fmt.Sprintf(`
+var testE2EPlanValidationDisabledConfig = fmt.Sprintf(`
 provider "uds" {
   validate_packages_on_plan = false
 }
@@ -142,20 +142,20 @@ resource "uds_package" "init" {
 }
 `, runtime.GOARCH)
 
-func TestAccPackageResourcePlanValidation(t *testing.T) {
+func TestE2EPackageResourcePlanValidation(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		PreCheck:                 func() { testE2EPreCheck(t) },
+		ProtoV6ProviderFactories: testE2EProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Remote packages load metadata during plan so configured values can be
 			// validated before apply.
 			{
-				Config:             testAccPackageResourceRemoteValuesConfig,
+				Config:             testE2ERemoteValuesConfig,
 				PlanOnly:           true,
 				ExpectNonEmptyPlan: true,
 			},
 			{
-				Config:      testAccPackageResourceRemoteValuesInvalidPathConfig,
+				Config:      testE2ERemoteValuesInvalidPathConfig,
 				PlanOnly:    true,
 				ExpectError: regexp.MustCompile(`value path "nginx\.definitely_unexposed_by_nginx_values_test" does not match\s+any`),
 			},
@@ -163,7 +163,7 @@ func TestAccPackageResourcePlanValidation(t *testing.T) {
 			// This unavailable source would otherwise fail package loading, signature
 			// verification, optional_components validation, and values sourcePath validation.
 			{
-				Config:             testAccPackageResourcePlanValidationDisabledConfig,
+				Config:             testE2EPlanValidationDisabledConfig,
 				PlanOnly:           true,
 				ExpectNonEmptyPlan: true,
 			},
@@ -307,7 +307,7 @@ func checkAppliedZarfValuesResources(expectedConfig zarfValuesTestConfig) resour
 
 		configMap, err := clientset.CoreV1().ConfigMaps("zarf-values").Get(context.Background(), "zarf-values", metav1.GetOptions{})
 		if err != nil {
-			return fmt.Errorf("failed to get values acceptance configmap: %w", err)
+			return fmt.Errorf("failed to get values end-to-end configmap: %w", err)
 		}
 
 		checks := []struct {
@@ -365,9 +365,9 @@ resource "uds_package" "values" {
 `, packagePath, runtime.GOARCH)
 }
 
-func TestAccPackageResourceZarfValues(t *testing.T) {
+func TestE2EPackageResourceZarfValues(t *testing.T) {
 	if os.Getenv(resource.EnvTfAcc) == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC=1")
+		t.Skip("End-to-end tests skipped unless TF_ACC=1")
 	}
 
 	packagePath := buildZarfValuesFixture(t)
@@ -395,8 +395,8 @@ func TestAccPackageResourceZarfValues(t *testing.T) {
 	updatedValues.NginxAnnotation = "terraform-provider-uds-updated"
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		PreCheck:                 func() { testE2EPreCheck(t) },
+		ProtoV6ProviderFactories: testE2EProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
 				Config:      renderZarfValuesInvalidPathConfig(packagePath),
@@ -431,7 +431,7 @@ func TestAccPackageResourceZarfValues(t *testing.T) {
 	})
 }
 
-func testAccMultiplePackageResourcesConfig(t *testing.T) string {
+func testE2EMultiplePackageResourcesConfig(t *testing.T) string {
 	t.Helper()
 	// terraform-plugin-testing runs Terraform from a temp directory, so file() requires
 	// an absolute path. We resolve it here relative to the test package directory.
@@ -465,14 +465,14 @@ resource "uds_package" "dos_games" {
 `, initPackageVersion, runtime.GOARCH, pubKeyPath)
 }
 
-func TestAccMultiplePackageResources(t *testing.T) {
+func TestE2EMultiplePackageResources(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		PreCheck:                 func() { testE2EPreCheck(t) },
+		ProtoV6ProviderFactories: testE2EProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create and Read testing
 			{
-				Config: testAccMultiplePackageResourcesConfig(t),
+				Config: testE2EMultiplePackageResourcesConfig(t),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("uds_package.init", "id", "init"),
 					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", initPackageVersion),

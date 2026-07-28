@@ -1,0 +1,38 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+# yaml-language-server: $schema=https://raw.githubusercontent.com/defenseunicorns/maru-runner/refs/heads/main/tasks.schema.json
+tasks:
+  - name: all
+    description: "Run the tests"
+    actions:
+      - cmd: go test -v -cover -timeout=120s -parallel=10 ./...
+
+  - name: unit
+    description: "Run unit tests for the project"
+    actions:
+      - cmd: go test -v -cover -timeout 10m ./internal/...
+
+  - name: setup-cluster
+    actions:
+      - description: "Create the local k3d/UDS test cluster"
+        # renovate: datasource=github-tags depName=defenseunicorns/uds-k3d versioning=semver
+        cmd: "uds zarf package deploy oci://defenseunicorns/uds-k3d:0.20.2 --confirm --no-progress"
+
+  - name: e2e
+    description: "Run end-to-end tests"
+    actions:
+      # Point terraform-plugin-testing at the local tofu CLI and resolve the
+      # in-process provider against registry.opentofu.org rather than the
+      # Terraform legacy address.
+      # See OpenTofu provider testing guidance.
+      - cmd: |
+          TF_BIN="$(command -v tofu)" || {
+            echo "tofu not found in PATH; install OpenTofu (https://opentofu.org/docs/intro/install/)" >&2
+            exit 1
+          }
+          TF_ACC=1 \
+            TF_ACC_TERRAFORM_PATH="$TF_BIN" \
+            TF_ACC_PROVIDER_NAMESPACE=hashicorp \
+            TF_ACC_PROVIDER_HOST=registry.opentofu.org \
+            go test -v -cover -timeout 10m ./test/e2e/...

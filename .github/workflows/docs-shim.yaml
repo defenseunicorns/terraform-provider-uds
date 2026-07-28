@@ -34,8 +34,8 @@ jobs:
     steps:
       - run: echo "Skipped — docs-only change"
 
-  acceptance:
-    name: Acceptance tests
+  e2e:
+    name: E2E tests
     runs-on: ubuntu-latest
     steps:
       - run: echo "Skipped — docs-only change"

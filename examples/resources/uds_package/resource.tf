@@ -30,7 +30,7 @@ resource "uds_package" "init" {
   optional_components = ["git-server"]
 }
 
-# This zarf package example produces sensitive variables using zarf action setVariables sensitive: true. 
+# This zarf package example produces sensitive variables using zarf action setVariables sensitive: true.
 # The variable used in this example is AUTHSERVICE_REDIS_URI
 
 # zarf package example yaml for reference:
@@ -91,7 +91,7 @@ resource "uds_package" "authservice_ha_deps" {
   source     = "zarf-package-authservice-ha-deps-arm64-1.0.0.tar.zst"
 }
 
-# This package example consumes the variable contained in the authservice-ha-deps package. 
+# This package example consumes the variable contained in the authservice-ha-deps package.
 # The variable is referenced using the syntax: <package_name>.<set_variables>.<variable_name>,
 # which in this example is: uds_package.authservice_ha_deps.set_variables.authservice_redis_uri
 resource "uds_package" "core_identity_authorization" {

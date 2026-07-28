@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "description": "Schema for the Zarf values acceptance test fixture",
+  "description": "Schema for the Zarf values e2e test fixture",
   "additionalProperties": false,
   "properties": {
     "config": {

@@ -2,32 +2,34 @@
 
 This example deploys a local Podinfo Zarf package with `uds_package.values` and `uds_package.sensitive_values`.
 
-Build the Podinfo package with Zarf values enabled before running OpenTofu:
+Build the Podinfo package with Zarf values enabled before running OpenTofu from the repository root:
 
 ```sh
-uds zarf package create ./podinfo --features="values=true" --confirm --skip-sbom
+uds zarf package create ./examples/zarf_values/podinfo --features="values=true" --confirm --skip-sbom
 ```
 
-Run the example:
+Run the example with the repository's generated local provider configuration:
 
 ```sh
-# If you need to change the architecture to use something other than `arm64` you can use one of 
-# the following methods:
+# From the repository root:
+uds run tofu:plan
+uds run tofu:apply
 
-# - Pass via CLI:
-#     tofu apply -var='architecture=amd64'
+# The configured example workflow uses `arm64` by default. To change the
+# architecture, use one of the following methods before running the workflow:
+
 # - Use an environment variable:
 #     export TF_VAR_architecture=amd64
 # - Use a tfvars file (create terraform.tfvars) and add the following line:
 #     architecture = "amd64"
-
-tofu init # do not run if using overrides for local development
-tofu plan
-tofu apply
 ```
+
+The e2e suite requires live-cluster infrastructure. From the repository root,
+run `uds run setup-cluster` once and reuse the cluster across local iterations,
+then run `uds run e2e`.
 
 Clean up:
 
 ```sh
-tofu destroy
+uds run tofu:destroy
 ```

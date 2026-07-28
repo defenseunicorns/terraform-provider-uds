@@ -1,93 +1,52 @@
 # Contributing
 
-This guide explains how to build, install, and use the UDS OpenTofu provider locally for development and testing.
+This guide explains how to develop and test the UDS OpenTofu provider locally.
 
 ## Prerequisites
 
-- [Go](https://golang.org/doc/install) >= 1.21
-- [OpenTofu](https://opentofu.org/) >= 1.6
-- A Kubernetes cluster (for acceptance tests)
-- [`kubectl`](https://kubernetes.io/docs/tasks/tools/) configured to talk to the cluster
-- [`golangci-lint`](https://golangci-lint.run/usage/install/) for linting
+- Install [mise](https://mise.jdx.dev/getting-started.html).
+- Activate mise in your shell once, following the [shell activation instructions](https://mise.jdx.dev/dev-tools/#activate).
 
-## Build and install the provider locally
+The repository's `mise.toml` installs Go, OpenTofu, the UDS CLI, k3d, and the
+other development tools. You do not need to install those tools individually.
 
-The provider installs into your Go bin directory (typically `$(go env GOPATH)/bin`).
+## Set up the repository
 
-```console
-# From the repo root
-uds run install
-```
-
-## Point OpenTofu at your local build
-
-Since the UDS provider is built and installed locally, you will need to configure a dev override for OpenTofu to load your locally built provider instead of pulling from a registry. You can keep this config "local" to the repo and export `TF_CLI_CONFIG_FILE` to avoid affecting global config. See the [OpenTofu docs](https://opentofu.org/docs/cli/config/config-file/#development-overrides-for-provider-developers) for more details.
-
-Example `.tofurc.dev`:
-
-```hcl
-provider_installation {
-  # Point OpenTofu at your locally built provider binary
-  dev_overrides {
-    # This must be a full path to your local binary build
-    "defenseunicorns/uds" = "/path/to/your/go/bin"
-  }
-
-  # Allow other providers to install normally
-  direct {}
-}
-```
-
-Then to configure OpenTofu to use this dev `.tofurc`, use an environment variable:
+From the repository root, run:
 
 ```console
-# Tell OpenTofu to use this config for the current shell (use an absolute path)
-export TF_CLI_CONFIG_FILE="$HOME/.tofurc.dev"
+mise install
+hk install
+uds run provider:dev
 ```
 
-## Use the provider in tofu
+`provider:dev` builds the provider and generates the repository-local
+`.tofurc.dev` configuration used by the OpenTofu tasks. After mise is activated
+in your shell, run `uds` commands directly; `mise exec` is not needed.
 
-To use the provider in your tofu files, simply add it to `required_providers`, but omit the `version`:
+## Development loop
 
-```hcl
-terraform {
-  required_providers {
-    uds = {
-      source  = "defenseunicorns/uds"
-      # With dev_overrides, omit the version to avoid registry resolution
-    }
-  }
-}
-
-provider "uds" {
-  default_architecture = "arm64"
-}
-
-resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.82.0"
-}
-```
-
-Then run standard plan/apply:
+Run the checks and local OpenTofu workflow with:
 
 ```console
-# Generally with `dev_overrides` you should skip `tofu init` as it may error unexpectedly
-tofu plan
-tofu apply
+uds run test-unit
+uds run tofu:plan
+uds run tofu:apply
+uds run tofu:destroy
+uds run setup-cluster
+uds run e2e
 ```
 
-## Lint, test, and docs
+Unit tests compile changed packages automatically. The OpenTofu tasks rebuild
+the provider as needed and generate the local configuration before planning,
+applying, or destroying. They use `examples/zarf_values` by default; set
+`TOFU_DIR` with the UDS task runner when working with another configuration.
+The e2e suite requires live-cluster infrastructure. Run `uds run setup-cluster`
+once and reuse that cluster across local iterations before running `uds run e2e`.
 
-Other available dev tasks:
+Commits run hk automatically. Other available development tasks include:
 
 ```console
-uds run lint         # golangci-lint
-uds run test-unit    # unit tests
-uds run test-acc     # acceptance tests
-uds run generate     # regenerate provider docs
+uds run lint:check
+uds run generate
 ```
-
-## Tips
-
-- To switch back to registry builds, unset `TF_CLI_CONFIG_FILE` or remove the `dev_overrides` configuration from your CLI config.
-- Verify which binary OpenTofu is picking up with `tofu providers mirror` or by inspecting `.terraform/plugins` after `tofu init`.

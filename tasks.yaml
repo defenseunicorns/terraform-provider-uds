@@ -1,65 +1,72 @@
 # Copyright 2024 Defense Unicorns
 # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
+includes:
+  - provider: tasks/build.yaml
+  - test: tasks/test.yaml
+  - lint: tasks/lint.yaml
+
+variables:
+  - name: TOFU_DIR
+    default: examples/zarf_values
+
 tasks:
   - name: default
-    description: "Run the default tasks"
+    description: "Run lint checks and unit tests"
     actions:
-      - task: lint
-      - task: install
-      - task: generate
+      - task: lint:check
+      - task: test:unit
 
   - name: build
-    description: "Compile the provider"
+    description: "Build the provider binary"
     actions:
-      - cmd: go build -v ./...
-
-  - name: install
-    description: "Install the provider"
-    actions:
-      - cmd: go install -v ./...
+      - task: provider:build
 
   - name: lint
     description: "Lint the code"
     actions:
-      - cmd: golangci-lint run
+      - task: lint:check
 
   - name: test
     description: "Run the tests"
     actions:
-      - cmd: go test -v -cover -timeout=120s -parallel=10 ./...
+      - cmd: uds run test:all
 
   - name: generate
-    description: "Generate the code"
+    description: "Format examples and regenerate provider documentation"
     actions:
-      - cmd: go generate ./...
+      - task: provider:generate
 
   - name: test-unit
     description: "Run unit tests for the project"
     actions:
-      - cmd: go test -v -cover -timeout 10m ./internal/...
+      - task: test:unit
 
-  - name: create-k3d-cluster
+  - name: setup-cluster
+    description: "Create the local k3d/UDS test cluster"
     actions:
-      - description: "Create the K3d cluster"
-        # renovate: datasource=github-tags depName=defenseunicorns/uds-k3d versioning=semver
-        cmd: "uds zarf package deploy oci://defenseunicorns/uds-k3d:0.20.2 --confirm --no-progress"
+      - task: test:setup-cluster
 
-  - name: test-acc
-    description: "Run Acceptance Tests"
+  - name: e2e
+    description: "Create the test cluster and run end-to-end tests"
     actions:
-      - task: create-k3d-cluster
-      # Point terraform-plugin-testing at the local tofu CLI and resolve the
-      # in-process provider against registry.opentofu.org rather than the
-      # Terraform legacy address.
-      # See https://opentofu.org/docs/language/providers/#running-acceptance-tests-with-opentofu-cli
-      - cmd: |
-          TF_BIN="$(command -v tofu)" || {
-            echo "tofu not found in PATH; install OpenTofu (https://opentofu.org/docs/intro/install/)" >&2
-            exit 1
-          }
-          TF_ACC=1 \
-            TF_ACC_TERRAFORM_PATH="$TF_BIN" \
-            TF_ACC_PROVIDER_NAMESPACE=hashicorp \
-            TF_ACC_PROVIDER_HOST=registry.opentofu.org \
-            go test -v -cover -timeout 10m ./test/acc/...
+      - task: test:setup-cluster
+      - task: test:e2e
+
+  - name: tofu:plan
+    description: "Plan using the locally built provider"
+    actions:
+      - cmd: uds run provider:dev
+      - cmd: TF_CLI_CONFIG_FILE="$(pwd)/.tofurc.dev" tofu -chdir=${TOFU_DIR} plan
+
+  - name: tofu:apply
+    description: "Apply using the locally built provider"
+    actions:
+      - cmd: uds run provider:dev
+      - cmd: TF_CLI_CONFIG_FILE="$(pwd)/.tofurc.dev" tofu -chdir=${TOFU_DIR} apply
+
+  - name: tofu:destroy
+    description: "Destroy using the locally built provider"
+    actions:
+      - cmd: uds run provider:dev
+      - cmd: TF_CLI_CONFIG_FILE="$(pwd)/.tofurc.dev" tofu -chdir=${TOFU_DIR} destroy

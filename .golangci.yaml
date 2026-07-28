@@ -6,7 +6,9 @@ linters:
   default: fast
   enable:
     - revive
+    - gomodguard_v2
   disable:
+    - gomodguard
     - depguard
     - funlen
     - lll

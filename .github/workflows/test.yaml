@@ -35,15 +35,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-golang
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959e # v4.2.0
         with:
-          # renovate: datasource=github-releases depName=golangci/golangci-lint versioning=semver
-          version: v2.12.2
+          # renovate: datasource=github-releases depName=jdx/mise versioning=semver
+          version: 2026.7.0
+          install: true
+          cache: true
+      - name: Lint
+        run: mise exec -- uds run lint:check
 
-  acceptance:
-    name: Acceptance tests
+  e2e:
+    name: E2E tests
     runs-on: uds-ubuntu-big-boy-4-core
     steps:
       - name: Checkout
@@ -51,35 +53,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install UDS CLI
-        uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1.0.1
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959e # v4.2.0
         with:
-          # renovate: datasource=github-tags depName=defenseunicorns/uds-cli versioning=semver
-          version: v0.34.3
+          # renovate: datasource=github-releases depName=jdx/mise versioning=semver
+          version: 2026.7.0
+          install: true
+          cache: true
 
-      - name: Install k3d
-        shell: bash
-        # renovate: datasource=github-tags depName=k3d-io/k3d versioning=semver
-        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.9.0 bash
-
-      - name: Setup golang
-        uses: ./.github/actions/setup-golang
-
-      - name: Setup OpenTofu
-        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
-        with:
-          # renovate: datasource=github-tags depName=opentofu/opentofu versioning=semver
-          tofu_version: v1.12.5
-          tofu_wrapper: false
-
-      - name: Run acceptance tests
-        run: uds run test-acc
+      - name: E2E tests
+        run: mise exec -- uds run e2e
 
       - name: Save Logs
         uses: defenseunicorns/uds-core/.github/actions/save-logs@bd1f2e4acdb2945ac1887e81668227291f183018
         if: always()
         with:
-          suffix: acc
+          suffix: e2e
 
   unit:
     name: Unit tests
@@ -90,20 +78,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install UDS CLI
-        uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1.0.1
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959e # v4.2.0
         with:
-          # renovate: datasource=github-tags depName=defenseunicorns/uds-cli versioning=semver
-          version: v0.34.3
+          # renovate: datasource=github-releases depName=jdx/mise versioning=semver
+          version: 2026.7.0
+          install: true
+          cache: true
 
-      - name: Setup golang
-        uses: ./.github/actions/setup-golang
-
-      - name: Run unit tests
-        run: uds run test-unit
-
-      - name: Save Logs
-        uses: defenseunicorns/uds-core/.github/actions/save-logs@bd1f2e4acdb2945ac1887e81668227291f183018
-        if: always()
-        with:
-          suffix: unit
+      - name: Unit tests
+        run: mise exec -- uds run test-unit
