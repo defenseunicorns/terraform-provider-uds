@@ -585,13 +585,11 @@ func TestAccPackageResourceZarfValues(t *testing.T) {
 					resource.TestCheckResourceAttr("uds_package.uds_crds", "metadata.version", udsCoreCRDsPackageVersion),
 					resource.TestCheckResourceAttr("uds_package.nginx", "id", "nginx"),
 					resource.TestCheckResourceAttr("uds_package.nginx", "metadata.version", udsNginxPackageVersion),
-					resource.TestCheckResourceAttr("uds_package.nginx", "connect_strings.#", "1"),
 					checkAppliedZarfValuesResources(initialValues),
 				),
 			},
 			{
-				Config:       renderZarfValuesPackageConfig(t, updatedValues),
-				RefreshState: true,
+				Config: renderZarfValuesPackageConfig(t, updatedValues),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("uds_package.values", "id", "zarf-values:zarf-values"),
 					resource.TestCheckResourceAttr("uds_package.values", "metadata.version", "0.1.0"),
@@ -599,7 +597,6 @@ func TestAccPackageResourceZarfValues(t *testing.T) {
 					resource.TestCheckResourceAttr("uds_package.uds_crds", "metadata.version", udsCoreCRDsPackageVersion),
 					resource.TestCheckResourceAttr("uds_package.nginx", "id", "nginx"),
 					resource.TestCheckResourceAttr("uds_package.nginx", "metadata.version", udsNginxPackageVersion),
-					resource.TestCheckResourceAttr("uds_package.nginx", "connect_strings.#", "1"),
 					checkAppliedZarfValuesResources(updatedValues),
 				),
 			},

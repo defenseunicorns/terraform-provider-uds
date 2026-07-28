@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/defenseunicorns/pkg/helpers/v2"
-	"github.com/defenseunicorns/terraform-provider-uds/internal/logging"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -47,6 +46,8 @@ import (
 	zarfValue "github.com/zarf-dev/zarf/src/pkg/value"
 	"github.com/zarf-dev/zarf/src/pkg/variables"
 	zarfZoci "github.com/zarf-dev/zarf/src/pkg/zoci"
+
+	"github.com/defenseunicorns/terraform-provider-uds/internal/logging"
 
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 )

@@ -97,6 +97,22 @@ func TestZarfPackagerLoadPackageUsesLoggerContext(t *testing.T) {
 	require.True(t, called)
 }
 
+func TestZarfPackagerLoadPackageWrapsCapturedOutputOnError(t *testing.T) {
+	sentinel := errors.New("load failed")
+	p := newTestZarfPackager(testZarfPackagerOptions{
+		loadPackage: func(ctx context.Context, _ string, _ zPackager.LoadOptions) (*layout.PackageLayout, error) {
+			logger.From(ctx).Error("load Zarf command output")
+			return nil, sentinel
+		},
+	})
+
+	_, err := p.LoadPackage(context.Background(), "source", zPackager.LoadOptions{})
+
+	require.ErrorIs(t, err, sentinel)
+	require.ErrorContains(t, err, "captured Zarf output:")
+	require.ErrorContains(t, err, "load Zarf command output")
+}
+
 func TestZarfPackagerGetPackageUsesLoggerContext(t *testing.T) {
 	called := false
 	p := newTestZarfPackager(testZarfPackagerOptions{
@@ -110,6 +126,22 @@ func TestZarfPackagerGetPackageUsesLoggerContext(t *testing.T) {
 	_, err := p.GetPackageFromSourceOrCluster(context.Background(), nil, "source", "", zPackager.LoadOptions{})
 	require.NoError(t, err)
 	require.True(t, called)
+}
+
+func TestZarfPackagerGetPackageWrapsCapturedOutputOnError(t *testing.T) {
+	sentinel := errors.New("get package failed")
+	p := newTestZarfPackager(testZarfPackagerOptions{
+		getPackage: func(ctx context.Context, _ *cluster.Cluster, _ string, _ string, _ zPackager.LoadOptions) (v1alpha1.ZarfPackage, error) {
+			logger.From(ctx).Error("get package Zarf command output")
+			return v1alpha1.ZarfPackage{}, sentinel
+		},
+	})
+
+	_, err := p.GetPackageFromSourceOrCluster(context.Background(), nil, "source", "", zPackager.LoadOptions{})
+
+	require.ErrorIs(t, err, sentinel)
+	require.ErrorContains(t, err, "captured Zarf output:")
+	require.ErrorContains(t, err, "get package Zarf command output")
 }
 
 func TestZarfPackagerSetsPreferLogger(t *testing.T) {

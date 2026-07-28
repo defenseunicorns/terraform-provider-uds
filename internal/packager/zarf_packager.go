@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/defenseunicorns/terraform-provider-uds/internal/logging"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zConfig "github.com/zarf-dev/zarf/src/config"
 	"github.com/zarf-dev/zarf/src/pkg/cluster"
@@ -18,6 +17,8 @@ import (
 	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	"helm.sh/helm/v4/pkg/kube"
+
+	"github.com/defenseunicorns/terraform-provider-uds/internal/logging"
 )
 
 // Packager provides operations for managing Zarf packages.
@@ -74,12 +75,22 @@ func (p *zarfPackager) Remove(ctx context.Context, pkg v1alpha1.ZarfPackage, opt
 
 func (p *zarfPackager) LoadPackage(ctx context.Context, source string, opts zPackager.LoadOptions) (_ *layout.PackageLayout, err error) {
 	p.ensureZarfConfigured()
-	return p.loadPackage(logging.WithZarfLogger(ctx), source, opts)
+	zarfCtx := logging.WithZarfLogger(ctx)
+	packageLayout, err := p.loadPackage(zarfCtx, source, opts)
+	if err != nil {
+		return packageLayout, logging.WrapZarfError(zarfCtx, err)
+	}
+	return packageLayout, nil
 }
 
 func (p *zarfPackager) GetPackageFromSourceOrCluster(ctx context.Context, cluster *cluster.Cluster, src string, namespaceOverride string, opts zPackager.LoadOptions) (_ v1alpha1.ZarfPackage, err error) {
 	p.ensureZarfConfigured()
-	return p.getPackage(logging.WithZarfLogger(ctx), cluster, src, namespaceOverride, opts)
+	zarfCtx := logging.WithZarfLogger(ctx)
+	pkg, err := p.getPackage(zarfCtx, cluster, src, namespaceOverride, opts)
+	if err != nil {
+		return pkg, logging.WrapZarfError(zarfCtx, err)
+	}
+	return pkg, nil
 }
 
 func (p *zarfPackager) ensureZarfConfigured() {

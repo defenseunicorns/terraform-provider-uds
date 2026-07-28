@@ -141,10 +141,6 @@ func (h *zarfHandler) Enabled(context.Context, slog.Level) bool {
 	return true
 }
 
-func (h *zarfHandler) shouldCaptureZarfOutput(record slog.Record, hasRecordAttrs bool) bool {
-	return len(h.attrs) == 0 && !hasRecordAttrs && isZarfOutputLevel(record.Level)
-}
-
 // Identifies levels eligible for capture as unstructured Zarf output.
 func isZarfOutputLevel(level slog.Level) bool {
 	return level >= slog.LevelInfo && level < slog.LevelWarn || level >= slog.LevelError
@@ -205,6 +201,10 @@ func (h *zarfHandler) WithGroup(name string) slog.Handler {
 	groups = append(groups, h.groups...)
 	groups = append(groups, name)
 	return &zarfHandler{ctx: h.ctx, attrs: h.attrs, groups: groups}
+}
+
+func (h *zarfHandler) shouldCaptureZarfOutput(record slog.Record, hasRecordAttrs bool) bool {
+	return len(h.attrs) == 0 && !hasRecordAttrs && isZarfOutputLevel(record.Level)
 }
 
 // Structured field conversion.

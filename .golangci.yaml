@@ -36,8 +36,11 @@ linters:
   settings:
     goheader:
       template: |-
-        Copyright 2024 Defense Unicorns
+        Copyright {{ YEAR }} Defense Unicorns
         SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+      values:
+        regexp:
+          YEAR: "20[0-9]{2}(-20[0-9]{2})?"
     govet:
       disable:
         - shadow
