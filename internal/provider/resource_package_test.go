@@ -4824,6 +4824,85 @@ func TestFlattenComponentOverrides(t *testing.T) {
 			expectedErrorContains: "path 'path1' is defined multiple times in overrides for chart 'chart1' of component 'component1'",
 		},
 		{
+			name: "yaml 1.2 treats yes/no/on/off as strings not booleans",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("enabled"), Value: types.StringValue("yes")},
+								{Path: types.StringValue("disabled"), Value: types.StringValue("no")},
+								{Path: types.StringValue("on_val"), Value: types.StringValue("on")},
+								{Path: types.StringValue("off_val"), Value: types.StringValue("off")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"enabled":  "yes",
+						"disabled": "no",
+						"on_val":   "on",
+						"off_val":  "off",
+					},
+				},
+			},
+		},
+		{
+			name: "integer values are converted to int",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("replicas"), Value: types.StringValue("3")},
+								{Path: types.StringValue("port"), Value: types.StringValue("8080")},
+								{Path: types.StringValue("negative"), Value: types.StringValue("-1")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"replicas": 3,
+						"port":     8080,
+						"negative": -1,
+					},
+				},
+			},
+		},
+		{
+			name: "large unsigned integers exceeding max int are preserved as uint64",
+			input: []ComponentModel{
+				{
+					Name: types.StringValue("component1"),
+					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{
+						{
+							ChartName: types.StringValue("chart1"),
+							Values: helmChartPathValueSliceToSet([]HelmChartPathValueModel{
+								{Path: types.StringValue("bigval"), Value: types.StringValue("18446744073709551615")},
+							}),
+						},
+					}),
+				},
+			},
+			expectedMap: map[string]map[string]map[string]any{
+				"component1": {
+					"chart1": {
+						"bigval": uint64(18446744073709551615),
+					},
+				},
+			},
+		},
+		{
 			name: "error when component overrides values has duplicate nested paths",
 			input: []ComponentModel{
 				{
@@ -4908,8 +4987,8 @@ func TestFlattenComponentOverrides_InvalidYAMLDoesNotLeakValue(t *testing.T) {
 	}{
 		{name: "sensitive_values syntax error", valueType: "sensitive values", value: secret + ": [oops"},
 		{name: "values syntax error", valueType: "values", value: secret + ": [oops"},
-		{name: "sensitive_values decode error", valueType: "sensitive values", value: "!!int " + secret},
-		{name: "values decode error", valueType: "values", value: "!!int " + secret},
+		{name: "sensitive_values decode error", valueType: "sensitive values", value: "!!bool " + secret},
+		{name: "values decode error", valueType: "values", value: "!!bool " + secret},
 	}
 
 	for _, tc := range tests {

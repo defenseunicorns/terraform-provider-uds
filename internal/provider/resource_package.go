@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goccy/go-yaml"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -34,7 +36,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"gopkg.in/yaml.v2"
 
 	udsCluster "github.com/defenseunicorns/terraform-provider-uds/internal/cluster"
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
@@ -1430,6 +1431,16 @@ func convertYAMLToJSONCompatible(o any) any {
 		for i, v := range x {
 			x[i] = convertYAMLToJSONCompatible(v)
 		}
+	case uint64:
+		if x > math.MaxInt {
+			return x
+		}
+		return int(x)
+	case int64:
+		if x < math.MinInt || x > math.MaxInt {
+			return x
+		}
+		return int(x)
 	}
 	return o
 }
