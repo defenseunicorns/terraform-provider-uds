@@ -1,4 +1,4 @@
-// Copyright 2024 Defense Unicorns
+// Copyright 2024-2026 Defense Unicorns
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
 package provider
@@ -37,6 +37,7 @@ import (
 	"gopkg.in/yaml.v2"
 
 	udsCluster "github.com/defenseunicorns/terraform-provider-uds/internal/cluster"
+	"github.com/defenseunicorns/terraform-provider-uds/internal/logging"
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 
@@ -551,23 +552,37 @@ func (r *PackageResource) Configure(_ context.Context, req resource.ConfigureReq
 
 // Create creates the resource and sets the initial Terraform state.
 func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	tflog.Info(ctx, "Creating Package Resource")
+	operationCtx := logging.WithPackageContext(ctx, "create", "", "")
+	operationCompleted := false
+	startedAt := time.Now()
+	defer func() {
+		if operationCompleted {
+			logging.PackageCompleted(operationCtx, time.Since(startedAt))
+			return
+		}
+		err := errors.New("package create did not complete")
+		if resp.Diagnostics.HasError() {
+			err = errors.New(resp.Diagnostics.Errors()[0].Detail())
+		}
+		logging.PackageFailed(operationCtx, "", err)
+	}()
 
 	// Retrieve values from plan
 	var plan PackageResourceModel
-	diags := req.Plan.Get(ctx, &plan)
+	diags := req.Plan.Get(operationCtx, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	operationCtx = logging.WithPackageContext(operationCtx, "create", plan.Name.ValueString(), plan.Namespace.ValueString())
 
-	createTimeout, timeoutDiags := plan.Timeouts.Create(ctx, 30*time.Minute)
+	createTimeout, timeoutDiags := plan.Timeouts.Create(operationCtx, 30*time.Minute)
 	resp.Diagnostics.Append(timeoutDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, createTimeout)
+	timeoutCtx, cancel := context.WithTimeout(operationCtx, createTimeout)
 	defer cancel()
 
 	var err error
@@ -591,6 +606,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	operationCompleted = true
 }
 
 func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -699,19 +715,33 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 
 // Update updates the resource and sets the updated Terraform state on success.
 func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	tflog.Info(ctx, "Updating Package")
+	operationCtx := logging.WithPackageContext(ctx, "update", "", "")
+	operationCompleted := false
+	startedAt := time.Now()
+	defer func() {
+		if operationCompleted {
+			logging.PackageCompleted(operationCtx, time.Since(startedAt))
+			return
+		}
+		err := errors.New("package update did not complete")
+		if resp.Diagnostics.HasError() {
+			err = errors.New(resp.Diagnostics.Errors()[0].Detail())
+		}
+		logging.PackageFailed(operationCtx, "", err)
+	}()
 
 	// Retrieve values from plan
 	var plan PackageResourceModel
-	diags := req.Plan.Get(ctx, &plan)
+	diags := req.Plan.Get(operationCtx, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	operationCtx = logging.WithPackageContext(operationCtx, "update", plan.Name.ValueString(), plan.Namespace.ValueString())
 
 	// Check if there are any components in the already existing plan that need to be removed
 	var oldPlan PackageResourceModel
-	diags = req.State.Get(ctx, &oldPlan)
+	diags = req.State.Get(operationCtx, &oldPlan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -724,17 +754,20 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	}
 	if stateOnlyUpdate {
 		oldPlan.Timeouts = plan.Timeouts
-		resp.Diagnostics.Append(resp.State.Set(ctx, oldPlan)...)
+		resp.Diagnostics.Append(resp.State.Set(operationCtx, oldPlan)...)
+		if !resp.Diagnostics.HasError() {
+			operationCompleted = true
+		}
 		return
 	}
 
-	updateTimeout, timeoutDiags := plan.Timeouts.Update(ctx, 30*time.Minute)
+	updateTimeout, timeoutDiags := plan.Timeouts.Update(operationCtx, 30*time.Minute)
 	resp.Diagnostics.Append(timeoutDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, updateTimeout)
+	timeoutCtx, cancel := context.WithTimeout(operationCtx, updateTimeout)
 	defer cancel()
 
 	plan, err = r.deployAsNewOrUpdate(timeoutCtx, plan, oldPlan)
@@ -760,25 +793,42 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	operationCompleted = true
 }
 
 // Delete deletes the resource and removes the Terraform state on success.
 func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	operationCtx := logging.WithPackageContext(ctx, "delete", "", "")
+	operationCompleted := false
+	startedAt := time.Now()
+	defer func() {
+		if operationCompleted {
+			logging.PackageCompleted(operationCtx, time.Since(startedAt))
+			return
+		}
+		err := errors.New("package delete did not complete")
+		if resp.Diagnostics.HasError() {
+			err = errors.New(resp.Diagnostics.Errors()[0].Detail())
+		}
+		logging.PackageFailed(operationCtx, "", err)
+	}()
+
 	var data PackageResourceModel
 
 	// Read Terraform prior state data into the model
-	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	resp.Diagnostics.Append(req.State.Get(operationCtx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	operationCtx = logging.WithPackageContext(operationCtx, "delete", data.Name.ValueString(), data.Namespace.ValueString())
 
-	deleteTimeout, timeoutDiags := data.Timeouts.Delete(ctx, 30*time.Minute)
+	deleteTimeout, timeoutDiags := data.Timeouts.Delete(operationCtx, 30*time.Minute)
 	resp.Diagnostics.Append(timeoutDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, deleteTimeout)
+	timeoutCtx, cancel := context.WithTimeout(operationCtx, deleteTimeout)
 	defer cancel()
 	timeoutCtx = r.withOCISchemeNegotiator(timeoutCtx)
 
@@ -850,6 +900,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		)
 		return
 	}
+	operationCompleted = true
 }
 
 // ModifyPlan handles plan modifications for computed attributes that depend on provider configuration
@@ -864,6 +915,7 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	ctx = logging.WithPackageContext(ctx, "plan", plan.Name.ValueString(), plan.Namespace.ValueString())
 
 	var config PackageResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
@@ -1102,6 +1154,7 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	if len(componentsToRemove) == 0 {
 		return nil
 	}
+
 	ctx = r.withOCISchemeNegotiator(ctx)
 
 	namespaceOverride := plan.Namespace.ValueString()
@@ -1165,6 +1218,9 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 		if err != nil {
 			return fmt.Errorf("could not load package: %w", err)
 		}
+	}
+	for _, component := range newComponentsToRemove {
+		logging.ComponentStarted(ctx, component)
 	}
 
 	zarfTimeout, err := zarfOperationTimeout(ctx)
@@ -1279,6 +1335,8 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if err != nil {
 		return plan, err
 	}
+	ctx = logging.WithPackageContext(ctx, "", pkgLayout.Pkg.Metadata.Name, plan.Namespace.ValueString())
+	logging.PackageStarted(ctx, getArchitecture(plan, *r.providerConfig), optionalComponentsForLogging(ctx, plan))
 	defer func() {
 		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
@@ -1352,12 +1410,13 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 	deployOpts.Timeout = zarfTimeout
 
-	tflog.Debug(ctx, "starting deploy")
+	for _, component := range pkgLayout.Pkg.Components {
+		logging.ComponentStarted(ctx, component.Name)
+	}
 	deployResult, err := r.packager.Deploy(ctx, pkgLayout, deployOpts)
 	if err != nil {
 		return plan, err
 	}
-	tflog.Debug(ctx, "ending deploy")
 
 	// Populate computed `set_variables` from variables returned by the
 	// package deploy's VariableConfig.
@@ -1385,6 +1444,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if err != nil {
 		tflog.Warn(ctx, "failed to create connect strings set", map[string]interface{}{"error": err})
 	}
+	logConnectStrings(ctx, connectStrings)
 
 	// Populate/set resource computed values so that they can be saved to state
 	plan.ID = types.StringValue(computePackageID(plan.Namespace.ValueString(), pkgLayout.Pkg.Metadata.Name))
@@ -2772,6 +2832,36 @@ func getConnectStringsFromDeployResult(deployResult zarfPackager.DeployResult) (
 		}
 	}
 	return buildConnectStringsSet(connectStrings)
+}
+
+func optionalComponentsForLogging(ctx context.Context, plan PackageResourceModel) []string {
+	if plan.OptionalComponents.IsNull() || plan.OptionalComponents.IsUnknown() {
+		return nil
+	}
+	var components []string
+	if diags := plan.OptionalComponents.ElementsAs(ctx, &components, false); diags.HasError() {
+		return nil
+	}
+	sort.Strings(components)
+	return components
+}
+
+func logConnectStrings(ctx context.Context, connectStrings types.Set) {
+	if connectStrings.IsNull() || connectStrings.IsUnknown() {
+		return
+	}
+	for _, element := range connectStrings.Elements() {
+		object, ok := element.(types.Object)
+		if !ok {
+			continue
+		}
+		attrs := object.Attributes()
+		name, nameOK := attrs["name"].(types.String)
+		description, descriptionOK := attrs["description"].(types.String)
+		if nameOK && descriptionOK {
+			logging.ZarfConnectCommand(ctx, name.ValueString(), description.ValueString())
+		}
+	}
 }
 
 func getConnectStringsFromDeployedPackage(deployedPackage zarfState.DeployedPackage) (types.Set, error) {

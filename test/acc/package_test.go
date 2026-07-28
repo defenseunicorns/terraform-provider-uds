@@ -1,4 +1,4 @@
-// Copyright 2024 Defense Unicorns
+// Copyright 2024-2026 Defense Unicorns
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
 package acc
@@ -18,6 +18,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -65,6 +66,38 @@ func buildZarfValuesFixture(t *testing.T) string {
 	packagePath := filepath.Join(outputDir, fmt.Sprintf("zarf-package-zarf-values-%s-0.1.0.tar.zst", runtime.GOARCH))
 	if _, err := os.Stat(packagePath); err != nil {
 		t.Fatalf("expected values package at %s: %v\n%s", packagePath, err, output)
+	}
+	return packagePath
+}
+
+func buildZarfLifecycleFixture(t *testing.T) string {
+	t.Helper()
+
+	fixtureDir, err := filepath.Abs("fixtures/zarf_lifecycle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputDir := t.TempDir()
+
+	cmd := exec.Command(
+		"uds",
+		"zarf",
+		"package",
+		"create",
+		fixtureDir,
+		"--architecture", runtime.GOARCH,
+		"--confirm",
+		"--output", outputDir,
+		"--skip-sbom",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to build lifecycle package: %v\n%s", err, output)
+	}
+
+	packagePath := filepath.Join(outputDir, fmt.Sprintf("zarf-package-zarf-lifecycle-%s-0.1.0.tar.zst", runtime.GOARCH))
+	if _, err := os.Stat(packagePath); err != nil {
+		t.Fatalf("expected lifecycle package at %s: %v\n%s", packagePath, err, output)
 	}
 	return packagePath
 }
@@ -351,6 +384,145 @@ func checkAppliedZarfValuesResources(expectedConfig zarfValuesTestConfig) resour
 	}
 }
 
+func checkZarfValuesResourcesDestroyed(_ *terraform.State) error {
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		kubeconfigPath = clientcmd.RecommendedHomeFile
+	}
+
+	kubeClientConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	if err != nil {
+		return fmt.Errorf("failed to build kubernetes config: %w", err)
+	}
+	clientset, err := kubernetes.NewForConfig(kubeClientConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create kubernetes client: %w", err)
+	}
+
+	checks := []struct {
+		label string
+		get   func() error
+	}{
+		{
+			label: "values acceptance configmap",
+			get: func() error {
+				_, err := clientset.CoreV1().ConfigMaps("zarf-values").Get(context.Background(), "zarf-values", metav1.GetOptions{})
+				return err
+			},
+		},
+		{
+			label: "nginx deployment",
+			get: func() error {
+				_, err := clientset.AppsV1().Deployments("nginx").Get(context.Background(), "nginx", metav1.GetOptions{})
+				return err
+			},
+		},
+	}
+	for _, check := range checks {
+		if err := check.get(); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to check %s cleanup: %w", check.label, err)
+		} else if err == nil {
+			return fmt.Errorf("expected %s to be deleted", check.label)
+		}
+	}
+
+	return nil
+}
+
+func renderZarfLifecyclePackageConfig(packagePath string) string {
+	return fmt.Sprintf(`
+resource "uds_package" "init" {
+  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
+  architecture = "%s"
+  signature_verification = {
+    keyless = {
+      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
+    }
+  }
+}
+
+resource "uds_package" "lifecycle" {
+  depends_on   = [uds_package.init]
+  source       = %q
+  architecture = "%s"
+}
+`, initPackageVersion, runtime.GOARCH, packagePath, runtime.GOARCH)
+}
+
+func checkAppliedZarfLifecycleResources(_ *terraform.State) error {
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		kubeconfigPath = clientcmd.RecommendedHomeFile
+	}
+
+	kubeClientConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	if err != nil {
+		return fmt.Errorf("failed to build kubernetes config: %w", err)
+	}
+	clientset, err := kubernetes.NewForConfig(kubeClientConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create kubernetes client: %w", err)
+	}
+
+	actionMarkers, err := clientset.CoreV1().ConfigMaps("default").Get(context.Background(), "zarf-lifecycle-action-markers", metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get action marker configmap: %w", err)
+	}
+	for label, expected := range map[string]string{
+		"non-muted-action-marker": "non-muted-action-marker",
+		"muted-action-marker":     "muted-action-marker",
+	} {
+		if actual := actionMarkers.Data[label]; actual != expected {
+			return fmt.Errorf("expected %s marker %q, got %q", label, expected, actual)
+		}
+	}
+
+	packageState, err := clientset.CoreV1().ConfigMaps("default").Get(context.Background(), "zarf-lifecycle-package-state", metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get managed package-state configmap: %w", err)
+	}
+	if actual := packageState.Data["fixture"]; actual != "zarf-lifecycle-package-state" {
+		return fmt.Errorf("expected managed package-state marker %q, got %q", "zarf-lifecycle-package-state", actual)
+	}
+
+	return nil
+}
+
+func checkZarfLifecycleResourcesDestroyed(_ *terraform.State) error {
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		kubeconfigPath = clientcmd.RecommendedHomeFile
+	}
+
+	kubeClientConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	if err != nil {
+		return fmt.Errorf("failed to build kubernetes config: %w", err)
+	}
+	clientset, err := kubernetes.NewForConfig(kubeClientConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create kubernetes client: %w", err)
+	}
+
+	_, err = clientset.CoreV1().ConfigMaps("default").Get(context.Background(), "zarf-lifecycle-action-markers", metav1.GetOptions{})
+	if err == nil {
+		return fmt.Errorf("expected action marker configmap to be deleted")
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check action marker cleanup: %w", err)
+	}
+
+	_, err = clientset.CoreV1().ConfigMaps("default").Get(context.Background(), "zarf-lifecycle-package-state", metav1.GetOptions{})
+	if err == nil {
+		return fmt.Errorf("expected managed fixture configmap to be deleted")
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check managed fixture cleanup: %w", err)
+	}
+
+	return nil
+}
+
 func renderZarfValuesInvalidPathConfig(packagePath string) string {
 	return fmt.Sprintf(`
 resource "uds_package" "values" {
@@ -397,6 +569,7 @@ func TestAccPackageResourceZarfValues(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             checkZarfValuesResourcesDestroyed,
 		Steps: []resource.TestStep{
 			{
 				Config:      renderZarfValuesInvalidPathConfig(packagePath),
@@ -412,11 +585,13 @@ func TestAccPackageResourceZarfValues(t *testing.T) {
 					resource.TestCheckResourceAttr("uds_package.uds_crds", "metadata.version", udsCoreCRDsPackageVersion),
 					resource.TestCheckResourceAttr("uds_package.nginx", "id", "nginx"),
 					resource.TestCheckResourceAttr("uds_package.nginx", "metadata.version", udsNginxPackageVersion),
+					resource.TestCheckResourceAttr("uds_package.nginx", "connect_strings.#", "1"),
 					checkAppliedZarfValuesResources(initialValues),
 				),
 			},
 			{
-				Config: renderZarfValuesPackageConfig(t, updatedValues),
+				Config:       renderZarfValuesPackageConfig(t, updatedValues),
+				RefreshState: true,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("uds_package.values", "id", "zarf-values:zarf-values"),
 					resource.TestCheckResourceAttr("uds_package.values", "metadata.version", "0.1.0"),
@@ -424,7 +599,32 @@ func TestAccPackageResourceZarfValues(t *testing.T) {
 					resource.TestCheckResourceAttr("uds_package.uds_crds", "metadata.version", udsCoreCRDsPackageVersion),
 					resource.TestCheckResourceAttr("uds_package.nginx", "id", "nginx"),
 					resource.TestCheckResourceAttr("uds_package.nginx", "metadata.version", udsNginxPackageVersion),
+					resource.TestCheckResourceAttr("uds_package.nginx", "connect_strings.#", "1"),
 					checkAppliedZarfValuesResources(updatedValues),
+				),
+			},
+		},
+	})
+}
+
+func TestAccPackageResourceZarfLifecycle(t *testing.T) {
+	if os.Getenv(resource.EnvTfAcc) == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC=1")
+	}
+
+	packagePath := buildZarfLifecycleFixture(t)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             checkZarfLifecycleResourcesDestroyed,
+		Steps: []resource.TestStep{
+			{
+				Config: renderZarfLifecyclePackageConfig(packagePath),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("uds_package.lifecycle", "id", "zarf-lifecycle"),
+					resource.TestCheckResourceAttr("uds_package.lifecycle", "metadata.version", "0.1.0"),
+					checkAppliedZarfLifecycleResources,
 				),
 			},
 		},

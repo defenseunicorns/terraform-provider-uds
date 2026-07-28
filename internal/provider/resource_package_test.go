@@ -1,9 +1,10 @@
-// Copyright 2024 Defense Unicorns
+// Copyright 2024-2026 Defense Unicorns
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
 package provider
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/defenseunicorns/pkg/helpers/v2"
+	"github.com/defenseunicorns/terraform-provider-uds/internal/logging"
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -30,6 +32,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
+	"github.com/hashicorp/terraform-plugin-log/tflogtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -2648,6 +2651,287 @@ func TestPackageResource_Upsert_ConnectStrings(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPackageResource_Upsert_LogEvents(t *testing.T) {
+	packageLayout := &layout.PackageLayout{Pkg: v1alpha1.ZarfPackage{
+		Metadata: v1alpha1.ZarfMetadata{Name: "test-package", Version: "0.0.1"},
+		Components: []v1alpha1.ZarfComponent{
+			{Name: "required", Required: helpers.BoolPtr(true)},
+			{Name: "optional", Required: helpers.BoolPtr(false)},
+		},
+	}}
+	packagerMock := &MockPackager{}
+	filterMock := &MockPackageComponentFilter{}
+	packagerMock.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil)
+	packagerMock.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{
+		DeployedComponents: []zarfState.DeployedComponent{{InstalledCharts: []zarfState.InstalledChart{{ConnectStrings: map[string]zarfState.ConnectString{
+			"app": {Description: "Open the app"},
+		}}}}},
+	}, nil)
+	filterMock.On("ForDeploy", []string{"optional"}).Return(mock.Anything)
+
+	var output bytes.Buffer
+	ctx := tflogtest.RootLogger(context.Background(), &output)
+	ctx = logging.WithPackageContext(ctx, "create", "", "demo")
+	operationCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	t.Cleanup(cancel)
+	r := NewPackageResource(&udsProviderConfig{DefaultArchitecture: "arm64"}, packagerMock, filterMock, nil).(*PackageResource)
+	model := NewTestPackageResourceModel(WithDeployedState(),
+		WithArchitecture("arm64"),
+		WithNamespace("demo"),
+		WithOptionalComponents([]string{"optional"}),
+	)
+	model.Name = types.StringValue("test-package")
+	plan := buildTestPlan(t, r, model)
+	resp := &resource.CreateResponse{State: buildTestState(t, r, model)}
+	r.Create(operationCtx, resource.CreateRequest{Plan: plan}, resp)
+	require.False(t, resp.Diagnostics.HasError(), "%v", resp.Diagnostics)
+	assert.Empty(t, resp.Diagnostics, "successful create should not add Zarf output to diagnostics")
+
+	entries, err := tflogtest.MultilineJSONDecode(&output)
+	require.NoError(t, err)
+	for _, entry := range entries {
+		for key := range entry {
+			if strings.HasPrefix(key, "uds.") {
+				assert.Contains(t, []string{"uds.operation", "uds.package", "uds.namespace", "uds.component"}, key)
+			}
+		}
+		for _, forbidden := range []string{
+			"vars", "variables", "values", "sensitive_values",
+			"credentials", "signature_verification", "public_key", "keyless",
+		} {
+			assert.NotContains(t, entry, forbidden, "unsafe provider field %q leaked", forbidden)
+		}
+	}
+	assertLogEntry(t, entries, "package started", map[string]interface{}{
+		"uds.operation": "create", "uds.package": "test-package", "uds.namespace": "demo",
+		"architecture": "arm64", "optional_components": "optional",
+	})
+	assertLogEntry(t, entries, "package completed", map[string]interface{}{
+		"uds.operation": "create", "uds.package": "test-package", "uds.namespace": "demo",
+	})
+	assertLogEntry(t, entries, "zarf connect app", map[string]interface{}{
+		"command": "zarf connect app", "description": "Open the app",
+	})
+}
+
+func TestPackageResource_RemoveComponents_LogEvent(t *testing.T) {
+	packagerMock := &MockPackager{}
+	filterMock := &MockPackageComponentFilter{}
+	clusterMock := &MockCluster{}
+	pkg := v1alpha1.ZarfPackage{Components: []v1alpha1.ZarfComponent{{Name: "optional"}}}
+	filterMock.On("ForRemove", []string{"optional"}).Return(mock.Anything)
+	clusterMock.On("NewWithWait", mock.Anything).Return((*zarfCluster.Cluster)(nil), nil)
+	packagerMock.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(pkg, nil)
+	packagerMock.On("Remove", mock.Anything, pkg, mock.Anything).Return(nil)
+
+	var output bytes.Buffer
+	ctx := tflogtest.RootLogger(context.Background(), &output)
+	ctx = logging.WithPackageContext(ctx, "update", "test-package", "demo")
+	r := NewPackageResource(&udsProviderConfig{}, packagerMock, filterMock, clusterMock).(*PackageResource)
+	operationCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	t.Cleanup(cancel)
+	err := r.removeComponents(operationCtx, NewTestPackageResourceModel(WithNamespace("demo")), []string{"optional"})
+	require.NoError(t, err)
+
+	entries, err := tflogtest.MultilineJSONDecode(&output)
+	require.NoError(t, err)
+	assertLogEntry(t, entries, "component started", map[string]interface{}{
+		"uds.operation": "update", "uds.package": "test-package", "uds.namespace": "demo", "uds.component": "optional",
+	})
+}
+
+func TestPackageResource_RemoveComponents_DoesNotLogRequiredComponentAsStarted(t *testing.T) {
+	packagerMock := &MockPackager{}
+	filterMock := &MockPackageComponentFilter{}
+	clusterMock := &MockCluster{}
+	required := true
+	pkg := v1alpha1.ZarfPackage{Components: []v1alpha1.ZarfComponent{{Name: "required", Required: &required}}}
+	filterMock.On("ForRemove", []string{"required"}).Return(mock.Anything)
+	clusterMock.On("NewWithWait", mock.Anything).Return((*zarfCluster.Cluster)(nil), nil)
+	packagerMock.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(pkg, nil)
+
+	var output bytes.Buffer
+	ctx := tflogtest.RootLogger(context.Background(), &output)
+	ctx = logging.WithPackageContext(ctx, "update", "test-package", "demo")
+	r := NewPackageResource(&udsProviderConfig{}, packagerMock, filterMock, clusterMock).(*PackageResource)
+	operationCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	t.Cleanup(cancel)
+	err := r.removeComponents(operationCtx, NewTestPackageResourceModel(WithNamespace("demo")), []string{"required"})
+	require.NoError(t, err)
+
+	entries, err := tflogtest.MultilineJSONDecode(&output)
+	require.NoError(t, err)
+	for _, entry := range entries {
+		require.NotEqual(t, "component started", entry["@message"])
+	}
+}
+
+func TestPackageResource_CreateFailure_LogEventAndDiagnostic(t *testing.T) {
+	packagerMock := &MockPackager{}
+	packagerMock.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
+		&layout.PackageLayout{}, errors.New("load failed"),
+	)
+	r := NewPackageResource(nil, packagerMock, nil, nil).(*PackageResource)
+	model := NewTestPackageResourceModel(WithDeployedState(), WithNamespace("demo"))
+	plan := buildTestPlan(t, r, model)
+	var output bytes.Buffer
+	ctx := tflogtest.RootLogger(context.Background(), &output)
+	resp := &resource.CreateResponse{State: tfsdk.State{Schema: schema.Schema{}}}
+	r.Create(ctx, resource.CreateRequest{Plan: plan}, resp)
+	require.True(t, resp.Diagnostics.HasError())
+	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "load failed")
+
+	entries, err := tflogtest.MultilineJSONDecode(&output)
+	require.NoError(t, err)
+	assertLogEntry(t, entries, "package failed", map[string]interface{}{
+		"uds.operation": "create", "uds.package": "test-pkg", "uds.namespace": "demo",
+	})
+	var failures int
+	for _, entry := range entries {
+		if entry["@message"] == "package failed" {
+			failures++
+		}
+	}
+	assert.Equal(t, 1, failures)
+}
+
+func TestPackageResource_CreateDeployFailure_PreservesPackagerDiagnostic(t *testing.T) {
+	packageLayout := newValidLoadPackageResult().Layout
+	packagerMock := &MockPackager{}
+	filterMock := &MockPackageComponentFilter{}
+	packagerMock.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil)
+	packagerMock.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, errors.New(`unable to run component after action: command "kubectl create namespace already-exists" failed after 0 retries
+
+captured Zarf output:
+Error from server (AlreadyExists): namespaces "already-exists" already exists`))
+	filterMock.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	r := NewPackageResource(nil, packagerMock, filterMock, nil).(*PackageResource)
+	model := NewTestPackageResourceModel(
+		WithDeployedState(),
+		WithNamespace("demo"),
+	)
+	plan := buildTestPlan(t, r, model)
+	var output bytes.Buffer
+	ctx := tflogtest.RootLogger(context.Background(), &output)
+	resp := &resource.CreateResponse{State: buildTestState(t, r, model)}
+	r.Create(ctx, resource.CreateRequest{Plan: plan}, resp)
+
+	require.True(t, resp.Diagnostics.HasError())
+	require.Len(t, resp.Diagnostics.Errors(), 1)
+	diagnostic := resp.Diagnostics.Errors()[0]
+	assert.Equal(t, "Error creating package", diagnostic.Summary())
+	assert.Contains(t, diagnostic.Detail(), `command "kubectl create namespace already-exists" failed after 0 retries`)
+	assert.Contains(t, diagnostic.Detail(), `Error from server (AlreadyExists): namespaces "already-exists" already exists`)
+
+	entries, err := tflogtest.MultilineJSONDecode(&output)
+	require.NoError(t, err)
+	assertLogEntry(t, entries, "package failed", nil)
+	assertNoLogEntry(t, entries, "package completed")
+	var failures int
+	for _, entry := range entries {
+		if entry["@message"] == "package failed" {
+			failures++
+		}
+	}
+	assert.Equal(t, 1, failures)
+}
+
+func TestPackageResource_CreateStateFailure_LogsFailureWithoutCompletion(t *testing.T) {
+	packageLayout := newValidLoadPackageResult().Layout
+	packagerMock := &MockPackager{}
+	filterMock := &MockPackageComponentFilter{}
+	packagerMock.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil)
+	packagerMock.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+	filterMock.On("ForDeploy", mock.Anything).Return(mock.Anything)
+	r := NewPackageResource(nil, packagerMock, filterMock, nil).(*PackageResource)
+	plan := buildTestPlan(t, r, NewTestPackageResourceModel(WithDeployedState()))
+	var schemaResp resource.SchemaResponse
+	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+	badSchema := schemaResp.Schema
+	badSchema.Attributes["metadata"] = schema.StringAttribute{Computed: true}
+	stateResponse := tfsdk.State{
+		Schema: badSchema,
+		Raw:    tftypes.NewValue(badSchema.Type().TerraformType(context.Background()), nil),
+	}
+
+	var output bytes.Buffer
+	ctx := tflogtest.RootLogger(context.Background(), &output)
+	resp := &resource.CreateResponse{State: stateResponse}
+	r.Create(ctx, resource.CreateRequest{Plan: plan}, resp)
+
+	require.True(t, resp.Diagnostics.HasError())
+	entries, err := tflogtest.MultilineJSONDecode(&output)
+	require.NoError(t, err)
+	assertLogEntry(t, entries, "package failed", nil)
+	assertNoLogEntry(t, entries, "package completed")
+}
+
+func TestPackageResource_UpdateStateFailure_LogsFailureWithoutCompletion(t *testing.T) {
+	r := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+	model := NewTestPackageResourceModel(WithDeployedState())
+	plan := buildTestPlan(t, r, model)
+	state := buildTestState(t, r, model)
+	var schemaResp resource.SchemaResponse
+	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+	badSchema := schemaResp.Schema
+	badSchema.Attributes["metadata"] = schema.StringAttribute{Computed: true}
+	stateResponse := tfsdk.State{
+		Schema: badSchema,
+		Raw:    tftypes.NewValue(badSchema.Type().TerraformType(context.Background()), nil),
+	}
+
+	var output bytes.Buffer
+	ctx := tflogtest.RootLogger(context.Background(), &output)
+	resp := &resource.UpdateResponse{State: stateResponse}
+	r.Update(ctx, resource.UpdateRequest{Plan: plan, State: state}, resp)
+
+	require.True(t, resp.Diagnostics.HasError())
+	entries, err := tflogtest.MultilineJSONDecode(&output)
+	require.NoError(t, err)
+	assertLogEntry(t, entries, "package failed", nil)
+	assertNoLogEntry(t, entries, "package completed")
+}
+
+func TestPackageResource_ConnectStringsStateShape(t *testing.T) {
+	r := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+	var schemaResp resource.SchemaResponse
+	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+	connectStrings, ok := schemaResp.Schema.Attributes["connect_strings"].(schema.SetNestedAttribute)
+	require.True(t, ok)
+	assert.ElementsMatch(t, []string{"name", "description"}, mapKeys(connectStrings.NestedObject.Attributes))
+	assert.NotContains(t, mapKeys(connectStrings.NestedObject.Attributes), "command")
+}
+
+func assertLogEntry(t *testing.T, entries []map[string]interface{}, message string, fields map[string]interface{}) {
+	t.Helper()
+	for _, entry := range entries {
+		if entry["@message"] != message {
+			continue
+		}
+		for key, value := range fields {
+			assert.Equal(t, value, entry[key], key)
+		}
+		return
+	}
+	t.Fatalf("log entry %q not found in %#v", message, entries)
+}
+
+func assertNoLogEntry(t *testing.T, entries []map[string]interface{}, message string) {
+	t.Helper()
+	for _, entry := range entries {
+		assert.NotEqual(t, message, entry["@message"])
+	}
+}
+
+func mapKeys[T any](values map[string]T) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func TestComputePackageID(t *testing.T) {
