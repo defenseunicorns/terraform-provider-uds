@@ -42,9 +42,9 @@ func PackageStarted(ctx context.Context, architecture string, optionalComponents
 	tflog.Info(ctx, "package started", fields)
 }
 
-// ComponentStarted logs the beginning of component deployment or removal.
-func ComponentStarted(ctx context.Context, component string) {
-	tflog.Info(ctx, "component started", map[string]interface{}{fieldComponent: component})
+// ComponentSelected logs a component selected for deployment or removal.
+func ComponentSelected(ctx context.Context, component string) {
+	tflog.Info(ctx, "component selected", map[string]interface{}{fieldComponent: component})
 }
 
 // PackageCompleted logs successful package processing and its duration.

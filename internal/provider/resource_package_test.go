@@ -2683,7 +2683,6 @@ func TestPackageResource_Upsert_LogEvents(t *testing.T) {
 		WithNamespace("demo"),
 		WithOptionalComponents([]string{"optional"}),
 	)
-	model.Name = types.StringValue("test-package")
 	plan := buildTestPlan(t, r, model)
 	resp := &resource.CreateResponse{State: buildTestState(t, r, model)}
 	r.Create(operationCtx, resource.CreateRequest{Plan: plan}, resp)
@@ -2717,6 +2716,23 @@ func TestPackageResource_Upsert_LogEvents(t *testing.T) {
 	})
 }
 
+func TestPackageResource_Upsert_DoesNotStartPackageBeforeValidation(t *testing.T) {
+	packagerMock := &MockPackager{}
+	filterMock := &MockPackageComponentFilter{}
+	packagerMock.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(newValidLoadPackageResult().Layout, nil)
+	filterMock.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	r := NewPackageResource(&udsProviderConfig{DefaultArchitecture: "arm64"}, packagerMock, filterMock, nil).(*PackageResource)
+	var output bytes.Buffer
+	ctx := tflogtest.RootLogger(context.Background(), &output)
+	_, err := r.upsert(ctx, NewTestPackageResourceModel(WithValues(types.DynamicUnknown())))
+	require.Error(t, err)
+
+	entries, err := tflogtest.MultilineJSONDecode(&output)
+	require.NoError(t, err)
+	assertNoLogEntry(t, entries, "package started")
+}
+
 func TestPackageResource_RemoveComponents_LogEvent(t *testing.T) {
 	packagerMock := &MockPackager{}
 	filterMock := &MockPackageComponentFilter{}
@@ -2738,7 +2754,7 @@ func TestPackageResource_RemoveComponents_LogEvent(t *testing.T) {
 
 	entries, err := tflogtest.MultilineJSONDecode(&output)
 	require.NoError(t, err)
-	assertLogEntry(t, entries, "component started", map[string]interface{}{
+	assertLogEntry(t, entries, "component selected", map[string]interface{}{
 		"uds.operation": "update", "uds.package": "test-package", "uds.namespace": "demo", "uds.component": "optional",
 	})
 }
@@ -2765,7 +2781,7 @@ func TestPackageResource_RemoveComponents_DoesNotLogRequiredComponentAsStarted(t
 	entries, err := tflogtest.MultilineJSONDecode(&output)
 	require.NoError(t, err)
 	for _, entry := range entries {
-		require.NotEqual(t, "component started", entry["@message"])
+		require.NotEqual(t, "component selected", entry["@message"])
 	}
 }
 

@@ -575,7 +575,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	operationCtx = logging.WithPackageContext(operationCtx, "create", plan.Name.ValueString(), plan.Namespace.ValueString())
+	operationCtx = logging.WithPackageContext(operationCtx, "create", "", plan.Namespace.ValueString())
 
 	createTimeout, timeoutDiags := plan.Timeouts.Create(operationCtx, 30*time.Minute)
 	resp.Diagnostics.Append(timeoutDiags...)
@@ -588,6 +588,9 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 
 	var err error
 	plan, err = r.deployAsNew(timeoutCtx, plan)
+	if !plan.Name.IsNull() && !plan.Name.IsUnknown() {
+		operationCtx = logging.WithPackageContext(operationCtx, "create", plan.Name.ValueString(), plan.Namespace.ValueString())
+	}
 	if err != nil {
 		var optErr *optionalComponentsValidationError
 		if errors.As(err, &optErr) {
@@ -738,7 +741,7 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	operationCtx = logging.WithPackageContext(operationCtx, "update", plan.Name.ValueString(), plan.Namespace.ValueString())
+	operationCtx = logging.WithPackageContext(operationCtx, "update", "", plan.Namespace.ValueString())
 
 	// Check if there are any components in the already existing plan that need to be removed
 	var oldPlan PackageResourceModel
@@ -746,6 +749,9 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+	if !oldPlan.Name.IsNull() && !oldPlan.Name.IsUnknown() {
+		operationCtx = logging.WithPackageContext(operationCtx, "update", oldPlan.Name.ValueString(), plan.Namespace.ValueString())
 	}
 
 	stateOnlyUpdate, err := isStateOnlyUpdate(req.Plan, req.State)
@@ -772,6 +778,9 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	defer cancel()
 
 	plan, err = r.deployAsNewOrUpdate(timeoutCtx, plan, oldPlan)
+	if !plan.Name.IsNull() && !plan.Name.IsUnknown() {
+		operationCtx = logging.WithPackageContext(operationCtx, "update", plan.Name.ValueString(), plan.Namespace.ValueString())
+	}
 	if err != nil {
 		var optErr *optionalComponentsValidationError
 		if errors.As(err, &optErr) {
@@ -1221,7 +1230,7 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 		}
 	}
 	for _, component := range newComponentsToRemove {
-		logging.ComponentStarted(ctx, component)
+		logging.ComponentSelected(ctx, component)
 	}
 
 	zarfTimeout, err := zarfOperationTimeout(ctx)
@@ -1273,6 +1282,8 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	if err != nil {
 		return plan, err
 	}
+	plan.Name = types.StringValue(pkgLayout.Pkg.Metadata.Name)
+	ctx = logging.WithPackageContext(ctx, "", plan.Name.ValueString(), plan.Namespace.ValueString())
 	defer func() {
 		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
@@ -1336,8 +1347,8 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if err != nil {
 		return plan, err
 	}
-	ctx = logging.WithPackageContext(ctx, "", pkgLayout.Pkg.Metadata.Name, plan.Namespace.ValueString())
-	logging.PackageStarted(ctx, getArchitecture(plan, *r.providerConfig), optionalComponentsForLogging(ctx, plan))
+	plan.Name = types.StringValue(pkgLayout.Pkg.Metadata.Name)
+	ctx = logging.WithPackageContext(ctx, "", plan.Name.ValueString(), plan.Namespace.ValueString())
 	defer func() {
 		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
@@ -1411,8 +1422,9 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 	deployOpts.Timeout = zarfTimeout
 
+	logging.PackageStarted(ctx, getArchitecture(plan, *r.providerConfig), optionalComponentsForLogging(ctx, plan))
 	for _, component := range pkgLayout.Pkg.Components {
-		logging.ComponentStarted(ctx, component.Name)
+		logging.ComponentSelected(ctx, component.Name)
 	}
 	deployResult, err := r.packager.Deploy(ctx, pkgLayout, deployOpts)
 	if err != nil {

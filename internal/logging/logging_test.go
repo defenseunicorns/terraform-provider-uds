@@ -64,9 +64,9 @@ func TestPackageAndComponentEvents(t *testing.T) {
 			severity: "info",
 		},
 		{
-			name:     "component started",
-			emit:     func(ctx context.Context) { ComponentStarted(ctx, "app") },
-			message:  "component started",
+			name:     "component selected",
+			emit:     func(ctx context.Context) { ComponentSelected(ctx, "app") },
+			message:  "component selected",
 			fields:   map[string]interface{}{fieldComponent: "app"},
 			severity: "info",
 		},
