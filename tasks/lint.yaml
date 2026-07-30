@@ -6,9 +6,9 @@ tasks:
   - name: check
     description: "Run the repository lint checks"
     actions:
-      - cmd: golangci-lint run
+      - cmd: hk check --all
 
   - name: fix
     description: "Fix lint findings where supported"
     actions:
-      - cmd: golangci-lint run --fix
+      - cmd: hk fix --all
