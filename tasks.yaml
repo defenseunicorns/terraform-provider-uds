@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
 includes:
-  - provider: tasks/build.yaml
+  - build: tasks/build.yaml
   - test: tasks/test.yaml
   - lint: tasks/lint.yaml
 
 variables:
   - name: TOFU_DIR
-    default: examples/zarf_values
+    default: ""
 
 tasks:
   - name: default
@@ -18,9 +18,10 @@ tasks:
       - task: test:unit
 
   - name: build
-    description: "Build the provider binary"
+    description: "Build and configure the provider for local OpenTofu development"
     actions:
-      - task: provider:build
+      - cmd: uds run build:local
+      - cmd: uds run build:configure
 
   - name: lint
     description: "Lint the code"
@@ -35,7 +36,7 @@ tasks:
   - name: generate
     description: "Format examples and regenerate provider documentation"
     actions:
-      - task: provider:generate
+      - cmd: uds run build:generate
 
   - name: test-unit
     description: "Run unit tests for the project"
@@ -47,26 +48,41 @@ tasks:
     actions:
       - task: test:setup-cluster
 
-  - name: e2e
-    description: "Create the test cluster and run end-to-end tests"
+  - name: test-acc
+    description: "Create the test cluster and run acceptance tests"
     actions:
       - task: test:setup-cluster
-      - task: test:e2e
+      - task: test:acc
 
-  - name: tofu:plan
+  - name: dev-plan
     description: "Plan using the locally built provider"
     actions:
-      - cmd: uds run provider:dev
+      - cmd: |
+          if [ -z "${TOFU_DIR}" ]; then
+            echo "TOFU_DIR is required. Example: uds run dev-plan --set TOFU_DIR=examples/zarf_values"
+            exit 1
+          fi
+      - cmd: uds run build
       - cmd: TF_CLI_CONFIG_FILE="$(pwd)/.tofurc.dev" tofu -chdir=${TOFU_DIR} plan
 
-  - name: tofu:apply
+  - name: dev-apply
     description: "Apply using the locally built provider"
     actions:
-      - cmd: uds run provider:dev
+      - cmd: |
+          if [ -z "${TOFU_DIR}" ]; then
+            echo "TOFU_DIR is required. Example: uds run dev-plan --set TOFU_DIR=examples/zarf_values"
+            exit 1
+          fi
+      - cmd: uds run build
       - cmd: TF_CLI_CONFIG_FILE="$(pwd)/.tofurc.dev" tofu -chdir=${TOFU_DIR} apply
 
-  - name: tofu:destroy
+  - name: dev-destroy
     description: "Destroy using the locally built provider"
     actions:
-      - cmd: uds run provider:dev
+      - cmd: |
+          if [ -z "${TOFU_DIR}" ]; then
+            echo "TOFU_DIR is required. Example: uds run dev-plan --set TOFU_DIR=examples/zarf_values"
+            exit 1
+          fi
+      - cmd: uds run build
       - cmd: TF_CLI_CONFIG_FILE="$(pwd)/.tofurc.dev" tofu -chdir=${TOFU_DIR} destroy

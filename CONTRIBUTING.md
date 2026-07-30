@@ -17,12 +17,13 @@ From the repository root, run:
 ```console
 mise install
 hk install
-uds run provider:dev
+uds run build
 ```
 
-`provider:dev` builds the provider and generates the repository-local
-`.tofurc.dev` configuration used by the OpenTofu tasks. After mise is activated
-in your shell, run `uds` commands directly; `mise exec` is not needed.
+`uds run build` builds the provider from the repository root and generates the
+repository-local `.tofurc.dev` configuration used by the OpenTofu tasks. After
+mise is activated in your shell, run `uds` commands directly; `mise exec` is
+not needed.
 
 ## Development loop
 
@@ -30,20 +31,23 @@ Run the checks and local OpenTofu workflow with:
 
 ```console
 uds run test-unit
-uds run tofu:plan
-uds run tofu:apply
-uds run tofu:destroy
+uds run dev-plan --set TOFU_DIR=examples/zarf_values
+uds run dev-apply --set TOFU_DIR=examples/zarf_values
+uds run dev-destroy --set TOFU_DIR=examples/zarf_values
 uds run setup-cluster
-uds run e2e
+uds run test-acc
 ```
 
 Unit tests compile changed packages automatically. The OpenTofu tasks rebuild
 the provider as needed and generate the local configuration before planning,
-applying, or destroying. They use `examples/zarf_values` by default; set
-`TOFU_DIR` with the UDS task runner when working with another configuration.
-The e2e suite requires live-cluster infrastructure. Run `uds run setup-cluster`
-once and reuse that cluster across local iterations with `uds run test:e2e`.
-Use `uds run e2e` when you want the self-contained setup-and-test workflow.
+applying, or destroying. `TOFU_DIR` is required for each OpenTofu task. The
+examples above use `examples/zarf_values`; set another configuration directory
+with `--set TOFU_DIR=path/to/configuration`.
+
+The acceptance test suite requires live-cluster infrastructure. `test-acc` sets
+up the cluster and runs the acceptance tests in one workflow. To reuse an
+existing cluster across local iterations, run `uds run setup-cluster` once and
+then use `uds run test:acc`.
 
 Commits run hk automatically. Other available development tasks include:
 

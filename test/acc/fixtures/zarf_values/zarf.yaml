@@ -5,7 +5,7 @@ kind: ZarfPackageConfig
 metadata:
   name: zarf-values
   version: 0.1.0
-  description: E2E test package for UDS package values
+  description: Acceptance test package for UDS package values
 
 values:
   files:

@@ -19,8 +19,8 @@ tasks:
         # renovate: datasource=github-tags depName=defenseunicorns/uds-k3d versioning=semver
         cmd: "uds zarf package deploy oci://defenseunicorns/uds-k3d:0.20.2 --confirm --no-progress"
 
-  - name: e2e
-    description: "Run end-to-end tests"
+  - name: acc
+    description: "Run acceptance tests"
     actions:
       # Point terraform-plugin-testing at the local tofu CLI and resolve the
       # in-process provider against registry.opentofu.org rather than the
@@ -35,4 +35,4 @@ tasks:
             TF_ACC_TERRAFORM_PATH="$TF_BIN" \
             TF_ACC_PROVIDER_NAMESPACE=hashicorp \
             TF_ACC_PROVIDER_HOST=registry.opentofu.org \
-            go test -v -cover -timeout 10m ./test/e2e/...
+            go test -v -cover -timeout 10m ./test/acc/...

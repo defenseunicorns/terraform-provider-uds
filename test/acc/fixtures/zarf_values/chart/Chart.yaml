@@ -3,7 +3,7 @@
 
 apiVersion: v2
 name: zarf-values
-description: E2E test chart for UDS package values
+description: Acceptance test chart for UDS package values
 type: application
 version: 0.1.0
 appVersion: 0.1.0

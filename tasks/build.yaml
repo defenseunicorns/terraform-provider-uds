@@ -3,7 +3,7 @@
 
 # yaml-language-server: $schema=https://raw.githubusercontent.com/defenseunicorns/maru-runner/refs/heads/main/tasks.schema.json
 tasks:
-  - name: build
+  - name: local
     description: "Build the provider binary for local OpenTofu development"
     actions:
       - cmd: mkdir -p build
@@ -12,7 +12,6 @@ tasks:
   - name: configure
     description: "Configure OpenTofu to use the local provider build"
     actions:
-      - task: build
       - cmd: |
           cat > .tofurc.dev <<EOF
           provider_installation {
@@ -22,11 +21,6 @@ tasks:
             direct {}
           }
           EOF
-
-  - name: dev
-    description: "Build and configure the provider for local OpenTofu development"
-    actions:
-      - task: configure
 
   - name: generate
     description: "Generate the code"

@@ -11,13 +11,8 @@ provider "uds" {
   default_architecture = "arm64"
 }
 
-locals {
-  # renovate: datasource=docker depName=ghcr.io/zarf-dev/packages/init versioning=semver
-  zarf_init_version = "v0.82.0"
-}
-
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:${local.zarf_init_version}"
+  source = "oci://ghcr.io/zarf-dev/packages/init:v0.82.0"
 
   signature_verification = {
     keyless = {

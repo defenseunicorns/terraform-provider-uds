@@ -70,7 +70,7 @@ var _ provider.Provider = (*udsProvider)(nil)
 
 type udsProvider struct {
 	// version is set to the provider version on release, "dev" when the
-	// provider is built and ran locally, and "test" when running end-to-end
+	// provider is built and ran locally, and "test" when running acceptance
 	// testing.
 	version string
 }

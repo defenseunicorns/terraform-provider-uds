@@ -1,7 +1,7 @@
 // Copyright 2024 Defense Unicorns
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
-package e2e
+package acc
 
 import (
 	"testing"
@@ -12,15 +12,15 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
 
-// testE2EProtoV6ProviderFactories are used to instantiate a provider during
-// end-to-end testing. The factory function will be invoked for every Terraform
+// testAccProtoV6ProviderFactories are used to instantiate a provider during
+// acceptance testing. The factory function will be invoked for every Terraform
 // CLI command executed to create a provider server to which the CLI can
 // reattach.
-var testE2EProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
+var testAccProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
 	"uds": server.NewProtocol6WithError(provider.New("test")()),
 }
 
-func testE2EPreCheck(_ *testing.T) {
+func testAccPreCheck(_ *testing.T) {
 	// You can add code here to run prior to any test case execution, for example assertions
 	// about the appropriate environment variables being set are common to see in a pre-check
 	// function.

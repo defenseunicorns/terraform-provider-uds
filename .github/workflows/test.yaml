@@ -42,10 +42,10 @@ jobs:
           install: true
           cache: true
       - name: Lint
-        run: mise exec -- uds run lint:check
+        run: uds run lint:check
 
-  e2e:
-    name: E2E tests
+  acceptance:
+    name: Acceptance tests
     runs-on: uds-ubuntu-big-boy-4-core
     steps:
       - name: Checkout
@@ -60,14 +60,14 @@ jobs:
           install: true
           cache: true
 
-      - name: E2E tests
-        run: mise exec -- uds run e2e
+      - name: Acceptance tests
+        run: uds run test-acc
 
       - name: Save Logs
         uses: defenseunicorns/uds-core/.github/actions/save-logs@bd1f2e4acdb2945ac1887e81668227291f183018
         if: always()
         with:
-          suffix: e2e
+          suffix: acc
 
   unit:
     name: Unit tests
@@ -86,4 +86,4 @@ jobs:
           cache: true
 
       - name: Unit tests
-        run: mise exec -- uds run test-unit
+        run: uds run test-unit
