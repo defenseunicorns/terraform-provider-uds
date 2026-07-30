@@ -1,0 +1,28 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+# yaml-language-server: $schema=https://raw.githubusercontent.com/defenseunicorns/maru-runner/refs/heads/main/tasks.schema.json
+tasks:
+  - name: local
+    description: "Build the provider binary for local OpenTofu development"
+    actions:
+      - cmd: mkdir -p build
+      - cmd: go build -trimpath -o build/terraform-provider-uds .
+
+  - name: configure
+    description: "Configure OpenTofu to use the local provider build"
+    actions:
+      - cmd: |
+          cat > .tofurc.dev <<EOF
+          provider_installation {
+            dev_overrides {
+              "defenseunicorns/uds" = "$(pwd)/build"
+            }
+            direct {}
+          }
+          EOF
+
+  - name: generate
+    description: "Generate the code"
+    actions:
+      - cmd: go generate ./...

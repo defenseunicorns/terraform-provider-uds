@@ -17,7 +17,7 @@ import (
 	"oras.land/oras-go/v2/registry"
 )
 
-var localPathRegex *regexp.Regexp = regexp.MustCompile(`^(?:[a-zA-Z]:)?\/?(?:[a-zA-Z0-9._-]+\/)*[a-zA-Z0-9._-]+\.tar(?:\.zst)?$`)
+var localPathRegex = regexp.MustCompile(`^(?:[a-zA-Z]:)?\/?(?:[a-zA-Z0-9._-]+\/)*[a-zA-Z0-9._-]+\.tar(?:\.zst)?$`)
 
 // BlockStringAttributeUniquenessValidator validates that string attributes within blocks are unique.
 type BlockStringAttributeUniquenessValidator struct {
