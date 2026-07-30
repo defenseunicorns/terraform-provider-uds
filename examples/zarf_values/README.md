@@ -26,7 +26,8 @@ uds run tofu:apply
 
 The e2e suite requires live-cluster infrastructure. From the repository root,
 run `uds run setup-cluster` once and reuse the cluster across local iterations,
-then run `uds run e2e`.
+then run `uds run test:e2e`. Use `uds run e2e` for the self-contained
+setup-and-test workflow.
 
 Clean up:
 

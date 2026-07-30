@@ -42,7 +42,8 @@ the provider as needed and generate the local configuration before planning,
 applying, or destroying. They use `examples/zarf_values` by default; set
 `TOFU_DIR` with the UDS task runner when working with another configuration.
 The e2e suite requires live-cluster infrastructure. Run `uds run setup-cluster`
-once and reuse that cluster across local iterations before running `uds run e2e`.
+once and reuse that cluster across local iterations with `uds run test:e2e`.
+Use `uds run e2e` when you want the self-contained setup-and-test workflow.
 
 Commits run hk automatically. Other available development tasks include:
 
