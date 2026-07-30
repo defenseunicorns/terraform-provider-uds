@@ -40,7 +40,7 @@ resource "uds_package" "init" {
   optional_components = ["git-server"]
 }
 
-# This zarf package example produces sensitive variables using zarf action setVariables sensitive: true. 
+# This zarf package example produces sensitive variables using zarf action setVariables sensitive: true.
 # The variable used in this example is AUTHSERVICE_REDIS_URI
 
 # zarf package example yaml for reference:
@@ -101,7 +101,7 @@ resource "uds_package" "authservice_ha_deps" {
   source     = "zarf-package-authservice-ha-deps-arm64-1.0.0.tar.zst"
 }
 
-# This package example consumes the variable contained in the authservice-ha-deps package. 
+# This package example consumes the variable contained in the authservice-ha-deps package.
 # The variable is referenced using the syntax: <package_name>.<set_variables>.<variable_name>,
 # which in this example is: uds_package.authservice_ha_deps.set_variables.authservice_redis_uri
 resource "uds_package" "core_identity_authorization" {
@@ -187,7 +187,7 @@ resource "uds_package" "dos_games" {
 - `component` (Block Set) Component configuration to include/exclude in the UDS package deployment. Mutually exclusive with `optional_components`. (see [below for nested schema](#nestedblock--component))
 - `namespace` (String) [Alpha] Namespace in which to deploy the UDS package.
 - `optional_components` (Set of String) [Alpha] Set of optional package component names to install. Case-sensitive. Mutually exclusive with `component` blocks — specifying both is a validation error. When omitted or set to an empty list, only required package components are installed.
-- `sensitive_values` (Dynamic, Sensitive) [Alpha] Sensitive Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package, are redacted from Terraform output, and cannot be used with component blocks.
+- `sensitive_values` (Dynamic, Sensitive) [Alpha] Sensitive Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package. Values are redacted from Terraform/OpenTofu output. Cannot be used with component blocks.
 - `sensitive_vars` (Attributes Set) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))
 - `signature_verification` (Attributes) Signature verification configuration. Omit to use defaults (verification enabled, no key). (see [below for nested schema](#nestedatt--signature_verification))
 - `timeouts` (Attributes) (see [below for nested schema](#nestedatt--timeouts))
@@ -327,12 +327,12 @@ In Terraform v1.5.0 and later, the [`import` block](https://developer.hashicorp.
 ```terraform
 # PRE-REQUISITES:
 # 1. Fetch public signing key for dos-games package:
-#    - curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub 
+#    - curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub
 # 2. Deploy podinfo and dos-games (with namespace) packages
-#    - zarf package deploy oci://ghcr.io/zarf-dev/packages/init:v0.74.0 --confirm
-#    - zarf package deploy oci://ghcr.io/zarf-dev/packages/dos-games:1.2.0 --key dosgames.pub --verify -n demo --confirm
+#    - zarf package deploy oci://ghcr.io/zarf-dev/packages/init:v0.82.0 --confirm
+#    - zarf package deploy oci://ghcr.io/zarf-dev/packages/dos-games:1.3.0 --key dosgames.pub --verify -n demo --confirm
 # package to import without namespace override
-# zarf package deploy oci://ghcr.io/defenseunicorns/uds-cli/podinfo:0.0.2 --confirm 
+# zarf package deploy oci://ghcr.io/defenseunicorns/uds-cli/podinfo:0.0.2 --confirm
 
 # import package deployed without a namespace override
 import {

@@ -1,0 +1,14 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+# yaml-language-server: $schema=https://raw.githubusercontent.com/defenseunicorns/maru-runner/refs/heads/main/tasks.schema.json
+tasks:
+  - name: check
+    description: "Run the repository lint checks"
+    actions:
+      - cmd: hk check --all
+
+  - name: fix
+    description: "Fix lint findings where supported"
+    actions:
+      - cmd: hk fix --all

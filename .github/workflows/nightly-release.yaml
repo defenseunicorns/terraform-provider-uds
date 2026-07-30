@@ -32,9 +32,6 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
-      - name: Setup golang
-        uses: ./.github/actions/setup-golang
-
       - name: Update nightly tag
         id: update_tag
         env:

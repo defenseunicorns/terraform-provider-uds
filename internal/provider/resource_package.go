@@ -416,7 +416,7 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				Optional:            true,
 			},
 			"sensitive_values": schema.DynamicAttribute{
-				MarkdownDescription: "[Alpha] Sensitive Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package. Cannot be used with component blocks.",
+				MarkdownDescription: "[Alpha] Sensitive Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package. Values are redacted from Terraform/OpenTofu output. Cannot be used with component blocks.",
 				Optional:            true,
 				Sensitive:           true,
 			},
