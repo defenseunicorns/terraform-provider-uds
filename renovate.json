@@ -34,6 +34,18 @@
       "commitMessageTopic": "support dependencies"
     },
     {
+      "matchManagers": ["mise"],
+      "excludeDepNames": ["go"],
+      "groupName": "support-deps",
+      "commitMessageTopic": "support dependencies"
+    }
+    {
+      "matchManagers": ["mise"],
+      "matchDepNames": ["go"],
+      "groupName": "application-deps",
+      "commitMessageTopic": "application dependencies"
+    },
+    {
       "matchPackageNames": ["zarf-dev/zarf", "github.com/zarf-dev/zarf", "ghcr.io/zarf-dev/**"],
       "groupName": "zarf",
       "commitMessageTopic": "zarf"
