@@ -20,6 +20,18 @@ Deploy the Zarf init package before any other UDS package.
 This example verifies the Zarf init package, then deploys another package with signature verification disabled for brevity.
 
 {{ tffile .ExampleFile }}
+
+### Values and Sensitive Values
+
+The [Zarf values example](https://github.com/defenseunicorns/terraform-provider-uds/tree/main/examples/zarf_values) contains the complete runnable configuration.
+
+{{ tffile "examples/zarf_values/package-values.tf" }}
+
+### Optional Components
+
+Use `optional_components` to select optional components declared by the package. Component names are validated against the package metadata.
+
+{{ tffile "examples/resources/uds_package/resource-optional-components.tf" }}
 {{- end }}
 
 {{ .SchemaMarkdown | trimspace }}
