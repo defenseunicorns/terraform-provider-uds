@@ -61,6 +61,17 @@ tofu plan
 tofu apply
 ```
 
+### Logging
+
+Provider and Zarf output is emitted through OpenTofu's provider log stream rather than written directly to stdout. The following settings control that provider/OpenTofu log stream only:
+
+- Set `TF_LOG=INFO` for lifecycle messages and non-muted Zarf command output.
+- Set `TF_LOG=DEBUG` for detailed Zarf diagnostics.
+- Set `TF_LOG_PROVIDER=INFO` or `TF_LOG_PROVIDER=DEBUG` to filter provider logs.
+- Set `TF_LOG_PATH=/absolute/path` to persist logs.
+
+Failed non-muted Zarf output is included in the normal Terraform diagnostic regardless of these log settings. Successful Zarf command output remains log-only, while muted command output remains suppressed. Raw successful Zarf command output is still subject to the logging system's filtering and persistence settings.
+
 ## Documentation
 
 - [Provider configuration](./docs/index.md)

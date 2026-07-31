@@ -1,0 +1,29 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+kind: ZarfPackageConfig
+metadata:
+  name: zarf-lifecycle
+  version: 0.1.0
+  description: Acceptance test package for Zarf lifecycle behavior
+
+components:
+  - name: zarf-lifecycle
+    required: true
+    manifests:
+      - name: zarf-lifecycle-package-state
+        namespace: default
+        files:
+          - manifests/package-state.yaml
+    actions:
+      onDeploy:
+        before:
+          - cmd: kubectl delete configmap zarf-lifecycle-action-markers --namespace default --ignore-not-found
+        after:
+          - cmd: kubectl create configmap zarf-lifecycle-action-markers --namespace default --from-literal=non-muted-action-marker=non-muted-action-marker --dry-run=client -o yaml | kubectl apply -f - && echo non-muted-action-marker
+            mute: false
+          - cmd: kubectl patch configmap zarf-lifecycle-action-markers --namespace default --type merge --patch '{"data":{"muted-action-marker":"muted-action-marker"}}' && echo muted-action-marker
+            mute: true
+      onRemove:
+        before:
+          - cmd: kubectl delete configmap zarf-lifecycle-action-markers --namespace default --ignore-not-found
