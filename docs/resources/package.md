@@ -149,7 +149,7 @@ resource "uds_package" "init_with_git_server" {
 ### Optional
 
 - `architecture` (String) System architecture of the target cluster. Defaults to the provider default architecture.
-- `component` (Block Set) Component configuration to include/exclude in the UDS package deployment. Mutually exclusive with `optional_components`. (see [below for nested schema](#nestedblock--component))
+- `component` (Block Set) [Deprecated] Legacy component selection and override configuration. Use `optional_components` to select optional components. Mutually exclusive with `optional_components`. (see [below for nested schema](#nestedblock--component))
 - `namespace` (String) [Alpha] Namespace in which to deploy the UDS package.
 - `optional_components` (Set of String) [Alpha] Set of optional package component names to install. Case-sensitive. Mutually exclusive with `component` blocks — specifying both is a validation error. When omitted or set to an empty list, only required package components are installed.
 - `sensitive_values` (Dynamic, Sensitive) [Alpha] Sensitive Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package. Values are redacted from Terraform/OpenTofu output. Cannot be used with component blocks.
@@ -178,7 +178,7 @@ Required:
 
 Optional:
 
-- `override` (Block Set) Helm chart overrides for the component. (see [below for nested schema](#nestedblock--component--override))
+- `override` (Block Set) [Deprecated] Component overrides will no longer be supported in a future version. Use the top-level `values` or `sensitive_values` attributes to supply Helm chart values through Zarf package values. (see [below for nested schema](#nestedblock--component--override))
 
 <a id="nestedblock--component--override"></a>
 ### Nested Schema for `component.override`

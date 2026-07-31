@@ -64,7 +64,12 @@ var (
 	_ resource.ResourceWithConfigValidators = &PackageResource{}
 )
 
-const clusterTimeoutMinutes = 5
+const (
+	clusterTimeoutMinutes = 5
+
+	componentBlockDeprecationMessage         = "The component block is deprecated. Use optional_components to select optional components. The component block will be removed in a future version."
+	componentOverrideBlockDeprecationMessage = "Component overrides are deprecated and will no longer be supported in a future version. Use the top-level values or sensitive_values attributes to supply Helm chart values through Zarf package values."
+)
 
 type packageSignatureVerifier func(context.Context, *zarfLayout.PackageLayout, zarfSigning.VerifyBlobOptions) error
 
@@ -424,7 +429,8 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 		Blocks: map[string]schema.Block{
 			// TODO: remove when component block is removed
 			"component": schema.SetNestedBlock{
-				MarkdownDescription: "Component configuration to include/exclude in the UDS package deployment. Mutually exclusive with `optional_components`.",
+				MarkdownDescription: "[Deprecated] Legacy component selection and override configuration. Use `optional_components` to select optional components. Mutually exclusive with `optional_components`.",
+				DeprecationMessage:  componentBlockDeprecationMessage,
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
@@ -434,7 +440,8 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 					},
 					Blocks: map[string]schema.Block{
 						"override": schema.SetNestedBlock{
-							MarkdownDescription: "Helm chart overrides for the component.",
+							MarkdownDescription: "[Deprecated] Component overrides will no longer be supported in a future version. Use the top-level `values` or `sensitive_values` attributes to supply Helm chart values through Zarf package values.",
+							DeprecationMessage:  componentOverrideBlockDeprecationMessage,
 							NestedObject: schema.NestedBlockObject{
 								Attributes: map[string]schema.Attribute{
 									"chart_name": schema.StringAttribute{
