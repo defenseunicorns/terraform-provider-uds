@@ -6,6 +6,7 @@ go = "1.26.5"
 hk = "1.49.0"
 golangci-lint = "2.12.2"
 opentofu = "1.12.5"
+terraform = "1.15.8"
 k3d = "5.9.0"
 "aqua:defenseunicorns/uds-cli" = "0.34.3"
 

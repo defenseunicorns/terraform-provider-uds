@@ -3,29 +3,22 @@
 page_title: "uds_package Resource - uds"
 subcategory: ""
 description: |-
-  Deploys a UDS Package.
+  Deploys and manages a UDS package.
 ---
 
 # uds_package (Resource)
 
-Deploys a UDS Package.
+Deploys and manages a UDS package.
 
 ## Example Usage
 
+Deploy the Zarf init package before any other UDS package.
+
+### Basic Package Deployment
+
+This example verifies the Zarf init package, then deploys another package with signature verification disabled for brevity.
+
 ```terraform
-terraform {
-  required_providers {
-    uds = {
-      source  = "defenseunicorns/uds"
-      version = "~> 0.4.1" # x-release-please-version
-    }
-  }
-}
-
-provider "uds" {
-  default_architecture = "arm64"
-}
-
 resource "uds_package" "init" {
   source = "oci://ghcr.io/zarf-dev/packages/init:v0.82.0"
 
@@ -35,127 +28,6 @@ resource "uds_package" "init" {
       certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
     }
   }
-
-  # Install optional git-server via alpha optional_components
-  optional_components = ["git-server"]
-}
-
-# This zarf package example produces sensitive variables using zarf action setVariables sensitive: true.
-# The variable used in this example is AUTHSERVICE_REDIS_URI
-
-# zarf package example yaml for reference:
-
-# kind: ZarfPackageConfig
-# metadata:
-#   name: authservice-ha-deps
-#   version: 1.0.0
-#
-# variables:
-#   - name: AUTHSERVICE_REDIS_URI
-#     sensitive: true
-#
-# components:
-#   - name: valkey
-#     required: true
-#     charts:
-#       - name: uds-valkey-config
-#         namespace: valkey
-#         version: 0.1.0
-#         localPath: ../chart
-#       - name: valkey
-#         version: 4.0.2
-#         namespace: valkey
-#         url: oci://ghcr.io/defenseunicorns/bitferno/valkey
-#         valuesFiles:
-#           - ../values/values.yaml
-#     images:
-#       - bitnamilegacy/valkey:8.1.3-debian-12-r3
-#       - bitnamilegacy/redis-exporter:1.76.0-debian-12-r0
-#       - bitnamilegacy/valkey-sentinel:8.1.3-debian-12-r3
-#
-#   - name: core-secrets
-#     required: true
-#     actions:
-#       onDeploy:
-#         before:
-#           - cmd: |
-#               uds zarf tools kubectl get secret valkey-valkey \
-#                 -n valkey \
-#                 -o jsonpath='{.data.valkey-password}' \
-#                 | base64 -d
-#             mute: true
-#             setVariables:
-#               - name: VALKEY_PASSWORD
-#                 sensitive: true
-#
-#           - cmd: |
-#               echo "redis://:${ZARF_VAR_VALKEY_PASSWORD}@valkey-valkey-primary.valkey.svc.cluster.local:6379"
-#             mute: true
-#             setVariables:
-#               - name: AUTHSERVICE_REDIS_URI
-#                 sensitive: true
-
-# resource for the built authservice-ha-deps zarf package example above
-resource "uds_package" "authservice_ha_deps" {
-  depends_on = [uds_package.init]
-  source     = "zarf-package-authservice-ha-deps-arm64-1.0.0.tar.zst"
-}
-
-# This package example consumes the variable contained in the authservice-ha-deps package.
-# The variable is referenced using the syntax: <package_name>.<set_variables>.<variable_name>,
-# which in this example is: uds_package.authservice_ha_deps.set_variables.authservice_redis_uri
-resource "uds_package" "core_identity_authorization" {
-  depends_on = [uds_package.authservice_ha_deps]
-  source     = "oci://ghcr.io/defenseunicorns/packages/uds/core-identity-authorization:${local.uds_version}"
-
-  component {
-    name = "authservice"
-
-    override {
-      chart_name = "authservice"
-      values = [
-        { path = "redis.uri", value = uds_package.authservice_ha_deps.set_variables.authservice_redis_uri }
-      ]
-    }
-  }
-}
-
-resource "uds_package" "podinfo" {
-  depends_on = [uds_package.init]
-  source     = "oci://ghcr.io/defenseunicorns/uds-cli/podinfo:0.0.2"
-  vars = [
-    {
-      name  = "this_is_a_variable"
-      value = "this is the value"
-    },
-    {
-      name  = "this_is_another_variable"
-      value = "this is another value"
-    }
-  ]
-  sensitive_vars = [
-    {
-      name  = "this_is_a_sensitive_variable"
-      value = "this is the value"
-    },
-    {
-      name  = "this_is_another_sensitive_variable"
-      value = "this is another value"
-    }
-  ]
-
-  component {
-    name = "podinfo"
-
-    override {
-      chart_name = "podinfo"
-      values = [
-        { path = "replicaCount", value = "3" },
-        # Use single quotes or yamlencode function in single-line strings to escape special HCL characters ("#").
-        { path = "ui.color", value = "'#663399'" } # Could also use: value = yamlencode("#663399")
-      ]
-    }
-  }
 }
 
 resource "uds_package" "dos_games" {
@@ -163,14 +35,18 @@ resource "uds_package" "dos_games" {
   source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.3.0"
   namespace  = "demo"
 
-  # This package is signed with a key, but signature verification is disabled here with verify = false.
-  # To verify it, set verify = true or remove that attribute, then provide the public key directly
-  # or fetch it locally and reference it with the file function as shown below:
-  #   curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub
+  # Signature verification is disabled for brevity.
   signature_verification = {
     verify = false
-    #public_key = file("dosgames.pub")
   }
+
+  # To verify this package instead, download its public key:
+  # curl --fail --location --output dosgames.pub \
+  #   https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub
+  # Then replace the signature_verification block above with:
+  # signature_verification = {
+  #   public_key = file("dosgames.pub")
+  # }
 }
 ```
 
@@ -322,19 +198,20 @@ Read-Only:
 
 Import is supported using the following syntax:
 
+> Import records the package ID in state. The first apply after import redeploys the package from the declared resource configuration. Zarf does not currently expose enough of the deployed configuration, including applied values, for the provider to determine whether that configuration has drifted.
+
 In Terraform v1.5.0 and later, the [`import` block](https://developer.hashicorp.com/terraform/language/import) can be used with the `id` attribute, for example:
 
 ```terraform
-# PRE-REQUISITES:
-# 1. Fetch public signing key for dos-games package:
-#    - curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub
-# 2. Deploy podinfo and dos-games (with namespace) packages
-#    - zarf package deploy oci://ghcr.io/zarf-dev/packages/init:v0.82.0 --confirm
-#    - zarf package deploy oci://ghcr.io/zarf-dev/packages/dos-games:1.3.0 --key dosgames.pub --verify -n demo --confirm
-# package to import without namespace override
-# zarf package deploy oci://ghcr.io/defenseunicorns/uds-cli/podinfo:0.0.2 --confirm
+# Prerequisites:
+# 1. Fetch the public signing key for the dos-games package:
+#    curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub
+# 2. Deploy the init and dos-games packages outside Terraform or OpenTofu using
+#    the sources configured below. Deploy dos-games in the demo namespace and
+#    verify it with dosgames.pub.
 
-# import package deployed without a namespace override
+# Without a namespace override, the import ID is the package name:
+# <package-name>
 import {
   to = uds_package.init
   id = "init"
@@ -344,7 +221,8 @@ resource "uds_package" "init" {
   source = "oci://ghcr.io/zarf-dev/packages/init:v0.82.0"
 }
 
-# import package deployed with a namespace override
+# With a namespace override, the import ID is the namespace and package name:
+# <namespace>:<package-name>
 import {
   to = uds_package.demo_dos_games
   id = "demo:dos-games"
@@ -354,16 +232,21 @@ resource "uds_package" "demo_dos_games" {
   depends_on = [uds_package.init]
   source     = "oci://ghcr.io/zarf-dev/packages/dos-games:1.3.0"
   namespace  = "demo"
-  public_key = file("dosgames.pub") # See PRE-REQUISITES above
+
+  signature_verification = {
+    public_key = file("dosgames.pub")
+  }
 }
 ```
 
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
-# Import a package deployed without a namespace override
+# Without a namespace override, use the package name as the import ID:
+# <package-name>
 tofu import uds_package.init init
 
-# Import a package deployed with a namespace override
+# With a namespace override, use the namespace and package name as the import ID:
+# <namespace>:<package-name>
 tofu import uds_package.demo_dos_games demo:dos-games
 ```
