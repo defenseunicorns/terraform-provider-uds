@@ -10,12 +10,19 @@ on:
   push:
     tags:
       - "v*"
+      - "!v*-nightly*"
   workflow_call:
     inputs:
       tag_name:
         required: false
         type: string
         description: "The tag name to use for the release"
+      skip_github_release:
+        required: false
+        type: boolean
+        default: false
+        description: >-
+          Build release artifacts without creating a GitHub release
     secrets:
       UDS_REGISTRY_USER:
         required: true
@@ -98,7 +105,9 @@ jobs:
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
-          args: release --clean --timeout 60m
+          args: >-
+            release --clean --timeout 60m
+            ${{ inputs.skip_github_release && '--skip=publish' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOTMPDIR: ${{ runner.temp }}
