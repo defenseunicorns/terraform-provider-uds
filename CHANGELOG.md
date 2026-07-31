@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.5.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.4.1...v0.5.0) (2026-07-31)
+
+
+### Features
+
+* integrate Zarf output with Terraform logs ([#293](https://github.com/defenseunicorns/terraform-provider-uds/issues/293)) ([1e36c78](https://github.com/defenseunicorns/terraform-provider-uds/commit/1e36c78ba675471c2d79155cc714a5b7fd1951a9))
+
+
+### Bug Fixes
+
+* exclude sboms from release checksums ([#301](https://github.com/defenseunicorns/terraform-provider-uds/issues/301)) ([94875f9](https://github.com/defenseunicorns/terraform-provider-uds/commit/94875f9bdd9e8b3b80c44bc0dae32c874f43fcf1))
+
+
+### Miscellaneous
+
+* add security.md ([#298](https://github.com/defenseunicorns/terraform-provider-uds/issues/298)) ([fe82e8f](https://github.com/defenseunicorns/terraform-provider-uds/commit/fe82e8ff0b0d43c004c9e77cabf43596065707f8))
+* clean up tf docs and add generate docs workflow/lint ([#303](https://github.com/defenseunicorns/terraform-provider-uds/issues/303)) ([3b6d648](https://github.com/defenseunicorns/terraform-provider-uds/commit/3b6d648276199e44459224a05cf80bc6d5ce41e6))
+* **deps:** update support dependencies to v1.50.0 ([#302](https://github.com/defenseunicorns/terraform-provider-uds/issues/302)) ([e117bc8](https://github.com/defenseunicorns/terraform-provider-uds/commit/e117bc8eab731dea96905f55e010c4688b6c0a54))
+* **deps:** update support-deps ([#296](https://github.com/defenseunicorns/terraform-provider-uds/issues/296)) ([dceca44](https://github.com/defenseunicorns/terraform-provider-uds/commit/dceca4455272b0c086b10e6edfcbdd548f5974d1))
+* improve developer ergonomics and tasks ([#294](https://github.com/defenseunicorns/terraform-provider-uds/issues/294)) ([f865465](https://github.com/defenseunicorns/terraform-provider-uds/commit/f865465ec353e47b502060f9f14974c79fbdf11c))
+* update nightly release ([#304](https://github.com/defenseunicorns/terraform-provider-uds/issues/304)) ([2742f84](https://github.com/defenseunicorns/terraform-provider-uds/commit/2742f848e8215af867639ce71286e4220959b790))
+* update release binary arch/os to recommended ([#299](https://github.com/defenseunicorns/terraform-provider-uds/issues/299)) ([bfe430d](https://github.com/defenseunicorns/terraform-provider-uds/commit/bfe430d24fa04dd46b2c19d9bbe79153a87222ea))
+* update renovate to group mise deps ([#300](https://github.com/defenseunicorns/terraform-provider-uds/issues/300)) ([60e0cc1](https://github.com/defenseunicorns/terraform-provider-uds/commit/60e0cc1e8ebdcdcaa81682ba0e1946cfd7aed7bb))
+
 ## [0.4.1](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.4.0...v0.4.1) (2026-07-28)
 
 
