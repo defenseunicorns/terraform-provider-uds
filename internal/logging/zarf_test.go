@@ -6,10 +6,7 @@ package logging
 import (
 	"bytes"
 	"context"
-	"errors"
-	"fmt"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
@@ -20,46 +17,6 @@ import (
 	"github.com/zarf-dev/zarf/src/pkg/logger"
 	"github.com/zarf-dev/zarf/src/pkg/utils/exec"
 )
-
-// Capture policy and buffer bounds.
-
-func TestOutputBufferEnforcesRecordAndByteLimits(t *testing.T) {
-	tests := []struct {
-		name       string
-		maxRecords int
-		maxBytes   int
-		messages   []string
-		accepted   []bool
-		wantBytes  int
-	}{
-		{
-			name:       "record limit",
-			maxRecords: 2,
-			maxBytes:   100,
-			messages:   []string{"one", "two", "three"},
-			accepted:   []bool{true, true, false},
-			wantBytes:  len("one") + len("two"),
-		},
-		{
-			name:       "byte limit",
-			maxRecords: 100,
-			maxBytes:   5,
-			messages:   []string{"one", "three"},
-			accepted:   []bool{true, false},
-			wantBytes:  len("one"),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			buffer := outputBuffer{maxRecords: tt.maxRecords, maxBytes: tt.maxBytes}
-			for i, message := range tt.messages {
-				require.Equal(t, tt.accepted[i], buffer.tryAppend(message))
-			}
-			require.Equal(t, tt.wantBytes, buffer.bytes)
-		})
-	}
-}
 
 func TestIsZarfOutputLevelForCapture(t *testing.T) {
 	tests := []struct {
@@ -319,82 +276,6 @@ func TestZarfCommandOutputOnMutedFailureIsAbsent(t *testing.T) {
 	entries, err := tflogtest.MultilineJSONDecode(&output)
 	require.NoError(t, err)
 	require.Empty(t, entries)
-}
-
-// Diagnostic wrapping.
-
-func TestWrapZarfErrorIncludesUnstructuredOutput(t *testing.T) {
-	ctx := WithZarfLogger(tflogtest.RootLogger(context.Background(), &bytes.Buffer{}))
-	log := logger.From(ctx)
-	log.Info("namespace already exists")
-	log.Error("action failed")
-	log.Info("structured sdk detail", slog.String("detail", "not Zarf output"))
-
-	wrapped := WrapZarfError(ctx, errors.New("original failure"))
-
-	require.ErrorContains(t, wrapped, "original failure")
-	require.ErrorContains(t, wrapped, "captured Zarf output:")
-	require.ErrorContains(t, wrapped, "namespace already exists")
-	require.NotContains(t, wrapped.Error(), "structured sdk detail")
-	require.NotContains(t, wrapped.Error(), "additional Zarf output omitted")
-}
-
-func TestWrapZarfErrorReturnsOriginalWithoutCapturedOutput(t *testing.T) {
-	original := errors.New("original failure")
-	emptyContext := WithZarfLogger(tflogtest.RootLogger(context.Background(), &bytes.Buffer{}))
-	require.ErrorIs(t, WrapZarfError(emptyContext, original), original)
-	require.Equal(t, original, WrapZarfError(emptyContext, original))
-}
-
-func TestZarfCaptureOutputOmitsRecordsAfterRecordLimit(t *testing.T) {
-	ctx := WithZarfLogger(tflogtest.RootLogger(context.Background(), &bytes.Buffer{}))
-	for i := 0; i < maxZarfOutputRecords+2; i++ {
-		logger.From(ctx).Info(fmt.Sprintf("record-%02d", i))
-	}
-
-	wrapped := WrapZarfError(ctx, errors.New("original failure"))
-	for i := 0; i < maxZarfOutputRecords; i++ {
-		require.ErrorContains(t, wrapped, fmt.Sprintf("record-%02d", i))
-	}
-	require.Contains(t, wrapped.Error(), "[additional Zarf output omitted: 2 records, 18 bytes]")
-	require.NotContains(t, wrapped.Error(), fmt.Sprintf("record-%02d", maxZarfOutputRecords))
-}
-
-func TestZarfCaptureOutputOmitsRecordsAfterByteLimit(t *testing.T) {
-	ctx := WithZarfLogger(tflogtest.RootLogger(context.Background(), &bytes.Buffer{}))
-	first := strings.Repeat("a", maxZarfOutputBytes-4)
-	logger.From(ctx).Info(first)
-	logger.From(ctx).Info("second record")
-
-	wrapped := WrapZarfError(ctx, errors.New("original failure"))
-	require.LessOrEqual(t, len(strings.SplitN(wrapped.Error(), "captured Zarf output:\n", 2)[1]), maxZarfOutputBytes+256)
-	require.ErrorContains(t, wrapped, first)
-	require.NotContains(t, wrapped.Error(), "second record")
-	require.Contains(t, wrapped.Error(), "[additional Zarf output omitted: 1 records, 13 bytes]")
-}
-
-func TestZarfCaptureOutputOmitsErrorAfterRecordLimit(t *testing.T) {
-	ctx := WithZarfLogger(tflogtest.RootLogger(context.Background(), &bytes.Buffer{}))
-	for i := 0; i < maxZarfOutputRecords; i++ {
-		logger.From(ctx).Info(fmt.Sprintf("info-%02d", i))
-	}
-	logger.From(ctx).Error("overflow error")
-
-	wrapped := WrapZarfError(ctx, errors.New("original failure"))
-
-	require.NotContains(t, wrapped.Error(), "overflow error")
-	require.Contains(t, wrapped.Error(), "[additional Zarf output omitted: 1 records, 14 bytes]")
-}
-
-func TestZarfCaptureOutputOmitsOversizedRecordButAcceptsLaterOutput(t *testing.T) {
-	ctx := WithZarfLogger(tflogtest.RootLogger(context.Background(), &bytes.Buffer{}))
-	logger.From(ctx).Info(strings.Repeat("a", maxZarfOutputBytes+1))
-	logger.From(ctx).Info("small record")
-
-	wrapped := WrapZarfError(ctx, errors.New("original failure"))
-
-	require.Contains(t, wrapped.Error(), "[additional Zarf output omitted: 1 records, 12289 bytes]")
-	require.Contains(t, wrapped.Error(), "small record")
 }
 
 func assertLogMessage(t *testing.T, entries []map[string]interface{}, message string) {

@@ -8,49 +8,12 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/zarf-dev/zarf/src/pkg/logger"
 )
 
 const zarfSubsystem = "zarf"
-
-const (
-	maxZarfOutputRecords = 48
-	maxZarfOutputBytes   = 12 * 1024
-)
-
-type zarfOutputCollectorKey struct{}
-
-type outputBuffer struct {
-	lines      []string
-	bytes      int
-	maxRecords int
-	maxBytes   int
-}
-
-// tryAppend adds message when both the record and byte limits allow it, leaving the buffer unchanged otherwise.
-func (b *outputBuffer) tryAppend(message string) bool {
-	messageBytes := len(message)
-	if len(b.lines) >= b.maxRecords || b.bytes+messageBytes > b.maxBytes {
-		return false
-	}
-	b.lines = append(b.lines, message)
-	b.bytes += messageBytes
-	return true
-}
-
-// zarfOutputCollector is shared by concurrent slog Handler calls for
-// one operation, so mu protects captured output and omission state.
-type zarfOutputCollector struct {
-	mu sync.Mutex
-
-	output outputBuffer
-
-	omittedRecords int
-	omittedBytes   int
-}
 
 type zarfAttr struct {
 	groups []string
@@ -87,51 +50,14 @@ func WrapZarfError(ctx context.Context, err error) error {
 		return err
 	}
 
-	var output strings.Builder
-	output.WriteString("captured Zarf output:\n")
-	output.WriteString(strings.Join(lines, "\n"))
-	if omittedRecords > 0 {
-		if len(lines) > 0 {
-			output.WriteByte('\n')
-		}
-		fmt.Fprintf(&output, "[additional Zarf output omitted: %d records, %d bytes]", omittedRecords, omittedBytes)
-	}
-	return fmt.Errorf("%w\n\n%s", err, output.String())
+	output := "captured Zarf output:\n" + formatZarfOutput(lines, omittedRecords, omittedBytes)
+	return fmt.Errorf("%w\n\n%s", err, output)
 }
 
 // NewZarfHandler returns a slog handler backed by the Zarf Terraform subsystem.
 func NewZarfHandler(ctx context.Context) slog.Handler {
 	ctx = tflog.NewSubsystem(ctx, zarfSubsystem, tflog.WithRootFields())
 	return &zarfHandler{ctx: ctx}
-}
-
-// Bounded Zarf output collection.
-
-// Creates a bounded buffer for captured Zarf output.
-func newZarfOutputCollector() *zarfOutputCollector {
-	return &zarfOutputCollector{
-		output: outputBuffer{
-			maxRecords: maxZarfOutputRecords,
-			maxBytes:   maxZarfOutputBytes,
-		},
-	}
-}
-
-func (c *zarfOutputCollector) add(message string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.output.tryAppend(message) {
-		return
-	}
-
-	c.omit(message)
-}
-
-// Accounts for output that cannot fit within the record or byte limit.
-func (c *zarfOutputCollector) omit(message string) {
-	c.omittedRecords++
-	c.omittedBytes += len(message)
 }
 
 // Zarf slog handler implementation.
