@@ -22,38 +22,55 @@ func TestOutputBufferEnforcesRecordAndByteLimits(t *testing.T) {
 		name       string
 		maxRecords int
 		maxBytes   int
-		messages   []string
-		accepted   []bool
+		steps      []bufferStep
+		wantLines  []string
 		wantBytes  int
 	}{
 		{
 			name:       "record limit",
 			maxRecords: 2,
 			maxBytes:   100,
-			messages:   []string{"one", "two", "three"},
-			accepted:   []bool{true, true, true},
-			wantBytes:  len("one") + len("three") + 1,
+			steps: []bufferStep{
+				{message: "one", accepted: true},
+				{message: "two", accepted: true},
+				{message: "three", accepted: true, dropped: 1, droppedBytes: len("two")},
+			},
+			wantLines: []string{"one", "three"},
+			wantBytes: len("one") + len("three") + 1,
 		},
 		{
 			name:       "byte limit",
 			maxRecords: 100,
 			maxBytes:   5,
-			messages:   []string{"one", "three"},
-			accepted:   []bool{true, false},
-			wantBytes:  len("one"),
+			steps: []bufferStep{
+				{message: "one", accepted: true},
+				{message: "three", accepted: false},
+			},
+			wantLines: []string{"one"},
+			wantBytes: len("one"),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			buffer := outputBuffer{maxRecords: tt.maxRecords, maxBytes: tt.maxBytes}
-			for i, message := range tt.messages {
-				accepted, _, _ := buffer.append(message)
-				require.Equal(t, tt.accepted[i], accepted)
+			for _, step := range tt.steps {
+				accepted, dropped, droppedBytes := buffer.append(step.message)
+				require.Equal(t, step.accepted, accepted, "message %q", step.message)
+				require.Equal(t, step.dropped, dropped, "message %q", step.message)
+				require.Equal(t, step.droppedBytes, droppedBytes, "message %q", step.message)
 			}
+			require.Equal(t, tt.wantLines, buffer.lines)
 			require.Equal(t, tt.wantBytes, buffer.bytes)
 		})
 	}
+}
+
+type bufferStep struct {
+	message      string
+	accepted     bool
+	dropped      int
+	droppedBytes int
 }
 
 func TestWrapZarfErrorIncludesUnstructuredOutput(t *testing.T) {
@@ -68,6 +85,7 @@ func TestWrapZarfErrorIncludesUnstructuredOutput(t *testing.T) {
 	require.ErrorContains(t, wrapped, "original failure")
 	require.ErrorContains(t, wrapped, "captured Zarf output:")
 	require.ErrorContains(t, wrapped, "namespace already exists")
+	require.ErrorContains(t, wrapped, "action failed")
 	require.NotContains(t, wrapped.Error(), "structured sdk detail")
 	require.NotContains(t, wrapped.Error(), "additional Zarf output omitted")
 }
@@ -112,6 +130,7 @@ func TestZarfCaptureOutputOmitsRecordsAfterByteLimit(t *testing.T) {
 	require.Contains(t, captured, first[:100])
 	require.NotContains(t, wrapped.Error(), "second record")
 	require.Contains(t, wrapped.Error(), "[additional Zarf output omitted: 1 records, 13 bytes]")
+	require.True(t, strings.HasSuffix(captured, "[additional Zarf output omitted: 1 records, 13 bytes]"))
 }
 
 func TestZarfCaptureOutputKeepsErrorAfterRecordLimit(t *testing.T) {
@@ -126,6 +145,12 @@ func TestZarfCaptureOutputKeepsErrorAfterRecordLimit(t *testing.T) {
 	require.Contains(t, wrapped.Error(), "overflow error")
 	require.NotContains(t, wrapped.Error(), "info-24")
 	require.Contains(t, wrapped.Error(), "[additional Zarf output omitted: 1 records, 7 bytes]")
+	for i := 0; i < maxZarfOutputRecords/2; i++ {
+		require.Contains(t, wrapped.Error(), fmt.Sprintf("info-%02d", i))
+	}
+	for i := maxZarfOutputRecords/2 + 1; i < maxZarfOutputRecords; i++ {
+		require.Contains(t, wrapped.Error(), fmt.Sprintf("info-%02d", i))
+	}
 }
 
 func TestZarfCaptureOutputOmitsOversizedRecordButAcceptsLaterOutput(t *testing.T) {

@@ -2691,6 +2691,12 @@ func TestPackageResource_Upsert_LogEvents(t *testing.T) {
 
 	entries, err := tflogtest.MultilineJSONDecode(&output)
 	require.NoError(t, err)
+	assertLogSequence(t, entries, []string{
+		"package started",
+		"component selected: required",
+		"component selected: optional",
+		"package completed",
+	})
 	for _, entry := range entries {
 		for key := range entry {
 			if strings.HasPrefix(key, "uds.") {
@@ -2805,6 +2811,7 @@ func TestPackageResource_CreateFailure_LogEventAndDiagnostic(t *testing.T) {
 	assertLogEntry(t, entries, "package failed", map[string]interface{}{
 		"uds.operation": "create", "uds.package": "test-pkg", "uds.namespace": "demo",
 	})
+	assertLogEntryFieldContains(t, entries, "package failed", "error", "load failed")
 	var failures int
 	for _, entry := range entries {
 		if entry["@message"] == "package failed" {
@@ -2846,6 +2853,8 @@ Error from server (AlreadyExists): namespaces "already-exists" already exists`))
 	entries, err := tflogtest.MultilineJSONDecode(&output)
 	require.NoError(t, err)
 	assertLogEntry(t, entries, "package failed", nil)
+	assertLogEntryFieldContains(t, entries, "package failed", "error", "captured Zarf output:")
+	assertLogEntryFieldContains(t, entries, "package failed", "error", "AlreadyExists")
 	assertNoLogEntry(t, entries, "package completed")
 	var failures int
 	for _, entry := range entries {
@@ -2883,7 +2892,28 @@ func TestPackageResource_CreateStateFailure_LogsFailureWithoutCompletion(t *test
 	entries, err := tflogtest.MultilineJSONDecode(&output)
 	require.NoError(t, err)
 	assertLogEntry(t, entries, "package failed", nil)
+	assertLogEntryFieldNotEmpty(t, entries, "package failed", "error")
 	assertNoLogEntry(t, entries, "package completed")
+}
+
+func TestPackageResource_UpdateStateOnlySuccess_LogsCompletion(t *testing.T) {
+	r := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+	stateModel := NewTestPackageResourceModel(WithDeployedState(), WithTimeout("30m"))
+	planModel := stateModel
+	WithTimeout("45m")(&planModel)
+	plan := buildTestPlan(t, r, planModel)
+	state := buildTestState(t, r, stateModel)
+
+	var output bytes.Buffer
+	ctx := tflogtest.RootLogger(context.Background(), &output)
+	resp := resource.UpdateResponse{State: state}
+	r.Update(ctx, resource.UpdateRequest{Plan: plan, State: state}, &resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "%v", resp.Diagnostics)
+	entries, err := tflogtest.MultilineJSONDecode(&output)
+	require.NoError(t, err)
+	assertLogEntry(t, entries, "package completed", nil)
+	assertNoLogEntry(t, entries, "package failed")
 }
 
 func TestPackageResource_UpdateStateFailure_LogsFailureWithoutCompletion(t *testing.T) {
@@ -2909,6 +2939,7 @@ func TestPackageResource_UpdateStateFailure_LogsFailureWithoutCompletion(t *test
 	entries, err := tflogtest.MultilineJSONDecode(&output)
 	require.NoError(t, err)
 	assertLogEntry(t, entries, "package failed", nil)
+	assertLogEntryFieldNotEmpty(t, entries, "package failed", "error")
 	assertNoLogEntry(t, entries, "package completed")
 }
 
@@ -2932,6 +2963,42 @@ func assertLogEntry(t *testing.T, entries []map[string]interface{}, message stri
 			assert.Equal(t, value, entry[key], key)
 		}
 		return
+	}
+	t.Fatalf("log entry %q not found in %#v", message, entries)
+}
+
+func assertLogSequence(t *testing.T, entries []map[string]interface{}, expected []string) {
+	t.Helper()
+	actual := make([]string, 0)
+	for _, entry := range entries {
+		switch entry["@message"] {
+		case "package started", "package completed":
+			actual = append(actual, entry["@message"].(string))
+		case "component selected":
+			actual = append(actual, fmt.Sprintf("component selected: %s", entry["uds.component"]))
+		}
+	}
+	assert.Equal(t, expected, actual, "lifecycle event sequence")
+}
+
+func assertLogEntryFieldContains(t *testing.T, entries []map[string]interface{}, message, field, expected string) {
+	t.Helper()
+	for _, entry := range entries {
+		if entry["@message"] == message {
+			assert.Contains(t, entry[field], expected, "field %q in %q: got %#v", field, message, entry[field])
+			return
+		}
+	}
+	t.Fatalf("log entry %q not found in %#v", message, entries)
+}
+
+func assertLogEntryFieldNotEmpty(t *testing.T, entries []map[string]interface{}, message, field string) {
+	t.Helper()
+	for _, entry := range entries {
+		if entry["@message"] == message {
+			assert.NotEmpty(t, entry[field], "field %q in %q should not be empty: got %#v", field, message, entry[field])
+			return
+		}
 	}
 	t.Fatalf("log entry %q not found in %#v", message, entries)
 }
@@ -7542,10 +7609,16 @@ func TestDelete_LoadsNamespacedPackageFromClusterAndDoesNotSetRemoteOptions(t *t
 	model.ID = types.StringValue("package-namespace:test-pkg")
 	state := buildTestState(t, r, model)
 
+	var output bytes.Buffer
+	ctx := tflogtest.RootLogger(context.Background(), &output)
 	var resp resource.DeleteResponse
-	r.Delete(context.Background(), resource.DeleteRequest{State: state}, &resp)
+	r.Delete(ctx, resource.DeleteRequest{State: state}, &resp)
 
 	require.False(t, resp.Diagnostics.HasError(), "expected no error: %v", resp.Diagnostics)
+	entries, err := tflogtest.MultilineJSONDecode(&output)
+	require.NoError(t, err)
+	assertLogEntry(t, entries, "package completed", nil)
+	assertNoLogEntry(t, entries, "package failed")
 	mockPackager.AssertExpectations(t)
 }
 
@@ -7601,12 +7674,19 @@ func TestDelete_ExhaustedBudgetSkipsPackageRemoval(t *testing.T) {
 	model := NewTestPackageResourceModel(WithTimeout("10ms"), WithDeployedState())
 	state := buildTestState(t, r, model)
 
+	var output bytes.Buffer
+	ctx := tflogtest.RootLogger(context.Background(), &output)
 	var resp resource.DeleteResponse
-	r.Delete(context.Background(), resource.DeleteRequest{State: state}, &resp)
+	r.Delete(ctx, resource.DeleteRequest{State: state}, &resp)
 
 	require.True(t, resp.Diagnostics.HasError())
 	assert.Equal(t, "Package removal could not start", resp.Diagnostics[0].Summary())
 	mockPackager.AssertNotCalled(t, "Remove")
+	entries, err := tflogtest.MultilineJSONDecode(&output)
+	require.NoError(t, err)
+	assertLogEntry(t, entries, "package failed", nil)
+	assertLogEntryFieldNotEmpty(t, entries, "package failed", "error")
+	assertNoLogEntry(t, entries, "package completed")
 }
 
 // TestRead_DirectDeadlinePropagatedToCluster verifies that Read passes its full readTimeout

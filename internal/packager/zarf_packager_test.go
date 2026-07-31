@@ -17,21 +17,28 @@ import (
 	"github.com/zarf-dev/zarf/src/pkg/logger"
 	zPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
+	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
 	"helm.sh/helm/v4/pkg/kube"
 )
 
-func TestZarfPackagerDeployUsesLoggerContext(t *testing.T) {
+func TestZarfPackagerDeployDelegatesWithLoggerContextAndReturnsResult(t *testing.T) {
+	pkgLayout := &layout.PackageLayout{}
+	options := zPackager.DeployOptions{}
+	want := zPackager.DeployResult{DeployedComponents: []zarfState.DeployedComponent{{Name: "sentinel"}}}
 	called := false
 	p := newTestZarfPackager(testZarfPackagerOptions{
-		deployPackage: func(ctx context.Context, _ *layout.PackageLayout, _ zPackager.DeployOptions) (zPackager.DeployResult, error) {
+		deployPackage: func(ctx context.Context, gotLayout *layout.PackageLayout, gotOptions zPackager.DeployOptions) (zPackager.DeployResult, error) {
 			called = true
 			require.True(t, logger.From(ctx).Enabled(ctx, slog.LevelInfo))
-			return zPackager.DeployResult{}, nil
+			require.Same(t, pkgLayout, gotLayout)
+			require.Equal(t, options, gotOptions)
+			return want, nil
 		},
 	})
 
-	_, err := p.Deploy(context.Background(), nil, zPackager.DeployOptions{})
+	result, err := p.Deploy(context.Background(), pkgLayout, options)
 	require.NoError(t, err)
+	require.Equal(t, want, result)
 	require.True(t, called)
 }
 
@@ -51,17 +58,21 @@ func TestZarfPackagerDeployWrapsCapturedOutputOnError(t *testing.T) {
 	require.ErrorContains(t, err, "deploy Zarf command output")
 }
 
-func TestZarfPackagerRemoveUsesLoggerContext(t *testing.T) {
+func TestZarfPackagerRemoveDelegatesArgumentsWithLoggerContext(t *testing.T) {
+	pkg := v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{Name: "sentinel"}}
+	options := zPackager.RemoveOptions{}
 	called := false
 	p := newTestZarfPackager(testZarfPackagerOptions{
-		removePackage: func(ctx context.Context, _ v1alpha1.ZarfPackage, _ zPackager.RemoveOptions) error {
+		removePackage: func(ctx context.Context, gotPackage v1alpha1.ZarfPackage, gotOptions zPackager.RemoveOptions) error {
 			called = true
 			require.True(t, logger.From(ctx).Enabled(ctx, slog.LevelInfo))
+			require.Equal(t, pkg, gotPackage)
+			require.Equal(t, options, gotOptions)
 			return nil
 		},
 	})
 
-	err := p.Remove(context.Background(), v1alpha1.ZarfPackage{}, zPackager.RemoveOptions{})
+	err := p.Remove(context.Background(), pkg, options)
 	require.NoError(t, err)
 	require.True(t, called)
 }
@@ -82,18 +93,24 @@ func TestZarfPackagerRemoveWrapsCapturedOutputOnError(t *testing.T) {
 	require.ErrorContains(t, err, "remove Zarf command output")
 }
 
-func TestZarfPackagerLoadPackageUsesLoggerContext(t *testing.T) {
+func TestZarfPackagerLoadPackageDelegatesWithLoggerContextAndReturnsLayout(t *testing.T) {
+	const source = "sentinel-source"
+	options := zPackager.LoadOptions{}
+	want := &layout.PackageLayout{}
 	called := false
 	p := newTestZarfPackager(testZarfPackagerOptions{
-		loadPackage: func(ctx context.Context, _ string, _ zPackager.LoadOptions) (*layout.PackageLayout, error) {
+		loadPackage: func(ctx context.Context, gotSource string, gotOptions zPackager.LoadOptions) (*layout.PackageLayout, error) {
 			called = true
 			require.True(t, logger.From(ctx).Enabled(ctx, slog.LevelInfo))
-			return nil, nil
+			require.Equal(t, source, gotSource)
+			require.Equal(t, options, gotOptions)
+			return want, nil
 		},
 	})
 
-	_, err := p.LoadPackage(context.Background(), "source", zPackager.LoadOptions{})
+	result, err := p.LoadPackage(context.Background(), source, options)
 	require.NoError(t, err)
+	require.Same(t, want, result)
 	require.True(t, called)
 }
 
@@ -113,19 +130,37 @@ func TestZarfPackagerLoadPackageWrapsCapturedOutputOnError(t *testing.T) {
 	require.ErrorContains(t, err, "load Zarf command output")
 }
 
-func TestZarfPackagerGetPackageUsesLoggerContext(t *testing.T) {
+func TestZarfPackagerGetPackageDelegatesWithLoggerContextAndReturnsPackage(t *testing.T) {
+	const source = "sentinel-source"
+	const namespace = "sentinel-namespace"
+	options := zPackager.LoadOptions{}
+	clusterValue := (*cluster.Cluster)(nil)
+	want := v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{Name: "sentinel"}}
 	called := false
 	p := newTestZarfPackager(testZarfPackagerOptions{
-		getPackage: func(ctx context.Context, _ *cluster.Cluster, _ string, _ string, _ zPackager.LoadOptions) (v1alpha1.ZarfPackage, error) {
+		getPackage: func(ctx context.Context, gotCluster *cluster.Cluster, gotSource string, gotNamespace string, gotOptions zPackager.LoadOptions) (v1alpha1.ZarfPackage, error) {
 			called = true
 			require.True(t, logger.From(ctx).Enabled(ctx, slog.LevelInfo))
-			return v1alpha1.ZarfPackage{}, nil
+			require.Equal(t, clusterValue, gotCluster)
+			require.Equal(t, source, gotSource)
+			require.Equal(t, namespace, gotNamespace)
+			require.Equal(t, options, gotOptions)
+			return want, nil
 		},
 	})
 
-	_, err := p.GetPackageFromSourceOrCluster(context.Background(), nil, "source", "", zPackager.LoadOptions{})
+	result, err := p.GetPackageFromSourceOrCluster(context.Background(), clusterValue, source, namespace, options)
 	require.NoError(t, err)
+	require.Equal(t, want, result)
 	require.True(t, called)
+}
+
+func TestNewPackagerInitializesDelegates(t *testing.T) {
+	p := NewPackager().(*zarfPackager)
+	require.NotNil(t, p.loadPackage)
+	require.NotNil(t, p.deployPackage)
+	require.NotNil(t, p.getPackage)
+	require.NotNil(t, p.removePackage)
 }
 
 func TestZarfPackagerGetPackageWrapsCapturedOutputOnError(t *testing.T) {
