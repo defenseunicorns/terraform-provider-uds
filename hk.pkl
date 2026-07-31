@@ -50,7 +50,7 @@ local linters = new Mapping<String, Step> {
                 exit 1
             fi
             """
-        glob = List("**/*.go", "go.mod", "go.sum", "templates/**/*.tmpl", "docs/**/*.md", "examples/**/*.tf")
+        glob = List("**/*.go", "go.mod", "go.sum", "templates/**/*.tmpl", "docs/**/*.md", "examples/**/*.tf", "examples/**/*.sh")
     }
 }
 

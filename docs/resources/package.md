@@ -328,7 +328,7 @@ resource "uds_package" "demo_dos_games" {
 }
 ```
 
-The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
+The OpenTofu `tofu import` command can be used below. Use `terraform import` when working with Terraform.
 
 ```shell
 # Without a namespace override, use the package name as the import ID:
