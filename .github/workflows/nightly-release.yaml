@@ -16,12 +16,12 @@ concurrency:
 
 jobs:
   nightly:
-    name: Update nightly tag
+    name: Create nightly tag
     runs-on: ubuntu-latest
     environment: release-nightly
     timeout-minutes: 15 # Add timeout to prevent stuck workflows
     permissions:
-      contents: write # Required to replace the nightly release and tag through the GitHub API.
+      contents: write # Required to create the nightly tag through the GitHub API.
     outputs:
       tag_name: ${{ steps.update_tag.outputs.tag }}
     steps:
@@ -32,27 +32,35 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
-      - name: Update nightly tag
+      - name: Create nightly tag
         id: update_tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Find latest stable version and increment minor for nightly
-          LATEST_STABLE=$(git tag -l --sort=-v:refname | grep -v nightly | head -n 1)
-          MAJOR_VERSION=$(echo "$LATEST_STABLE" | awk -F. '{print $1}')
-          MINOR_VERSION=$(echo "$LATEST_STABLE" | awk -F. '{print $2}')
-          MINOR_VERSION=$((MINOR_VERSION + 1))
-          TAG="${MAJOR_VERSION}.${MINOR_VERSION}.0-nightly"
+          set -euo pipefail
 
-          # Clean up any existing nightly releases/tags
-          gh release delete "${TAG}" --cleanup-tag -y || true
+          # Base the nightly on the next minor version after the latest stable release.
+          LATEST_STABLE=""
+          STABLE_TAG_PATTERN='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          while IFS= read -r candidate; do
+            if [[ "$candidate" =~ $STABLE_TAG_PATTERN ]]; then
+              LATEST_STABLE="$candidate"
+              break
+            fi
+          done < <(git tag --list --sort=-v:refname)
 
-          # Ensure the remote tag is deleted in case --cleanup-tag did not remove it
-          gh api \
-            --method DELETE \
-            "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" || true
+          if [[ -z "$LATEST_STABLE" ]]; then
+            echo "::error::No stable release tag found"
+            exit 1
+          fi
 
-          # Recreate the lightweight tag at this workflow's commit
+          IFS=. read -r MAJOR_VERSION MINOR_VERSION _ <<< "${LATEST_STABLE#v}"
+          NEXT_MINOR_VERSION=$((MINOR_VERSION + 1))
+          NIGHTLY_DATE=$(date -u +%Y%m%d)
+          TAG="v${MAJOR_VERSION}.${NEXT_MINOR_VERSION}.0"
+          TAG+="-nightly.${NIGHTLY_DATE}.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+
+          # Immutable tags keep nightly artifacts and checksums reproducible.
           gh api \
             --method POST \
             "repos/${GITHUB_REPOSITORY}/git/refs" \
@@ -66,11 +74,12 @@ jobs:
     name: Publish nightly release
     needs: nightly
     permissions:
-      contents: write # Required by GoReleaser to create the GitHub release.
+      contents: read # Required to build from the nightly tag.
       packages: write # Required to publish the provider to GHCR.
     uses: ./.github/workflows/release.yml
     with:
       tag_name: ${{ needs.nightly.outputs.tag_name }}
+      skip_github_release: true
     secrets:
       UDS_REGISTRY_USER: ${{ secrets.UDS_REGISTRY_USER }}
       UDS_REGISTRY_TOKEN: ${{ secrets.UDS_REGISTRY_TOKEN }}
