@@ -29,6 +29,9 @@ provider "uds" {
 
   # Disable package loading and validation during planning.
   # validate_packages_on_plan = false
+
+  # Force Helm to take ownership of conflicting Server-Side Apply fields.
+  # force_helm_ssa_conflicts = true
 }
 ```
 
