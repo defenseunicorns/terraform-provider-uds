@@ -30,6 +30,28 @@ local linters = new Mapping<String, Step> {
         check = "golangci-lint run ./..."
         glob = List("**/*.go", "go.mod", "go.sum")
     }
+    ["generated-docs"] {
+        check = """
+            generated_docs_tmp="$(mktemp -d)"
+            trap 'rm -rf "$generated_docs_tmp"' EXIT
+            cp -R docs examples "$generated_docs_tmp"
+
+            if ! go generate ./...; then
+                echo "Documentation generation failed. Run 'uds run generate' for the full output." >&2
+                exit 1
+            fi
+
+            generated_docs_changed=0
+            diff -ru "$generated_docs_tmp/docs" docs || generated_docs_changed=1
+            diff -ru "$generated_docs_tmp/examples" examples || generated_docs_changed=1
+
+            if [ "$generated_docs_changed" -ne 0 ]; then
+                echo "Generated documentation is out of date. Run 'uds run generate' and commit the results." >&2
+                exit 1
+            fi
+            """
+        glob = List("**/*.go", "go.mod", "go.sum", "templates/**/*.tmpl", "docs/**/*.md", "examples/**/*.tf", "examples/**/*.sh")
+    }
 }
 
 hooks {

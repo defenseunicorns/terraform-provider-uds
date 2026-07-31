@@ -77,6 +77,7 @@ type udsProvider struct {
 
 func (p *udsProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
+		MarkdownDescription: "Manage UDS resources with OpenTofu.",
 		Attributes: map[string]schema.Attribute{
 			"default_architecture": schema.StringAttribute{
 				Optional:            true,

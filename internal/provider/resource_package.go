@@ -213,7 +213,7 @@ func (r *PackageResource) Metadata(_ context.Context, req resource.MetadataReque
 // Schema defines the schema for the resource.
 func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Deploys a UDS Package.",
+		Description: "Deploys and manages a UDS package.",
 
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{

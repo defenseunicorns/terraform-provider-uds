@@ -26,15 +26,7 @@
         },
         {
           "type": "generic",
-          "path": "examples/resources/uds_package/resource.tf"
-        },
-        {
-          "type": "generic",
           "path": "examples/zarf_values/main.tf"
-        },
-        {
-          "type": "generic",
-          "path": "docs/resources/package.md"
         }
       ]
     }
