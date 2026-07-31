@@ -32,6 +32,11 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
+  # Terraform Registry only accepts provider archives and the manifest here.
+  # Keep SBOMs under a separate artifact ID so they remain release assets
+  # without becoming entries in the signed checksum file.
+  ids:
+    - default
   extra_files:
     - glob: "terraform-registry-manifest.json"
       name_template: "{{ .ProjectName }}_{{ .Version }}_manifest.json"
@@ -56,7 +61,8 @@ signs:
       - "${artifact}"
 
 sboms:
-  - artifacts: archive
+  - id: sbom
+    artifacts: archive
     documents:
       - "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json"
 
