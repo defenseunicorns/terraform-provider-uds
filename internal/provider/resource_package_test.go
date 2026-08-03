@@ -6777,6 +6777,7 @@ func TestCollectValuePaths(t *testing.T) {
 	}, paths)
 }
 
+//nolint:dupword // The fixture intentionally models the nested loki.loki path.
 func TestGetPackageValueSourcePathsFromFile(t *testing.T) {
 	valuesFile := filepath.Join(t.TempDir(), "values.yaml")
 	require.NoError(t, os.WriteFile(valuesFile, []byte(`
