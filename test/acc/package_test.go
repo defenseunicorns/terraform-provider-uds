@@ -188,9 +188,11 @@ func TestAccPackageResourcePlanValidation(t *testing.T) {
 				ExpectNonEmptyPlan: true,
 			},
 			{
-				Config:      testAccPackageResourceRemoteValuesInvalidPathConfig,
-				PlanOnly:    true,
-				ExpectError: regexp.MustCompile(`value path "nginx\.definitely_unexposed_by_nginx_values_test" does not match\s+any`),
+				Config:   testAccPackageResourceRemoteValuesInvalidPathConfig,
+				PlanOnly: true,
+				ExpectError: regexp.MustCompile(
+					`Additional property definitely_unexposed_by_nginx_values_test is not\s+allowed`,
+				),
 			},
 			// Disabling package validation on plan skips package-dependent checks.
 			// This unavailable source would otherwise fail package loading, signature
@@ -572,9 +574,11 @@ func TestAccPackageResourceZarfValues(t *testing.T) {
 		CheckDestroy:             checkZarfValuesResourcesDestroyed,
 		Steps: []resource.TestStep{
 			{
-				Config:      renderZarfValuesInvalidPathConfig(packagePath),
-				PlanOnly:    true,
-				ExpectError: regexp.MustCompile(`value path "not_exposed" does not match any`),
+				// Packages without a values schema use best-effort sourcePath checks,
+				// so an unverified path produces a warning while the plan remains valid.
+				Config:             renderZarfValuesInvalidPathConfig(packagePath),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
 			},
 			{
 				Config: renderZarfValuesPackageConfig(t, initialValues),
