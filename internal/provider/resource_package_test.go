@@ -7369,6 +7369,20 @@ func TestPackageResource_Schema_Timeouts(t *testing.T) {
 	assert.Equal(t, 30*time.Minute, d, "create-only override must not affect delete default")
 }
 
+func TestPackageResource_Schema_ComponentBlocksDeprecated(t *testing.T) {
+	r := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+	var schemaResp resource.SchemaResponse
+	r.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+
+	componentBlock, ok := schemaResp.Schema.Blocks["component"].(schema.SetNestedBlock)
+	require.True(t, ok)
+	assert.Equal(t, componentBlockDeprecationMessage, componentBlock.DeprecationMessage)
+
+	overrideBlock, ok := componentBlock.NestedObject.Blocks["override"].(schema.SetNestedBlock)
+	require.True(t, ok)
+	assert.Equal(t, componentOverrideBlockDeprecationMessage, overrideBlock.DeprecationMessage)
+}
+
 func TestPackageResource_Upsert_ZarfReceivesRemainingBudget(t *testing.T) {
 	packageLayout := newValidLoadPackageResult().Layout
 
