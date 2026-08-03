@@ -152,11 +152,11 @@ resource "uds_package" "init_with_git_server" {
 - `component` (Block Set, Deprecated) [Deprecated] Legacy component selection and override configuration. Use `optional_components` to select optional components. Mutually exclusive with `optional_components`. (see [below for nested schema](#nestedblock--component))
 - `namespace` (String) [Alpha] Namespace in which to deploy the UDS package.
 - `optional_components` (Set of String) [Alpha] Set of optional package component names to install. Case-sensitive. Mutually exclusive with `component` blocks — specifying both is a validation error. When omitted or set to an empty list, only required package components are installed.
-- `sensitive_values` (Dynamic, Sensitive) [Alpha] Sensitive Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package. Values are redacted from Terraform/OpenTofu output. Cannot be used with component blocks.
+- `sensitive_values` (Dynamic, Sensitive) [Alpha] Sensitive Zarf package values to apply at deploy time. Packages with a values schema are validated against that schema; packages without one use best-effort checks against package defaults and chart value source paths. Values are redacted from Terraform/OpenTofu output. Cannot be used with component blocks.
 - `sensitive_vars` (Attributes Set) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))
 - `signature_verification` (Attributes) Signature verification configuration. Omit to use defaults (verification enabled, no key). (see [below for nested schema](#nestedatt--signature_verification))
 - `timeouts` (Attributes) (see [below for nested schema](#nestedatt--timeouts))
-- `values` (Dynamic) [Alpha] Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package. Cannot be used with component blocks.
+- `values` (Dynamic) [Alpha] Zarf package values to apply at deploy time. Packages with a values schema are validated against that schema; packages without one use best-effort checks against package defaults and chart value source paths. Cannot be used with component blocks.
 - `vars` (Attributes Set) UDS package variables to set. (see [below for nested schema](#nestedatt--vars))
 
 ### Read-Only

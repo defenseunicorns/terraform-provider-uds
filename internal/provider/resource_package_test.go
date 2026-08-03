@@ -1444,6 +1444,7 @@ func TestPackageResource_Upsert_Values(t *testing.T) {
 		sensitiveValues  types.Dynamic
 		expectedValues   zarfValue.Values
 		expectedErrorMsg string
+		expectedWarnings []string
 	}{
 		{
 			name:           "package without values deploys with empty values",
@@ -1537,7 +1538,7 @@ func TestPackageResource_Upsert_Values(t *testing.T) {
 			expectedErrorMsg: "db.password",
 		},
 		{
-			name: "package with unexposed value path returns error",
+			name: "package with unverified value path still deploys",
 			values: types.DynamicValue(types.ObjectValueMust(
 				map[string]attr.Type{
 					"image": types.ObjectType{AttrTypes: map[string]attr.Type{
@@ -1551,7 +1552,10 @@ func TestPackageResource_Upsert_Values(t *testing.T) {
 					),
 				},
 			)),
-			expectedErrorMsg: "image.tag",
+			expectedValues: zarfValue.Values{
+				"image": map[string]any{"tag": "latest"},
+			},
+			expectedWarnings: []string{"image.tag"},
 		},
 		{
 			name:             "package with root unknown values returns error",
@@ -1597,7 +1601,11 @@ func TestPackageResource_Upsert_Values(t *testing.T) {
 				WithSensitiveValues(tc.sensitiveValues),
 			)
 
-			_, err := packageResource.upsert(testCtx(t), testModel)
+			var warningPaths []string
+			ctx := withPackageValuePathWarningHandler(testCtx(t), func(paths []string) {
+				warningPaths = append(warningPaths, paths...)
+			})
+			_, err := packageResource.upsert(ctx, testModel)
 
 			if tc.expectedErrorMsg != "" {
 				assert.Error(t, err)
@@ -1606,6 +1614,7 @@ func TestPackageResource_Upsert_Values(t *testing.T) {
 			}
 
 			assert.NoError(t, err)
+			assert.ElementsMatch(t, tc.expectedWarnings, warningPaths)
 			mockPackager.AssertExpectations(t)
 			mockPackageComponentFilter.AssertExpectations(t)
 
@@ -6079,11 +6088,11 @@ func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesValidateKnownPa
 
 func TestPackageResource_RunPackagePlanChecks_UnknownIntermediateObjectSourcePathValidation(t *testing.T) {
 	tests := []struct {
-		name        string
-		valuePath   string
-		sourcePaths []string
-		expectErr   bool
-		errorText   string
+		name          string
+		valuePath     string
+		sourcePaths   []string
+		expectWarning bool
+		warningText   string
 	}{
 		{
 			name:        "defers when descendant source path is exposed",
@@ -6096,11 +6105,11 @@ func TestPackageResource_RunPackagePlanChecks_UnknownIntermediateObjectSourcePat
 			sourcePaths: []string{".config.settings"},
 		},
 		{
-			name:        "fails when no source path can match unknown object",
-			valuePath:   "pod",
-			sourcePaths: []string{".service.enabled"},
-			expectErr:   true,
-			errorText:   "pod",
+			name:          "warns when no source path can match unknown object",
+			valuePath:     "pod",
+			sourcePaths:   []string{".service.enabled"},
+			expectWarning: true,
+			warningText:   "pod",
 		},
 	}
 
@@ -6140,18 +6149,18 @@ func TestPackageResource_RunPackagePlanChecks_UnknownIntermediateObjectSourcePat
 
 			assert.False(t, resp.Diagnostics.HasError(), "expected local validation to pass, got: %v", resp.Diagnostics.Errors())
 			assert.NoError(t, result.LoadErr)
-			if tc.expectErr {
-				assert.Error(t, result.ValuePathsErr)
-				assert.Contains(t, result.ValuePathsErr.Error(), tc.errorText)
+			assert.NoError(t, result.ValuePathsErr)
+			if tc.expectWarning {
+				assert.Contains(t, result.ValuePathsWarnings, tc.warningText)
 			} else {
-				assert.NoError(t, result.ValuePathsErr)
+				assert.Empty(t, result.ValuePathsWarnings)
 			}
 			mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 		})
 	}
 }
 
-func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesFailKnownUnexposedPaths(t *testing.T) {
+func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesWarnKnownUnexposedPaths(t *testing.T) {
 	mockPackager := &MockPackager{}
 	model := NewTestPackageResourceModel(
 		WithOptionalComponents([]string{}),
@@ -6213,8 +6222,8 @@ func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesFailKnownUnexpo
 	result := packageResource.runPackagePlanChecks(context.Background(), model, valuePaths)
 
 	assert.False(t, resp.Diagnostics.HasError(), "expected local validation to pass, got: %v", resp.Diagnostics.Errors())
-	assert.NotNil(t, result.ValuePathsErr, "expected unexposed known path to fail")
-	assert.Contains(t, result.ValuePathsErr.Error(), "image.tag")
+	assert.NoError(t, result.ValuePathsErr)
+	assert.Contains(t, result.ValuePathsWarnings, "image.tag")
 	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 
@@ -6404,6 +6413,200 @@ func TestModifyPlan_ConfigValuesFailKnownConflictsWhenPlanValuesAreUnknown(t *te
 	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "logLevel")
 }
 
+func TestModifyPlan_EmitsWarningForUnverifiedPackageValuePath(t *testing.T) {
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(&layout.PackageLayout{
+		Pkg: v1alpha1.ZarfPackage{
+			Components: []v1alpha1.ZarfComponent{{
+				Name:     "required-component",
+				Required: helpers.BoolPtr(true),
+				Charts: []v1alpha1.ZarfChart{{
+					Name:   "chart",
+					Values: []v1alpha1.ZarfChartValue{{SourcePath: ".pod.annotations", TargetPath: ".pod.annotations"}},
+				}},
+			}},
+		},
+	}, nil)
+	r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+	model := NewTestPackageResourceModel(
+		WithValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{
+				"image": types.ObjectType{AttrTypes: map[string]attr.Type{"tag": types.StringType}},
+			},
+			map[string]attr.Value{
+				"image": types.ObjectValueMust(
+					map[string]attr.Type{"tag": types.StringType},
+					map[string]attr.Value{"tag": types.StringValue("1.2.3")},
+				),
+			},
+		))),
+	)
+	model.Metadata = types.ObjectUnknown(map[string]attr.Type{
+		"name":        types.StringType,
+		"description": types.StringType,
+		"version":     types.StringType,
+	})
+	model.ConnectStrings = types.SetUnknown(types.ObjectType{AttrTypes: connectStringAttrTypes})
+	model.SetVariables = types.MapUnknown(types.StringType)
+
+	resp := resource.ModifyPlanResponse{Plan: buildTestPlan(t, r, model)}
+	r.ModifyPlan(context.Background(), resource.ModifyPlanRequest{
+		Config: buildTestConfig(t, r, model),
+		Plan:   resp.Plan,
+	}, &resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "expected warning-only validation, got: %v", resp.Diagnostics.Errors())
+	require.Len(t, resp.Diagnostics.Warnings(), 1)
+	assert.Equal(t, "Package value path could not be verified", resp.Diagnostics.Warnings()[0].Summary())
+	assert.Contains(t, resp.Diagnostics.Warnings()[0].Detail(), "image.tag")
+	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestPackageResource_RunPackagePlanChecks_SchemaRejectsUnrecognizedValuePath(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ValuesYAML), []byte("config:\n  enabled: false\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ValuesSchema), []byte(`{
+  "type": "object",
+  "properties": {
+    "config": {"type": "object", "properties": {"enabled": {"type": "boolean"}}}
+  },
+  "additionalProperties": false
+}`), 0o600))
+
+	valuesHash, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.ValuesYAML))
+	require.NoError(t, err)
+	schemaHash, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.ValuesSchema))
+	require.NoError(t, err)
+	checksums := fmt.Sprintf("%s %s\n%s %s\n", valuesHash, layout.ValuesYAML, schemaHash, layout.ValuesSchema)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.Checksums), []byte(checksums), 0o600))
+	aggregateChecksum, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.Checksums))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ZarfYAML), []byte(fmt.Sprintf(`
+apiVersion: zarf.dev/v1alpha1
+kind: ZarfPackageConfig
+metadata:
+  name: warning-test
+  version: 1.0.0
+  aggregateChecksum: %s
+values:
+  files:
+    - values.yaml
+  schema: values.schema.json
+components:
+  - name: required-component
+    required: true
+    charts:
+      - name: chart
+        values:
+          - sourcePath: .config.enabled
+            targetPath: .config.enabled
+`, aggregateChecksum)), 0o600))
+
+	pkgLayout, err := layout.LoadFromDir(context.Background(), dir, layout.PackageLayoutOptions{
+		VerificationStrategy: layout.VerifyNever,
+	})
+	require.NoError(t, err)
+
+	model := NewTestPackageResourceModel(
+		WithValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{"foo": types.BoolType, "computed": types.StringType},
+			map[string]attr.Value{"foo": types.BoolValue(true), "computed": types.StringUnknown()},
+		))),
+	)
+	model.OptionalComponents = types.SetUnknown(types.StringType)
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil)
+	r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+	valuePaths := collectConfiguredPackageValuePaths(model, &resource.ModifyPlanResponse{})
+
+	result := r.runPackagePlanChecks(context.Background(), model, valuePaths)
+
+	require.Error(t, result.ValuePathsErr)
+	assert.Contains(t, result.ValuePathsErr.Error(), "foo")
+	assert.Empty(t, result.ValuePathsWarnings)
+}
+
+func TestModifyPlan_SchemaChecksKnownConfigurationValuesWhenPlanIsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ValuesYAML), []byte("global:\n  domain: example.test\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ValuesSchema), []byte(`{
+  "type": "object",
+  "properties": {
+    "global": {"type": "object", "properties": {"domain": {"type": "string"}}}
+  },
+  "additionalProperties": false
+}`), 0o600))
+
+	valuesHash, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.ValuesYAML))
+	require.NoError(t, err)
+	schemaHash, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.ValuesSchema))
+	require.NoError(t, err)
+	checksums := fmt.Sprintf("%s %s\n%s %s\n", valuesHash, layout.ValuesYAML, schemaHash, layout.ValuesSchema)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.Checksums), []byte(checksums), 0o600))
+	aggregateChecksum, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.Checksums))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ZarfYAML), []byte(fmt.Sprintf(`
+apiVersion: zarf.dev/v1alpha1
+kind: ZarfPackageConfig
+metadata:
+  name: plan-test
+  version: 1.0.0
+  aggregateChecksum: %s
+values:
+  files:
+    - values.yaml
+  schema: values.schema.json
+components:
+  - name: required-component
+    required: true
+`, aggregateChecksum)), 0o600))
+
+	pkgLayout, err := layout.LoadFromDir(context.Background(), dir, layout.PackageLayoutOptions{
+		VerificationStrategy: layout.VerifyNever,
+	})
+	require.NoError(t, err)
+
+	configModel := NewTestPackageResourceModel(
+		WithValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{
+				"foo":      types.BoolType,
+				"computed": types.StringType,
+			},
+			map[string]attr.Value{
+				"foo":      types.BoolValue(true),
+				"computed": types.StringUnknown(),
+			},
+		))),
+	)
+	setUnknownComputedPackageState := func(model *PackageResourceModel) {
+		model.Metadata = types.ObjectUnknown(map[string]attr.Type{
+			"name":        types.StringType,
+			"description": types.StringType,
+			"version":     types.StringType,
+		})
+		model.ConnectStrings = types.SetUnknown(types.ObjectType{AttrTypes: connectStringAttrTypes})
+		model.SetVariables = types.MapUnknown(types.StringType)
+	}
+	setUnknownComputedPackageState(&configModel)
+	planModel := configModel
+	planModel.Values = types.DynamicUnknown()
+	setUnknownComputedPackageState(&planModel)
+
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil)
+	r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+	plan := buildTestPlan(t, r, planModel)
+	resp := resource.ModifyPlanResponse{Plan: plan}
+	r.ModifyPlan(context.Background(), resource.ModifyPlanRequest{
+		Config: buildTestConfig(t, r, configModel),
+		Plan:   plan,
+	}, &resp)
+
+	require.True(t, resp.Diagnostics.HasError(), "expected known foo value to fail schema validation")
+	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "foo")
+	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+}
+
 func TestPackageResource_RunPackagePlanChecks_ReturnsLoadErrWhenValuesRequirePackageLoad(t *testing.T) {
 	mockPackager := &MockPackager{}
 	model := NewTestPackageResourceModel(
@@ -6572,6 +6775,74 @@ func TestCollectValuePaths(t *testing.T) {
 		"pod.empty",
 		"logLevel",
 	}, paths)
+}
+
+func TestGetPackageValueSourcePathsFromFile(t *testing.T) {
+	valuesFile := filepath.Join(t.TempDir(), "values.yaml")
+	require.NoError(t, os.WriteFile(valuesFile, []byte(`
+global:
+  domain: ""
+  adminDomain: ""
+loki:
+  loki: {}
+`), 0o600))
+
+	paths, err := getPackageValueSourcePathsFromFile(context.Background(), valuesFile)
+
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{
+		"global.domain",
+		"global.adminDomain",
+		"loki.loki",
+	}, paths)
+}
+
+func TestValidatePackageValuesAgainstSchema(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+	require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+  "type": "object",
+  "properties": {
+    "global": {
+      "type": "object",
+      "properties": {
+        "domain": {"type": "string"}
+      }
+    }
+  },
+  "required": ["global"],
+  "additionalProperties": false
+}`), 0o600))
+
+	assert.NoError(t, validatePackageValuesAgainstSchema(context.Background(), zarfValue.Values{
+		"global": map[string]any{"domain": "unicorndemo.dev"},
+	}, schemaPath))
+	assert.Error(t, validatePackageValuesAgainstSchema(context.Background(), zarfValue.Values{
+		"global": map[string]any{"domain": 123},
+	}, schemaPath))
+	assert.Error(t, validatePackageValuesAgainstSchema(context.Background(), zarfValue.Values{}, schemaPath), "required values should be enforced when the effective document is known")
+}
+
+func TestMergePackageValuesWithDefaultsBeforeSchemaValidation(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+	require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+  "type": "object",
+  "properties": {
+    "service": {
+      "type": "object",
+      "minProperties": 2,
+      "properties": {
+        "host": {"type": "string"},
+        "port": {"type": "integer"}
+      }
+    }
+  }
+}`), 0o600))
+
+	defaults := zarfValue.Values{"service": map[string]any{"host": "localhost"}}
+	overrides := zarfValue.Values{"service": map[string]any{"port": 8080}}
+
+	assert.Error(t, validatePackageValuesAgainstSchema(context.Background(), overrides, schemaPath), "partial overrides should not be validated as the complete document")
+	assert.NoError(t, validatePackageValuesAgainstSchema(context.Background(), mergePackageValuesWithDefaults(defaults, overrides), schemaPath))
 }
 
 func TestIsValuePathExposed(t *testing.T) {

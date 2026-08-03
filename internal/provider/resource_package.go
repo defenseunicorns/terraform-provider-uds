@@ -73,6 +73,25 @@ const (
 
 type packageSignatureVerifier func(context.Context, *zarfLayout.PackageLayout, zarfSigning.VerifyBlobOptions) error
 
+type packageValuePathWarningHandler func([]string)
+
+type packageValuePathWarningHandlerKey struct{}
+
+func withPackageValuePathWarningHandler(ctx context.Context, handler packageValuePathWarningHandler) context.Context {
+	return context.WithValue(ctx, packageValuePathWarningHandlerKey{}, handler)
+}
+
+func addPackageValuePathWarnings(diags *diag.Diagnostics, valuePaths []string) {
+	if len(valuePaths) == 0 {
+		return
+	}
+
+	diags.AddWarning(
+		"Package value path could not be verified",
+		fmt.Sprintf("Value paths %s were not found in the package values defaults or chart sourcePath mappings; the package may consume them elsewhere.", formatValuePaths(valuePaths)),
+	)
+}
+
 // NewPackageResource creates a new instance of the package resource.
 func NewPackageResource(providerConfig *udsProviderConfig, packager udsPackager.Packager, packageComponentFilter udsPackager.PackageComponentFilter, cluster udsCluster.Cluster) resource.Resource {
 	if providerConfig == nil {
@@ -417,11 +436,11 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				Sensitive:           true,
 			},
 			"values": schema.DynamicAttribute{
-				MarkdownDescription: "[Alpha] Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package. Cannot be used with component blocks.",
+				MarkdownDescription: "[Alpha] Zarf package values to apply at deploy time. Packages with a values schema are validated against that schema; packages without one use best-effort checks against package defaults and chart value source paths. Cannot be used with component blocks.",
 				Optional:            true,
 			},
 			"sensitive_values": schema.DynamicAttribute{
-				MarkdownDescription: "[Alpha] Sensitive Zarf package values to apply at deploy time. Paths must match chart value source paths exposed by the package. Values are redacted from Terraform/OpenTofu output. Cannot be used with component blocks.",
+				MarkdownDescription: "[Alpha] Sensitive Zarf package values to apply at deploy time. Packages with a values schema are validated against that schema; packages without one use best-effort checks against package defaults and chart value source paths. Values are redacted from Terraform/OpenTofu output. Cannot be used with component blocks.",
 				Optional:            true,
 				Sensitive:           true,
 			},
@@ -583,6 +602,9 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 	operationCtx = logging.WithPackageContext(operationCtx, "create", "", plan.Namespace.ValueString())
+	operationCtx = withPackageValuePathWarningHandler(operationCtx, func(valuePaths []string) {
+		addPackageValuePathWarnings(&resp.Diagnostics, valuePaths)
+	})
 
 	createTimeout, timeoutDiags := plan.Timeouts.Create(operationCtx, 30*time.Minute)
 	resp.Diagnostics.Append(timeoutDiags...)
@@ -749,6 +771,9 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 	operationCtx = logging.WithPackageContext(operationCtx, "update", "", plan.Namespace.ValueString())
+	operationCtx = withPackageValuePathWarningHandler(operationCtx, func(valuePaths []string) {
+		addPackageValuePathWarnings(&resp.Diagnostics, valuePaths)
+	})
 
 	// Check if there are any components in the already existing plan that need to be removed
 	var oldPlan PackageResourceModel
@@ -980,7 +1005,13 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	}
 
 	if r.providerConfig == nil || r.providerConfig.ValidatePackagesOnPlan {
-		checks := r.runPackagePlanChecks(ctx, plan, valuePaths)
+		// Dynamic values can become wholly unknown in the plan when only some
+		// leaves depend on computed resources. Use configuration values for
+		// plan-time schema validation so known authored leaves are still checked.
+		valueValidationPlan := plan
+		valueValidationPlan.Values = config.Values
+		valueValidationPlan.SensitiveValues = config.SensitiveValues
+		checks := r.runPackagePlanChecks(ctx, valueValidationPlan, valuePaths)
 		if checks.LoadErr != nil {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("source"),
@@ -1008,6 +1039,9 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		if checks.ValuePathsErr != nil {
 			resp.Diagnostics.AddError("Invalid package value", checks.ValuePathsErr.Error())
 			return
+		}
+		if len(checks.ValuePathsWarnings) > 0 {
+			addPackageValuePathWarnings(&resp.Diagnostics, checks.ValuePathsWarnings)
 		}
 	}
 
@@ -1394,7 +1428,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if err != nil {
 		return plan, err
 	}
-	if err := r.validatePackageValuesAgainstSourcePaths(ctx, plan, pkgLayout, deployValues); err != nil {
+	if err := r.warnOnUnverifiedPackageValuePaths(ctx, plan, pkgLayout, deployValues); err != nil {
 		return plan, err
 	}
 
@@ -1647,6 +1681,32 @@ func dynamicToValues(attrName string, value types.Dynamic) (zarfValue.Values, er
 	return zarfValue.Values(values), nil
 }
 
+// dynamicToPartialValues converts the known portion of a Terraform dynamic
+// value for plan-time schema validation. Unknown object/map entries are
+// omitted; collections containing unknown elements are omitted as a whole so
+// their eventual shape is not guessed. The returned flag is true when any
+// unknown value was omitted.
+func dynamicToPartialValues(attrName string, value types.Dynamic) (zarfValue.Values, bool, error) {
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return zarfValue.Values{}, false, nil
+	}
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return zarfValue.Values{}, true, nil
+	}
+
+	converted, hasUnknown, err := terraformValueToPartialGoValue(value.UnderlyingValue())
+	if err != nil {
+		return zarfValue.Values{}, false, fmt.Errorf("failed to convert %s: %w", attrName, err)
+	}
+
+	values, ok := converted.(map[string]any)
+	if !ok {
+		return zarfValue.Values{}, false, fmt.Errorf("%s must be a map or object", attrName)
+	}
+
+	return zarfValue.Values(values), hasUnknown, nil
+}
+
 func terraformValueToGoValue(value attr.Value) (any, error) {
 	if value == nil || value.IsNull() {
 		return nil, nil
@@ -1677,6 +1737,82 @@ func terraformValueToGoValue(value attr.Value) (any, error) {
 	default:
 		return nil, fmt.Errorf("unsupported value type %T", value)
 	}
+}
+
+// terraformValueToPartialGoValue is the plan-time counterpart to
+// terraformValueToGoValue. It preserves known map/object entries while
+// omitting unknown entries and unknown collections. This allows validation to
+// reject known schema violations without pretending to know computed values.
+func terraformValueToPartialGoValue(value attr.Value) (any, bool, error) {
+	if value == nil || value.IsNull() {
+		return nil, false, nil
+	}
+	if value.IsUnknown() {
+		return nil, true, nil
+	}
+
+	switch v := value.(type) {
+	case types.String:
+		return v.ValueString(), false, nil
+	case types.Bool:
+		return v.ValueBool(), false, nil
+	case types.Number:
+		converted, err := numberToGoValue(v.ValueBigFloat())
+		return converted, false, err
+	case types.Map:
+		return terraformMapToPartialGoMap(v.Elements())
+	case types.Object:
+		return terraformMapToPartialGoMap(v.Attributes())
+	case types.List:
+		return terraformCollectionToPartialGoSlice(v.Elements())
+	case types.Set:
+		return terraformCollectionToPartialGoSlice(v.Elements())
+	case types.Tuple:
+		return terraformCollectionToPartialGoSlice(v.Elements())
+	case types.Dynamic:
+		if v.IsUnknown() || v.IsUnderlyingValueUnknown() {
+			return nil, true, nil
+		}
+		if v.IsNull() || v.IsUnderlyingValueNull() {
+			return nil, false, nil
+		}
+		return terraformValueToPartialGoValue(v.UnderlyingValue())
+	default:
+		return nil, false, fmt.Errorf("unsupported value type %T", value)
+	}
+}
+
+func terraformMapToPartialGoMap(elements map[string]attr.Value) (map[string]any, bool, error) {
+	result := make(map[string]any, len(elements))
+	var hasUnknown bool
+	for key, value := range elements {
+		converted, unknown, err := terraformValueToPartialGoValue(value)
+		if err != nil {
+			return nil, false, fmt.Errorf("%s: %w", key, err)
+		}
+		if unknown && converted == nil {
+			hasUnknown = true
+			continue
+		}
+		result[key] = converted
+		hasUnknown = hasUnknown || unknown
+	}
+	return result, hasUnknown, nil
+}
+
+func terraformCollectionToPartialGoSlice(elements []attr.Value) ([]any, bool, error) {
+	result := make([]any, 0, len(elements))
+	for idx, value := range elements {
+		converted, unknown, err := terraformValueToPartialGoValue(value)
+		if err != nil {
+			return nil, false, fmt.Errorf("%d: %w", idx, err)
+		}
+		if unknown {
+			return nil, true, nil
+		}
+		result = append(result, converted)
+	}
+	return result, false, nil
 }
 
 func terraformMapToGoMap(elements map[string]attr.Value) (map[string]any, error) {
@@ -2143,6 +2279,37 @@ func (r *PackageResource) getPlannedComponentValueSourcePaths(ctx context.Contex
 	return paths, nil
 }
 
+// getPlannedValueSourcePaths returns both package-level value paths and chart
+// value source paths. Package-level values are assembled by Zarf into the
+// package root values.yaml, while chart values are declared by each chart's
+// values[].sourcePath mapping.
+func (r *PackageResource) getPlannedValueSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) ([]string, error) {
+	chartPaths, err := r.getPlannedComponentValueSourcePaths(ctx, model, pkgLayout)
+	if err != nil {
+		return nil, err
+	}
+
+	packagePaths, err := getPackageValueSourcePaths(ctx, pkgLayout)
+	if err != nil {
+		return nil, err
+	}
+
+	return slices.Concat(chartPaths, packagePaths), nil
+}
+
+func getPackageValueSourcePaths(ctx context.Context, pkgLayout *zarfLayout.PackageLayout) ([]string, error) {
+	return getPackageValueSourcePathsFromFile(ctx, filepath.Join(pkgLayout.DirPath(), layout.ValuesYAML))
+}
+
+func getPackageValueSourcePathsFromFile(ctx context.Context, valuesFile string) ([]string, error) {
+	values, err := zarfValue.ParseLocalFile(ctx, valuesFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse package values: %w", err)
+	}
+
+	return collectValuePaths(map[string]any(values)), nil
+}
+
 func getOptionalComponentsForDeploy(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) ([]string, error) {
 	// Alpha: if optional_components is set, use it directly; otherwise fall back to component blocks.
 	// TODO: remove branch when component block is removed; always use optional_components.
@@ -2206,60 +2373,141 @@ func getComponentBlockOptionalComponentsForDeploy(ctx context.Context, component
 	return optionalComponents, nil
 }
 
-func (r *PackageResource) validatePackageValuesAgainstSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, values zarfValue.Values) error {
-	valuePaths := collectValuePaths(map[string]any(values))
-	return r.validatePackageValuePathsAgainstSourcePaths(ctx, model, pkgLayout, valuePaths)
-}
+func (r *PackageResource) warnOnUnverifiedPackageValuePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, values zarfValue.Values) error {
+	// A package schema is authoritative; source-path checks are only the
+	// best-effort fallback for packages without one.
+	if pkgLayout.HasValuesSchema() {
+		return nil
+	}
 
-func (r *PackageResource) validatePackageValuePathsAgainstSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, valuePaths []string) error {
+	valuePaths := collectValuePaths(map[string]any(values))
 	if len(valuePaths) == 0 {
 		return nil
 	}
 
-	exposedPaths, err := r.getPlannedComponentValueSourcePaths(ctx, model, pkgLayout)
+	exposedPaths, err := r.getPlannedValueSourcePaths(ctx, model, pkgLayout)
 	if err != nil {
 		return err
 	}
 
-	var validationErrors []error
+	var unverifiedPaths []string
 	for _, valuePath := range valuePaths {
 		if !isValuePathExposed(valuePath, exposedPaths) {
-			validationErrors = append(validationErrors, valuePathNotExposedError(valuePath))
+			unverifiedPaths = append(unverifiedPaths, valuePath)
 		}
 	}
-
-	return errors.Join(validationErrors...)
+	if len(unverifiedPaths) > 0 {
+		emitPackageValuePathWarnings(ctx, unverifiedPaths)
+	}
+	return nil
 }
 
-func (r *PackageResource) validatePlannedPackageValuePathsAgainstSourcePaths(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, valuePaths []plannedPackageValuePath) error {
-	if len(valuePaths) == 0 {
+func emitPackageValuePathWarnings(ctx context.Context, valuePaths []string) {
+	if handler, ok := ctx.Value(packageValuePathWarningHandlerKey{}).(packageValuePathWarningHandler); ok && handler != nil {
+		handler(valuePaths)
+		return
+	}
+
+	tflog.Warn(ctx, "package values include paths that could not be verified from package defaults or chart mappings", map[string]any{
+		"paths": valuePaths,
+	})
+}
+
+func validatePackageValuesAgainstSchema(ctx context.Context, values zarfValue.Values, schemaPath string) error {
+	return validatePackageValuesAgainstSchemaWithOptions(ctx, values, schemaPath, zarfValue.ValidateOptions{})
+}
+
+func validatePackageValuesAgainstSchemaWithOptions(ctx context.Context, values zarfValue.Values, schemaPath string, opts zarfValue.ValidateOptions) error {
+	return values.Validate(ctx, schemaPath, opts)
+}
+
+func (r *PackageResource) validatePlannedPackageValuesAgainstSchema(ctx context.Context, plan PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) error {
+	if !pkgLayout.HasValuesSchema() {
 		return nil
 	}
 
-	exposedPaths, err := r.getPlannedComponentValueSourcePaths(ctx, model, pkgLayout)
+	values, valuesHaveUnknowns, err := dynamicToPartialValues("values", plan.Values)
+	if err != nil {
+		return err
+	}
+	sensitiveValues, sensitiveValuesHaveUnknowns, err := dynamicToPartialValues("sensitive_values", plan.SensitiveValues)
+	if err != nil {
+		return err
+	}
+	overrides, err := mergePackageValues(values, sensitiveValues)
 	if err != nil {
 		return err
 	}
 
-	var validationErrors []error
+	defaults, err := zarfValue.ParseLocalFile(ctx, filepath.Join(pkgLayout.DirPath(), layout.ValuesYAML))
+	if err != nil {
+		return fmt.Errorf("failed to parse package values: %w", err)
+	}
+	defaults = mergePackageValuesWithDefaults(defaults, overrides)
+
+	schemaPath := filepath.Join(pkgLayout.DirPath(), layout.ValuesSchema)
+	validationOptions := zarfValue.ValidateOptions{
+		SkipRequired: valuesHaveUnknowns || sensitiveValuesHaveUnknowns,
+	}
+	if err := validatePackageValuesAgainstSchemaWithOptions(ctx, defaults, schemaPath, validationOptions); err != nil {
+		return fmt.Errorf("package values do not match the package values schema: %w", err)
+	}
+	return nil
+}
+
+func mergePackageValuesWithDefaults(defaults, overrides zarfValue.Values) zarfValue.Values {
+	merged := zarfValue.Values{}
+	merged.DeepMerge(defaults)
+	merged.DeepMerge(overrides)
+	return merged
+}
+
+func (r *PackageResource) validatePlannedPackageValues(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, valuePaths []plannedPackageValuePath) ([]string, error) {
+	if pkgLayout.HasValuesSchema() {
+		if err := r.validatePlannedPackageValuesAgainstSchema(ctx, model, pkgLayout); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	if len(valuePaths) == 0 {
+		return nil, nil
+	}
+
+	exposedPaths, err := r.getPlannedValueSourcePaths(ctx, model, pkgLayout)
+	if err != nil {
+		return nil, err
+	}
+
+	var unverifiedPaths []string
 	for _, valuePath := range valuePaths {
 		if valuePath.unknownSubtree {
 			if !isUnknownValuePathPotentiallyExposed(valuePath.path, exposedPaths) {
-				validationErrors = append(validationErrors, valuePathNotExposedError(valuePath.path))
+				unverifiedPaths = append(unverifiedPaths, valuePath.path)
 			}
 			continue
 		}
 
 		if !isValuePathExposed(valuePath.path, exposedPaths) {
-			validationErrors = append(validationErrors, valuePathNotExposedError(valuePath.path))
+			unverifiedPaths = append(unverifiedPaths, valuePath.path)
 		}
 	}
 
-	return errors.Join(validationErrors...)
+	slices.Sort(unverifiedPaths)
+	return unverifiedPaths, nil
 }
 
-func valuePathNotExposedError(valuePath string) error {
-	return fmt.Errorf("value path %q does not match any chart value sourcePath exposed by the package components planned for deployment", valuePath)
+func hasConfiguredPackageValues(model PackageResourceModel) bool {
+	return isDynamicAttributeConfigured(model.Values) || isDynamicAttributeConfigured(model.SensitiveValues)
+}
+
+func formatValuePaths(valuePaths []string) string {
+	paths := slices.Clone(valuePaths)
+	slices.Sort(paths)
+	quoted := make([]string, len(paths))
+	for i, valuePath := range paths {
+		quoted[i] = fmt.Sprintf("%q", valuePath)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 func isValuePathExposed(valuePath string, exposedPaths []string) bool {
@@ -3034,15 +3282,17 @@ func (r *PackageResource) loadPackageLayoutForInspection(ctx context.Context, mo
 // packagePlanCheckResult holds per-check errors from runPackagePlanChecks so each can be
 // attributed to the correct diagnostic path without expanding the function signature.
 type packagePlanCheckResult struct {
-	LoadErr          error
-	SigErr           error
-	OptComponentsErr error
-	ValuePathsErr    error
+	LoadErr            error
+	SigErr             error
+	OptComponentsErr   error
+	ValuePathsErr      error
+	ValuePathsWarnings []string
 }
 
 // runPackagePlanChecks loads the package once and runs package-dependent plan
-// checks. If valuePaths is non-empty, those paths are validated against chart
-// value sourcePaths for the components planned for deployment.
+// checks. Known values in schema-backed packages are validated against merged
+// package defaults; packages without a schema use best-effort path verification
+// against package defaults and chart sourcePaths.
 // Skipped when source is unknown, packager/providerConfig are nil, or no checks are needed.
 func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel, valuePaths []plannedPackageValuePath) packagePlanCheckResult {
 	if plan.Source.IsUnknown() || plan.Source.IsNull() {
@@ -3062,8 +3312,9 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 		plan.OptionalComponents.ElementsAs(ctx, &requestedOptionals, false)
 	}
 	canValidateValuePaths := len(valuePaths) > 0 && !plan.OptionalComponents.IsNull() && !plan.OptionalComponents.IsUnknown()
+	canValidateSchema := hasConfiguredPackageValues(plan)
 
-	if !needsSigVerification && !canValidateOptionalComponents && !canValidateValuePaths {
+	if !needsSigVerification && !canValidateOptionalComponents && !canValidateValuePaths && !canValidateSchema {
 		return packagePlanCheckResult{}
 	}
 
@@ -3087,10 +3338,16 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 		}
 	}
 
-	if canValidateValuePaths {
-		if err := r.validatePlannedPackageValuePathsAgainstSourcePaths(ctx, plan, pkgLayout, valuePaths); err != nil {
+	if canValidateValuePaths || canValidateSchema {
+		validationPaths := valuePaths
+		if !canValidateValuePaths {
+			validationPaths = nil
+		}
+		warnings, err := r.validatePlannedPackageValues(ctx, plan, pkgLayout, validationPaths)
+		if err != nil {
 			return packagePlanCheckResult{ValuePathsErr: err}
 		}
+		return packagePlanCheckResult{ValuePathsWarnings: warnings}
 	}
 
 	return packagePlanCheckResult{}
