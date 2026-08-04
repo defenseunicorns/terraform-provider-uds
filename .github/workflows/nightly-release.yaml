@@ -74,7 +74,7 @@ jobs:
     name: Publish nightly release
     needs: nightly
     permissions:
-      contents: read # Required to build from the nightly tag.
+      contents: write # Required by the reusable release workflow's GoReleaser job.
       packages: write # Required to publish the provider to GHCR.
     uses: ./.github/workflows/release.yml
     with:
