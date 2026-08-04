@@ -1682,29 +1682,29 @@ func dynamicToValues(attrName string, value types.Dynamic) (zarfValue.Values, er
 }
 
 // dynamicToPartialValues converts the known portion of a Terraform dynamic
-// value for plan-time schema validation. Unknown object/map entries are
-// omitted; collections containing unknown elements are omitted as a whole so
-// their eventual shape is not guessed. The returned flag is true when any
-// unknown value was omitted.
-func dynamicToPartialValues(attrName string, value types.Dynamic) (zarfValue.Values, bool, error) {
+// value for plan-time schema validation. Unknown values are represented as
+// nil so their containing keys remain available for structural schema checks.
+// The returned paths identify values whose constraints must be deferred until
+// apply because their eventual values are not known during planning.
+func dynamicToPartialValues(attrName string, value types.Dynamic) (zarfValue.Values, []string, error) {
 	if value.IsNull() || value.IsUnderlyingValueNull() {
-		return zarfValue.Values{}, false, nil
+		return zarfValue.Values{}, nil, nil
 	}
 	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
-		return zarfValue.Values{}, true, nil
+		return zarfValue.Values{}, []string{""}, nil
 	}
 
-	converted, hasUnknown, err := terraformValueToPartialGoValue(value.UnderlyingValue())
+	converted, unknownPaths, err := terraformValueToPartialGoValue(value.UnderlyingValue(), "")
 	if err != nil {
-		return zarfValue.Values{}, false, fmt.Errorf("failed to convert %s: %w", attrName, err)
+		return zarfValue.Values{}, nil, fmt.Errorf("failed to convert %s: %w", attrName, err)
 	}
 
 	values, ok := converted.(map[string]any)
 	if !ok {
-		return zarfValue.Values{}, false, fmt.Errorf("%s must be a map or object", attrName)
+		return zarfValue.Values{}, nil, fmt.Errorf("%s must be a map or object", attrName)
 	}
 
-	return zarfValue.Values(values), hasUnknown, nil
+	return zarfValue.Values(values), unknownPaths, nil
 }
 
 func terraformValueToGoValue(value attr.Value) (any, error) {
@@ -1740,79 +1740,75 @@ func terraformValueToGoValue(value attr.Value) (any, error) {
 }
 
 // terraformValueToPartialGoValue is the plan-time counterpart to
-// terraformValueToGoValue. It preserves known map/object entries while
-// omitting unknown entries and unknown collections. This allows validation to
-// reject known schema violations without pretending to know computed values.
-func terraformValueToPartialGoValue(value attr.Value) (any, bool, error) {
+// terraformValueToGoValue. It preserves map/object keys even when their
+// values are unknown, allowing additionalProperties and other structural
+// checks to run without pretending to know the values themselves.
+func terraformValueToPartialGoValue(value attr.Value, valuePath string) (any, []string, error) {
 	if value == nil || value.IsNull() {
-		return nil, false, nil
+		return nil, nil, nil
 	}
 	if value.IsUnknown() {
-		return nil, true, nil
+		return nil, []string{valuePath}, nil
 	}
 
 	switch v := value.(type) {
 	case types.String:
-		return v.ValueString(), false, nil
+		return v.ValueString(), nil, nil
 	case types.Bool:
-		return v.ValueBool(), false, nil
+		return v.ValueBool(), nil, nil
 	case types.Number:
 		converted, err := numberToGoValue(v.ValueBigFloat())
-		return converted, false, err
+		return converted, nil, err
 	case types.Map:
-		return terraformMapToPartialGoMap(v.Elements())
+		return terraformMapToPartialGoMap(v.Elements(), valuePath)
 	case types.Object:
-		return terraformMapToPartialGoMap(v.Attributes())
+		return terraformMapToPartialGoMap(v.Attributes(), valuePath)
 	case types.List:
-		return terraformCollectionToPartialGoSlice(v.Elements())
+		return terraformCollectionToPartialGoSlice(v.Elements(), valuePath)
 	case types.Set:
-		return terraformCollectionToPartialGoSlice(v.Elements())
+		return terraformCollectionToPartialGoSlice(v.Elements(), valuePath)
 	case types.Tuple:
-		return terraformCollectionToPartialGoSlice(v.Elements())
+		return terraformCollectionToPartialGoSlice(v.Elements(), valuePath)
 	case types.Dynamic:
 		if v.IsUnknown() || v.IsUnderlyingValueUnknown() {
-			return nil, true, nil
+			return nil, []string{valuePath}, nil
 		}
 		if v.IsNull() || v.IsUnderlyingValueNull() {
-			return nil, false, nil
+			return nil, nil, nil
 		}
-		return terraformValueToPartialGoValue(v.UnderlyingValue())
+		return terraformValueToPartialGoValue(v.UnderlyingValue(), valuePath)
 	default:
-		return nil, false, fmt.Errorf("unsupported value type %T", value)
+		return nil, nil, fmt.Errorf("unsupported value type %T", value)
 	}
 }
 
-func terraformMapToPartialGoMap(elements map[string]attr.Value) (map[string]any, bool, error) {
+func terraformMapToPartialGoMap(elements map[string]attr.Value, valuePath string) (map[string]any, []string, error) {
 	result := make(map[string]any, len(elements))
-	var hasUnknown bool
+	var unknownPaths []string
 	for key, value := range elements {
-		converted, unknown, err := terraformValueToPartialGoValue(value)
+		keyPath := joinValuePath(valuePath, key)
+		converted, paths, err := terraformValueToPartialGoValue(value, keyPath)
 		if err != nil {
-			return nil, false, fmt.Errorf("%s: %w", key, err)
-		}
-		if unknown && converted == nil {
-			hasUnknown = true
-			continue
+			return nil, nil, fmt.Errorf("%s: %w", key, err)
 		}
 		result[key] = converted
-		hasUnknown = hasUnknown || unknown
+		unknownPaths = append(unknownPaths, paths...)
 	}
-	return result, hasUnknown, nil
+	return result, unknownPaths, nil
 }
 
-func terraformCollectionToPartialGoSlice(elements []attr.Value) ([]any, bool, error) {
+func terraformCollectionToPartialGoSlice(elements []attr.Value, valuePath string) ([]any, []string, error) {
 	result := make([]any, 0, len(elements))
+	var unknownPaths []string
 	for idx, value := range elements {
-		converted, unknown, err := terraformValueToPartialGoValue(value)
+		converted, paths, err := terraformValueToPartialGoValue(value, joinValuePath(valuePath, fmt.Sprintf("%d", idx)))
 		if err != nil {
-			return nil, false, fmt.Errorf("%d: %w", idx, err)
-		}
-		if unknown {
-			return nil, true, nil
+			return nil, nil, fmt.Errorf("%d: %w", idx, err)
 		}
 		result = append(result, converted)
+		unknownPaths = append(unknownPaths, paths...)
 	}
-	return result, false, nil
+	return result, unknownPaths, nil
 }
 
 func terraformMapToGoMap(elements map[string]attr.Value) (map[string]any, error) {
@@ -1887,10 +1883,15 @@ func mergePackageValues(values zarfValue.Values, sensitiveValues zarfValue.Value
 		return zarfValue.Values{}, err
 	}
 
+	return deepMergePackageValues(values, sensitiveValues), nil
+}
+
+func deepMergePackageValues(values ...zarfValue.Values) zarfValue.Values {
 	merged := zarfValue.Values{}
-	merged.DeepMerge(values)
-	merged.DeepMerge(sensitiveValues)
-	return merged, nil
+	for _, value := range values {
+		merged.DeepMerge(value)
+	}
+	return merged
 }
 
 func joinValuePath(prefix string, key string) string {
@@ -2390,12 +2391,7 @@ func (r *PackageResource) warnOnUnverifiedPackageValuePaths(ctx context.Context,
 		return err
 	}
 
-	var unverifiedPaths []string
-	for _, valuePath := range valuePaths {
-		if !isValuePathExposed(valuePath, exposedPaths) {
-			unverifiedPaths = append(unverifiedPaths, valuePath)
-		}
-	}
+	unverifiedPaths := unverifiedKnownValuePaths(valuePaths, exposedPaths)
 	if len(unverifiedPaths) > 0 {
 		emitPackageValuePathWarnings(ctx, unverifiedPaths)
 	}
@@ -2414,11 +2410,65 @@ func emitPackageValuePathWarnings(ctx context.Context, valuePaths []string) {
 }
 
 func validatePackageValuesAgainstSchema(ctx context.Context, values zarfValue.Values, schemaPath string) error {
-	return validatePackageValuesAgainstSchemaWithOptions(ctx, values, schemaPath, zarfValue.ValidateOptions{})
+	return values.Validate(ctx, schemaPath, zarfValue.ValidateOptions{})
 }
 
-func validatePackageValuesAgainstSchemaWithOptions(ctx context.Context, values zarfValue.Values, schemaPath string, opts zarfValue.ValidateOptions) error {
-	return values.Validate(ctx, schemaPath, opts)
+// validatePartialPackageValuesAgainstSchema validates the known portion of a
+// package values document. Unknown values are retained as nil during schema
+// validation so their keys can still be checked. Only errors attached directly
+// to an unknown value are deferred; container and key-structure errors remain
+// enforceable at plan time.
+func validatePartialPackageValuesAgainstSchema(ctx context.Context, values zarfValue.Values, schemaPath string, unknownPaths []string) error {
+	err := values.Validate(ctx, schemaPath, zarfValue.ValidateOptions{})
+	if err == nil || len(unknownPaths) == 0 {
+		return err
+	}
+
+	var schemaErr *zarfValue.SchemaValidationError
+	if !errors.As(err, &schemaErr) {
+		return err
+	}
+
+	filteredErrors := schemaErr.Errors[:0:0]
+	for _, validationErr := range schemaErr.Errors {
+		property, _ := validationErr.Details()["property"].(string)
+		if shouldDeferPartialSchemaError(validationErr.Type(), validationErr.Field(), property, unknownPaths) {
+			continue
+		}
+		filteredErrors = append(filteredErrors, validationErr)
+	}
+
+	if len(filteredErrors) == 0 {
+		return nil
+	}
+
+	filteredSchemaErr := *schemaErr
+	filteredSchemaErr.Errors = filteredErrors
+	return &filteredSchemaErr
+}
+
+func shouldDeferPartialSchemaError(errorType, field, property string, unknownPaths []string) bool {
+	// These errors describe known keys or container shape, not an unknown value.
+	switch errorType {
+	case "additional_property_not_allowed", "invalid_property_name", "invalid_property_pattern":
+		return false
+	}
+
+	if errorType == "required" {
+		missingPath := joinValuePath(field, property)
+		for _, unknownPath := range unknownPaths {
+			if isValuePathAncestorOrEqual(unknownPath, missingPath) {
+				return true
+			}
+		}
+		return false
+	}
+
+	return slices.Contains(unknownPaths, field)
+}
+
+func isValuePathAncestorOrEqual(ancestor, descendant string) bool {
+	return ancestor == "" || ancestor == descendant || strings.HasPrefix(descendant, ancestor+".")
 }
 
 func (r *PackageResource) validatePlannedPackageValuesAgainstSchema(ctx context.Context, plan PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) error {
@@ -2426,11 +2476,11 @@ func (r *PackageResource) validatePlannedPackageValuesAgainstSchema(ctx context.
 		return nil
 	}
 
-	values, valuesHaveUnknowns, err := dynamicToPartialValues("values", plan.Values)
+	values, valuesUnknownPaths, err := dynamicToPartialValues("values", plan.Values)
 	if err != nil {
 		return err
 	}
-	sensitiveValues, sensitiveValuesHaveUnknowns, err := dynamicToPartialValues("sensitive_values", plan.SensitiveValues)
+	sensitiveValues, sensitiveUnknownPaths, err := dynamicToPartialValues("sensitive_values", plan.SensitiveValues)
 	if err != nil {
 		return err
 	}
@@ -2443,23 +2493,14 @@ func (r *PackageResource) validatePlannedPackageValuesAgainstSchema(ctx context.
 	if err != nil {
 		return fmt.Errorf("failed to parse package values: %w", err)
 	}
-	defaults = mergePackageValuesWithDefaults(defaults, overrides)
+	defaults = deepMergePackageValues(defaults, overrides)
 
 	schemaPath := filepath.Join(pkgLayout.DirPath(), layout.ValuesSchema)
-	validationOptions := zarfValue.ValidateOptions{
-		SkipRequired: valuesHaveUnknowns || sensitiveValuesHaveUnknowns,
-	}
-	if err := validatePackageValuesAgainstSchemaWithOptions(ctx, defaults, schemaPath, validationOptions); err != nil {
+	unknownPaths := slices.Concat(valuesUnknownPaths, sensitiveUnknownPaths)
+	if err := validatePartialPackageValuesAgainstSchema(ctx, defaults, schemaPath, unknownPaths); err != nil {
 		return fmt.Errorf("package values do not match the package values schema: %w", err)
 	}
 	return nil
-}
-
-func mergePackageValuesWithDefaults(defaults, overrides zarfValue.Values) zarfValue.Values {
-	merged := zarfValue.Values{}
-	merged.DeepMerge(defaults)
-	merged.DeepMerge(overrides)
-	return merged
 }
 
 func (r *PackageResource) validatePlannedPackageValues(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout, valuePaths []plannedPackageValuePath) ([]string, error) {
@@ -2478,6 +2519,7 @@ func (r *PackageResource) validatePlannedPackageValues(ctx context.Context, mode
 		return nil, err
 	}
 
+	var knownPaths []string
 	var unverifiedPaths []string
 	for _, valuePath := range valuePaths {
 		if valuePath.unknownSubtree {
@@ -2486,14 +2528,22 @@ func (r *PackageResource) validatePlannedPackageValues(ctx context.Context, mode
 			}
 			continue
 		}
-
-		if !isValuePathExposed(valuePath.path, exposedPaths) {
-			unverifiedPaths = append(unverifiedPaths, valuePath.path)
-		}
+		knownPaths = append(knownPaths, valuePath.path)
 	}
 
+	unverifiedPaths = append(unverifiedPaths, unverifiedKnownValuePaths(knownPaths, exposedPaths)...)
 	slices.Sort(unverifiedPaths)
 	return unverifiedPaths, nil
+}
+
+func unverifiedKnownValuePaths(valuePaths, exposedPaths []string) []string {
+	var unverifiedPaths []string
+	for _, valuePath := range valuePaths {
+		if !isValuePathExposed(valuePath, exposedPaths) {
+			unverifiedPaths = append(unverifiedPaths, valuePath)
+		}
+	}
+	return unverifiedPaths
 }
 
 func hasConfiguredPackageValues(model PackageResourceModel) bool {

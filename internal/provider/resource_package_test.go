@@ -5916,6 +5916,38 @@ func TestDynamicContainsUnknown(t *testing.T) {
 	}
 }
 
+func TestDynamicToPartialValuesKeepsKnownKeysWithUnknownValues(t *testing.T) {
+	value := types.DynamicValue(types.ObjectValueMust(
+		map[string]attr.Type{
+			"allowed": types.StringType,
+			"typo":    types.StringType,
+			"nested": types.ObjectType{AttrTypes: map[string]attr.Type{
+				"typo": types.StringType,
+			}},
+		},
+		map[string]attr.Value{
+			"allowed": types.StringValue("known"),
+			"typo":    types.StringUnknown(),
+			"nested": types.ObjectValueMust(
+				map[string]attr.Type{"typo": types.StringType},
+				map[string]attr.Value{"typo": types.StringUnknown()},
+			),
+		},
+	))
+
+	values, unknownPaths, err := dynamicToPartialValues("values", value)
+
+	require.NoError(t, err)
+	assert.Equal(t, "known", values["allowed"])
+	assert.Contains(t, values, "typo")
+	assert.Nil(t, values["typo"])
+	nested, ok := values["nested"].(map[string]any)
+	require.True(t, ok)
+	assert.Contains(t, nested, "typo")
+	assert.Nil(t, nested["typo"])
+	assert.ElementsMatch(t, []string{"typo", "nested.typo"}, unknownPaths)
+}
+
 func TestCollectDynamicValuePaths(t *testing.T) {
 	nestedKnownObject := types.DynamicValue(types.ObjectValueMust(
 		map[string]attr.Type{
@@ -6823,6 +6855,109 @@ func TestValidatePackageValuesAgainstSchema(t *testing.T) {
 	assert.Error(t, validatePackageValuesAgainstSchema(context.Background(), zarfValue.Values{}, schemaPath), "required values should be enforced when the effective document is known")
 }
 
+func TestValidatePartialPackageValuesAgainstSchemaPreservesUnknownKeys(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+	require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+  "type": "object",
+  "properties": {
+    "allowed": {"type": "string"},
+    "service": {
+      "type": "object",
+      "properties": {"host": {"type": "string"}},
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}`), 0o600))
+
+	assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+		context.Background(),
+		zarfValue.Values{"allowed": nil},
+		schemaPath,
+		[]string{"allowed"},
+	))
+
+	err := validatePartialPackageValuesAgainstSchema(
+		context.Background(),
+		zarfValue.Values{"typo": nil},
+		schemaPath,
+		[]string{"typo"},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "typo")
+
+	err = validatePartialPackageValuesAgainstSchema(
+		context.Background(),
+		zarfValue.Values{"service": map[string]any{"typo": nil}},
+		schemaPath,
+		[]string{"service.typo"},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "typo")
+}
+
+func TestValidatePartialPackageValuesAgainstSchemaDefersOnlyRelatedRequiredErrors(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+	require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+  "type": "object",
+  "properties": {
+    "requiredValue": {"type": "string"},
+    "computedValue": {"type": "string"}
+  },
+  "required": ["requiredValue"],
+  "additionalProperties": false
+}`), 0o600))
+
+	err := validatePartialPackageValuesAgainstSchema(
+		context.Background(),
+		zarfValue.Values{"computedValue": nil},
+		schemaPath,
+		[]string{"computedValue"},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requiredValue")
+
+	assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+		context.Background(),
+		zarfValue.Values{},
+		schemaPath,
+		[]string{""},
+	))
+}
+
+func TestValidatePartialPackageValuesAgainstSchemaRetainsContainerErrors(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+	require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+  "type": "object",
+  "propertyNames": {"pattern": "^[a-z]+$"},
+  "properties": {
+    "items": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {"type": "string"}
+    }
+  }
+}`), 0o600))
+
+	err := validatePartialPackageValuesAgainstSchema(
+		context.Background(),
+		zarfValue.Values{"items": []any{"known", nil}},
+		schemaPath,
+		[]string{"items.1"},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at most 1 item")
+
+	err = validatePartialPackageValuesAgainstSchema(
+		context.Background(),
+		zarfValue.Values{"INVALID": nil},
+		schemaPath,
+		[]string{"INVALID"},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "INVALID")
+}
+
 func TestMergePackageValuesWithDefaultsBeforeSchemaValidation(t *testing.T) {
 	schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
 	require.NoError(t, os.WriteFile(schemaPath, []byte(`{
@@ -6843,7 +6978,7 @@ func TestMergePackageValuesWithDefaultsBeforeSchemaValidation(t *testing.T) {
 	overrides := zarfValue.Values{"service": map[string]any{"port": 8080}}
 
 	assert.Error(t, validatePackageValuesAgainstSchema(context.Background(), overrides, schemaPath), "partial overrides should not be validated as the complete document")
-	assert.NoError(t, validatePackageValuesAgainstSchema(context.Background(), mergePackageValuesWithDefaults(defaults, overrides), schemaPath))
+	assert.NoError(t, validatePackageValuesAgainstSchema(context.Background(), deepMergePackageValues(defaults, overrides), schemaPath))
 }
 
 func TestIsValuePathExposed(t *testing.T) {
