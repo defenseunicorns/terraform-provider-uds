@@ -292,6 +292,7 @@ Import is supported using the following syntax:
 In Terraform v1.5.0 and later, the [`import` block](https://developer.hashicorp.com/terraform/language/import) can be used with the `id` attribute, for example:
 
 ```terraform
+
 # Prerequisites:
 # 1. Fetch the public signing key for the dos-games package:
 #    curl https://raw.githubusercontent.com/zarf-dev/zarf/refs/heads/main/cosign.pub -o dosgames.pub

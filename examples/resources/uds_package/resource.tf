@@ -1,3 +1,6 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
 resource "uds_package" "init" {
   source = "oci://ghcr.io/zarf-dev/packages/init:v0.82.0"
 
