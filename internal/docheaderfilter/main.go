@@ -10,7 +10,7 @@ import (
 	"regexp"
 )
 
-var spdxHeader = regexp.MustCompile("(?m)(^```[^\\n]*\\n)# Copyright [^\\n]* Defense Unicorns\\n# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial\\n\\n")
+var spdxHeader = regexp.MustCompile("(?m)(^```[^\\n]*\\n)# Copyright [^\\n]* Defense Unicorns\\n# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial\\n+")
 
 func main() {
 	err := filepath.Walk("docs", func(path string, info os.FileInfo, walkErr error) error {
