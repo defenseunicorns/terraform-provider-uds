@@ -6377,6 +6377,78 @@ func TestMergePackageValues(t *testing.T) {
 	}, merged)
 }
 
+func TestMergePartialPackageValuesPreservesKnownSubtrees(t *testing.T) {
+	knownValues := zarfValue.Values{
+		"config": map[string]any{
+			"public": "known",
+		},
+	}
+	unknownValues := zarfValue.Values{
+		"config": nil,
+	}
+
+	assert.Equal(t, knownValues, mergePartialPackageValues(knownValues, unknownValues))
+	assert.Equal(t, knownValues, mergePartialPackageValues(unknownValues, knownValues))
+}
+
+func TestValidatePlannedPackageValuesDefersUnknownMapConflicts(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ValuesYAML), []byte("config: {}\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ValuesSchema), []byte(`{
+  "type": "object",
+  "properties": {
+    "config": {
+      "type": "object",
+      "properties": {"public": {"type": "string"}},
+		"additionalProperties": false
+    }
+  }
+}`), 0o600))
+	valuesHash, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.ValuesYAML))
+	require.NoError(t, err)
+	schemaHash, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.ValuesSchema))
+	require.NoError(t, err)
+	checksums := fmt.Sprintf("%s %s\n%s %s\n", valuesHash, layout.ValuesYAML, schemaHash, layout.ValuesSchema)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.Checksums), []byte(checksums), 0o600))
+	aggregateChecksum, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.Checksums))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ZarfYAML), []byte(`
+apiVersion: zarf.dev/v1alpha1
+kind: ZarfPackageConfig
+metadata:
+  name: partial-merge-test
+  version: 1.0.0
+  aggregateChecksum: `+aggregateChecksum+`
+components: []
+`), 0o600))
+
+	pkgLayout, err := layout.LoadFromDir(context.Background(), dir, layout.PackageLayoutOptions{
+		VerificationStrategy: layout.VerifyNever,
+	})
+	require.NoError(t, err)
+
+	model := NewTestPackageResourceModel(
+		WithValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{
+				"config": types.ObjectType{AttrTypes: map[string]attr.Type{"public": types.StringType}},
+			},
+			map[string]attr.Value{
+				"config": types.ObjectValueMust(
+					map[string]attr.Type{"public": types.StringType},
+					map[string]attr.Value{"public": types.StringValue("known")},
+				),
+			},
+		))),
+		WithSensitiveValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{"config": types.MapType{ElemType: types.StringType}},
+			map[string]attr.Value{"config": types.MapUnknown(types.StringType)},
+		))),
+	)
+
+	r := &PackageResource{}
+	assert.NoError(t, r.validatePlannedPackageValuesAgainstSchema(context.Background(), model, pkgLayout))
+}
+
 func TestValidatePackageValuesAgainstSchema(t *testing.T) {
 	schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
 	require.NoError(t, os.WriteFile(schemaPath, []byte(`{

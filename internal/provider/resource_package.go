@@ -1759,6 +1759,41 @@ func deepMergePackageValues(values ...zarfValue.Values) zarfValue.Values {
 	return merged
 }
 
+// mergePartialPackageValues combines plan-time values while preserving known
+// structure when an unknown map/object is represented by nil. Exact conflicts
+// are checked separately from the original Terraform values before this merge.
+func mergePartialPackageValues(values ...zarfValue.Values) zarfValue.Values {
+	merged := zarfValue.Values{}
+	for _, value := range values {
+		mergePartialPackageValueMaps(merged, value)
+	}
+	return merged
+}
+
+func mergePartialPackageValueMaps(destination, source map[string]any) {
+	for key, sourceValue := range source {
+		destinationValue, exists := destination[key]
+		if !exists {
+			destination[key] = sourceValue
+			continue
+		}
+
+		sourceMap, sourceIsMap := sourceValue.(map[string]any)
+		destinationMap, destinationIsMap := destinationValue.(map[string]any)
+		if sourceIsMap && destinationIsMap {
+			mergePartialPackageValueMaps(destinationMap, sourceMap)
+			continue
+		}
+
+		// A nil value represents an unknown plan-time subtree. Preserve any
+		// known value already present so its schema constraints remain visible.
+		if sourceValue == nil {
+			continue
+		}
+		destination[key] = sourceValue
+	}
+}
+
 func joinValuePath(prefix string, key string) string {
 	if prefix == "" {
 		return key
@@ -2199,10 +2234,7 @@ func (r *PackageResource) validatePlannedPackageValuesAgainstSchema(ctx context.
 	if err != nil {
 		return err
 	}
-	overrides, err := mergePackageValues(values, sensitiveValues)
-	if err != nil {
-		return err
-	}
+	overrides := mergePartialPackageValues(values, sensitiveValues)
 
 	defaults, err := zarfValue.ParseLocalFile(ctx, filepath.Join(pkgLayout.DirPath(), layout.ValuesYAML))
 	if err != nil {
