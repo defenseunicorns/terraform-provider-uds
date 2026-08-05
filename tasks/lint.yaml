@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
 # yaml-language-server: $schema=https://raw.githubusercontent.com/defenseunicorns/maru-runner/refs/heads/main/tasks.schema.json
+includes:
+  - common: https://raw.githubusercontent.com/defenseunicorns/uds-common/v1.24.12/tasks/lint.yaml
+
 tasks:
   - name: check
     description: "Run the repository lint checks"
@@ -12,3 +15,13 @@ tasks:
     description: "Fix lint findings where supported"
     actions:
       - cmd: hk fix --all
+
+  - name: license
+    description: "Check SPDX license headers"
+    actions:
+      - task: common:license
+
+  - name: fix-license
+    description: "Add SPDX license headers to source files"
+    actions:
+      - task: common:fix-license
