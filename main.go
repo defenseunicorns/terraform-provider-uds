@@ -21,6 +21,7 @@ import (
 
 //go:generate tofu fmt -recursive examples/
 //go:generate go tool tfplugindocs generate -provider-name uds
+//go:generate go run ./internal/docheaderfilter
 
 // set by goreleaser at build time
 var version = "dev"
