@@ -1644,32 +1644,6 @@ func dynamicToValues(attrName string, value types.Dynamic) (zarfValue.Values, er
 	return zarfValue.Values(values), nil
 }
 
-// dynamicToPartialValues converts the known portion of a Terraform dynamic
-// value for plan-time schema validation. Unknown values are represented as
-// nil so their containing keys remain available for structural schema checks.
-// The returned paths identify values whose constraints must be deferred until
-// apply because their eventual values are not known during planning.
-func dynamicToPartialValues(attrName string, value types.Dynamic) (zarfValue.Values, []string, error) {
-	if value.IsNull() || value.IsUnderlyingValueNull() {
-		return zarfValue.Values{}, nil, nil
-	}
-	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
-		return zarfValue.Values{}, []string{""}, nil
-	}
-
-	converted, unknownPaths, err := terraformValueToPartialGoValue(value.UnderlyingValue(), "")
-	if err != nil {
-		return zarfValue.Values{}, nil, fmt.Errorf("failed to convert %s: %w", attrName, err)
-	}
-
-	values, ok := converted.(map[string]any)
-	if !ok {
-		return zarfValue.Values{}, nil, fmt.Errorf("%s must be a map or object", attrName)
-	}
-
-	return zarfValue.Values(values), unknownPaths, nil
-}
-
 func terraformValueToGoValue(value attr.Value) (any, error) {
 	if value == nil || value.IsNull() {
 		return nil, nil
@@ -1700,78 +1674,6 @@ func terraformValueToGoValue(value attr.Value) (any, error) {
 	default:
 		return nil, fmt.Errorf("unsupported value type %T", value)
 	}
-}
-
-// terraformValueToPartialGoValue is the plan-time counterpart to
-// terraformValueToGoValue. It preserves map/object keys even when their
-// values are unknown, allowing additionalProperties and other structural
-// checks to run without pretending to know the values themselves.
-func terraformValueToPartialGoValue(value attr.Value, valuePath string) (any, []string, error) {
-	if value == nil || value.IsNull() {
-		return nil, nil, nil
-	}
-	if value.IsUnknown() {
-		return nil, []string{valuePath}, nil
-	}
-
-	switch v := value.(type) {
-	case types.String:
-		return v.ValueString(), nil, nil
-	case types.Bool:
-		return v.ValueBool(), nil, nil
-	case types.Number:
-		converted, err := numberToGoValue(v.ValueBigFloat())
-		return converted, nil, err
-	case types.Map:
-		return terraformMapToPartialGoMap(v.Elements(), valuePath)
-	case types.Object:
-		return terraformMapToPartialGoMap(v.Attributes(), valuePath)
-	case types.List:
-		return terraformCollectionToPartialGoSlice(v.Elements(), valuePath)
-	case types.Set:
-		return terraformCollectionToPartialGoSlice(v.Elements(), valuePath)
-	case types.Tuple:
-		return terraformCollectionToPartialGoSlice(v.Elements(), valuePath)
-	case types.Dynamic:
-		if v.IsUnknown() || v.IsUnderlyingValueUnknown() {
-			return nil, []string{valuePath}, nil
-		}
-		if v.IsNull() || v.IsUnderlyingValueNull() {
-			return nil, nil, nil
-		}
-		return terraformValueToPartialGoValue(v.UnderlyingValue(), valuePath)
-	default:
-		return nil, nil, fmt.Errorf("unsupported value type %T", value)
-	}
-}
-
-func terraformMapToPartialGoMap(elements map[string]attr.Value, valuePath string) (map[string]any, []string, error) {
-	result := make(map[string]any, len(elements))
-	var unknownPaths []string
-	for key, value := range elements {
-		keyPath := joinValuePath(valuePath, key)
-		converted, paths, err := terraformValueToPartialGoValue(value, keyPath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", key, err)
-		}
-		result[key] = converted
-		unknownPaths = append(unknownPaths, paths...)
-	}
-	return result, unknownPaths, nil
-}
-
-func terraformCollectionToPartialGoSlice(elements []attr.Value, valuePath string) ([]any, []string, error) {
-	result := make([]any, 0, len(elements))
-	var unknownPaths []string
-	for idx, value := range elements {
-		converted, paths, err := terraformValueToPartialGoValue(value, joinValuePath(valuePath, fmt.Sprintf("%d", idx)))
-		if err != nil {
-			return nil, nil, fmt.Errorf("%d: %w", idx, err)
-		}
-		result = append(result, converted)
-		unknownPaths = append(unknownPaths, paths...)
-	}
-	return result, unknownPaths, nil
 }
 
 func terraformMapToGoMap(elements map[string]attr.Value) (map[string]any, error) {
@@ -1912,19 +1814,6 @@ func validateConfiguredPackageValueConflicts(model PackageResourceModel, resp *r
 // validation and are never deployed.
 type conflictCheckValuePlaceholder struct{}
 
-func isUnknownSubtreeValue(value attr.Value) bool {
-	valueType := value.Type(context.Background())
-	if valueType.Equal(types.DynamicType) {
-		return true
-	}
-	switch valueType.(type) {
-	case types.MapType, types.ObjectType:
-		return true
-	default:
-		return false
-	}
-}
-
 // dynamicToConflictCheckValues converts Terraform dynamic values into a
 // temporary Values tree used only for best-effort plan-time conflict checks.
 // Leaf values are placeholders because validateNoValueConflicts only needs path
@@ -2059,6 +1948,117 @@ func collectionSliceContainsUnknown(elements []attr.Value) bool {
 		}
 	}
 	return false
+}
+
+// dynamicToPartialValues converts the known portion of a Terraform dynamic
+// value for plan-time schema validation. Unknown values are represented as
+// nil so their containing keys remain available for structural schema checks.
+// The returned paths identify values whose constraints must be deferred until
+// apply because their eventual values are not known during planning.
+func dynamicToPartialValues(attrName string, value types.Dynamic) (zarfValue.Values, []string, error) {
+	if value.IsNull() || value.IsUnderlyingValueNull() {
+		return zarfValue.Values{}, nil, nil
+	}
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		return zarfValue.Values{}, []string{""}, nil
+	}
+
+	converted, unknownPaths, err := terraformValueToPartialGoValue(value.UnderlyingValue(), "")
+	if err != nil {
+		return zarfValue.Values{}, nil, fmt.Errorf("failed to convert %s: %w", attrName, err)
+	}
+
+	values, ok := converted.(map[string]any)
+	if !ok {
+		return zarfValue.Values{}, nil, fmt.Errorf("%s must be a map or object", attrName)
+	}
+
+	return zarfValue.Values(values), unknownPaths, nil
+}
+
+// terraformValueToPartialGoValue is the plan-time counterpart to
+// terraformValueToGoValue. It preserves map/object keys even when their
+// values are unknown, allowing additionalProperties and other structural
+// checks to run without pretending to know the values themselves.
+func terraformValueToPartialGoValue(value attr.Value, valuePath string) (any, []string, error) {
+	if value == nil || value.IsNull() {
+		return nil, nil, nil
+	}
+	if value.IsUnknown() {
+		return nil, []string{valuePath}, nil
+	}
+
+	switch v := value.(type) {
+	case types.String:
+		return v.ValueString(), nil, nil
+	case types.Bool:
+		return v.ValueBool(), nil, nil
+	case types.Number:
+		converted, err := numberToGoValue(v.ValueBigFloat())
+		return converted, nil, err
+	case types.Map:
+		return terraformMapToPartialGoMap(v.Elements(), valuePath)
+	case types.Object:
+		return terraformMapToPartialGoMap(v.Attributes(), valuePath)
+	case types.List:
+		return terraformCollectionToPartialGoSlice(v.Elements(), valuePath)
+	case types.Set:
+		return terraformCollectionToPartialGoSlice(v.Elements(), valuePath)
+	case types.Tuple:
+		return terraformCollectionToPartialGoSlice(v.Elements(), valuePath)
+	case types.Dynamic:
+		if v.IsUnknown() || v.IsUnderlyingValueUnknown() {
+			return nil, []string{valuePath}, nil
+		}
+		if v.IsNull() || v.IsUnderlyingValueNull() {
+			return nil, nil, nil
+		}
+		return terraformValueToPartialGoValue(v.UnderlyingValue(), valuePath)
+	default:
+		return nil, nil, fmt.Errorf("unsupported value type %T", value)
+	}
+}
+
+func terraformMapToPartialGoMap(elements map[string]attr.Value, valuePath string) (map[string]any, []string, error) {
+	result := make(map[string]any, len(elements))
+	var unknownPaths []string
+	for key, value := range elements {
+		keyPath := joinValuePath(valuePath, key)
+		converted, paths, err := terraformValueToPartialGoValue(value, keyPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", key, err)
+		}
+		result[key] = converted
+		unknownPaths = append(unknownPaths, paths...)
+	}
+	return result, unknownPaths, nil
+}
+
+func terraformCollectionToPartialGoSlice(elements []attr.Value, valuePath string) ([]any, []string, error) {
+	result := make([]any, 0, len(elements))
+	var unknownPaths []string
+	for idx, value := range elements {
+		converted, paths, err := terraformValueToPartialGoValue(value, joinValuePath(valuePath, fmt.Sprintf("%d", idx)))
+		if err != nil {
+			return nil, nil, fmt.Errorf("%d: %w", idx, err)
+		}
+		result = append(result, converted)
+		unknownPaths = append(unknownPaths, paths...)
+	}
+	return result, unknownPaths, nil
+}
+
+func isUnknownSubtreeValue(value attr.Value) bool {
+	valueType := value.Type(context.Background())
+	if valueType.Equal(types.DynamicType) {
+		return true
+	}
+	switch valueType.(type) {
+	case types.MapType, types.ObjectType:
+		return true
+	default:
+		return false
+	}
 }
 
 func getOptionalComponentsForDeploy(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) ([]string, error) {
