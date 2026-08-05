@@ -1,4 +1,4 @@
-// Copyright 2024-2026 Defense Unicorns
+// Copyright 2026 Defense Unicorns
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
 package provider
@@ -312,6 +312,43 @@ func TestValidatePartialPackageValuesAgainstSchemaPreservesUnknownKeys(t *testin
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "typo")
+}
+
+func TestValidatePartialPackageValuesAgainstSchemaDefersUnknownCombinatorErrors(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+	require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+  "type": "object",
+  "oneOf": [
+    {
+      "properties": {
+        "mode": {"enum": ["resource"]},
+        "kind": {"enum": ["valid"]}
+      }
+    },
+    {
+      "properties": {
+        "mode": {"enum": ["data"]},
+        "kind": {"enum": ["valid"]}
+      }
+    }
+  ]
+}`), 0o600))
+
+	assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+		context.Background(),
+		zarfValue.Values{"mode": nil},
+		schemaPath,
+		[]string{"mode"},
+	))
+
+	err := validatePartialPackageValuesAgainstSchema(
+		context.Background(),
+		zarfValue.Values{"kind": "invalid", "mode": nil},
+		schemaPath,
+		[]string{"mode"},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "kind")
 }
 
 func TestValidatePartialPackageValuesAgainstSchemaDefersOnlyRelatedRequiredErrors(t *testing.T) {

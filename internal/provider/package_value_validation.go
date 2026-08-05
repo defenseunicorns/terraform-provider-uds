@@ -1,4 +1,4 @@
-// Copyright 2024-2026 Defense Unicorns
+// Copyright 2026 Defense Unicorns
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
 package provider
@@ -173,8 +173,9 @@ func validatePackageValuesAgainstSchema(ctx context.Context, values zarfValue.Va
 
 // validatePartialPackageValuesAgainstSchema validates the known portion of a
 // package values document. Unknown values are retained as nil during schema
-// validation so their keys can still be checked. Only errors attached directly
-// to an unknown value are deferred; container and key-structure errors remain
+// validation so their keys can still be checked. Errors attached directly to an
+// unknown value, or aggregate errors whose result depends on an unknown
+// descendant, are deferred; container and key-structure errors remain
 // enforceable at plan time.
 func validatePartialPackageValuesAgainstSchema(ctx context.Context, values zarfValue.Values, schemaPath string, unknownPaths []string) error {
 	err := values.Validate(ctx, schemaPath, zarfValue.ValidateOptions{})
@@ -207,9 +208,12 @@ func validatePartialPackageValuesAgainstSchema(ctx context.Context, values zarfV
 
 func shouldDeferPartialSchemaError(errorType, field, property string, unknownPaths []string) bool {
 	// These errors describe known keys or container shape, not an unknown value.
-	switch errorType {
-	case "additional_property_not_allowed", "invalid_property_name", "invalid_property_pattern":
+	if isPartialSchemaStructuralError(errorType) {
 		return false
+	}
+
+	if isPartialSchemaAggregateError(errorType) {
+		return unknownMayAffectValuePath(field, unknownPaths)
 	}
 
 	if errorType == "required" {
@@ -223,6 +227,37 @@ func shouldDeferPartialSchemaError(errorType, field, property string, unknownPat
 	}
 
 	return slices.Contains(unknownPaths, field)
+}
+
+func isPartialSchemaStructuralError(errorType string) bool {
+	switch errorType {
+	case "additional_property_not_allowed", "invalid_property_name", "invalid_property_pattern":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPartialSchemaAggregateError(errorType string) bool {
+	switch errorType {
+	case "number_any_of", "number_one_of", "number_all_of", "number_not", "condition_then", "condition_else":
+		return true
+	default:
+		return false
+	}
+}
+
+func unknownMayAffectValuePath(field string, unknownPaths []string) bool {
+	// Normalize root field
+	if field == "(root)" {
+		field = ""
+	}
+	for _, unknownPath := range unknownPaths {
+		if isValuePathAncestorOrEqual(field, unknownPath) || isValuePathAncestorOrEqual(unknownPath, field) {
+			return true
+		}
+	}
+	return false
 }
 
 func isValuePathAncestorOrEqual(ancestor, descendant string) bool {
