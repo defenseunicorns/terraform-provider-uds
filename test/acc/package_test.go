@@ -196,7 +196,7 @@ func TestAccPackageResourcePlanValidation(t *testing.T) {
 			},
 			// Disabling package validation on plan skips package-dependent checks.
 			// This unavailable source would otherwise fail package loading, signature
-			// verification, optional_components validation, and values sourcePath validation.
+			// verification and optional_components validation.
 			{
 				Config:             testAccPackageResourcePlanValidationDisabledConfig,
 				PlanOnly:           true,
@@ -525,20 +525,6 @@ func checkZarfLifecycleResourcesDestroyed(_ *terraform.State) error {
 	return nil
 }
 
-func renderZarfValuesInvalidPathConfig(packagePath string) string {
-	return fmt.Sprintf(`
-resource "uds_package" "values" {
-  source       = %q
-  architecture = "%s"
-  namespace    = "zarf-values"
-
-  values = {
-    not_exposed = "invalid"
-  }
-}
-`, packagePath, runtime.GOARCH)
-}
-
 func TestAccPackageResourceZarfValues(t *testing.T) {
 	if os.Getenv(resource.EnvTfAcc) == "" {
 		t.Skip("Acceptance tests skipped unless TF_ACC=1")
@@ -573,13 +559,6 @@ func TestAccPackageResourceZarfValues(t *testing.T) {
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		CheckDestroy:             checkZarfValuesResourcesDestroyed,
 		Steps: []resource.TestStep{
-			{
-				// Packages without a values schema use best-effort sourcePath checks,
-				// so an unverified path produces a warning while the plan remains valid.
-				Config:             renderZarfValuesInvalidPathConfig(packagePath),
-				PlanOnly:           true,
-				ExpectNonEmptyPlan: true,
-			},
 			{
 				Config: renderZarfValuesPackageConfig(t, initialValues),
 				Check: resource.ComposeAggregateTestCheckFunc(
