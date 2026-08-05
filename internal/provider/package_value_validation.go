@@ -8,12 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfLayout "github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfValue "github.com/zarf-dev/zarf/src/pkg/value"
@@ -28,8 +26,7 @@ func deepMergePackageValues(values ...zarfValue.Values) zarfValue.Values {
 }
 
 // mergePartialPackageValues combines plan-time values while preserving known
-// structure when an unknown map/object is represented by nil. Exact conflicts
-// are checked separately from the original Terraform values before this merge.
+// structure when an unknown map or object is represented by nil.
 func mergePartialPackageValues(values ...zarfValue.Values) zarfValue.Values {
 	merged := zarfValue.Values{}
 	for _, value := range values {
@@ -53,8 +50,6 @@ func mergePartialPackageValueMaps(destination, source map[string]any) {
 			continue
 		}
 
-		// A nil value represents an unknown plan-time subtree. Preserve any
-		// known value already present so its schema constraints remain visible.
 		if sourceValue == nil {
 			continue
 		}
@@ -70,10 +65,8 @@ func joinValuePath(prefix string, key string) string {
 }
 
 // dynamicToPartialValues converts the known portion of a Terraform dynamic
-// value for plan-time schema validation. Unknown values are represented as
-// nil so their containing keys remain available for structural schema checks.
-// The returned paths identify values whose constraints must be deferred until
-// apply because their eventual values are not known during planning.
+// value for plan-time validation. Unknown values are represented by nil, while
+// unknownPaths records the affected subtrees for conservative error filtering.
 func dynamicToPartialValues(attrName string, value types.Dynamic) (zarfValue.Values, []string, error) {
 	if value.IsNull() || value.IsUnderlyingValueNull() {
 		return zarfValue.Values{}, nil, nil
@@ -91,14 +84,9 @@ func dynamicToPartialValues(attrName string, value types.Dynamic) (zarfValue.Val
 	if !ok {
 		return zarfValue.Values{}, nil, fmt.Errorf("%s must be a map or object", attrName)
 	}
-
 	return zarfValue.Values(values), unknownPaths, nil
 }
 
-// terraformValueToPartialGoValue is the plan-time counterpart to
-// terraformValueToGoValue. It preserves map/object keys even when their
-// values are unknown, allowing additionalProperties and other structural
-// checks to run without pretending to know the values themselves.
 func terraformValueToPartialGoValue(value attr.Value, valuePath string) (any, []string, error) {
 	if value == nil || value.IsNull() {
 		return nil, nil, nil
@@ -142,8 +130,7 @@ func terraformMapToPartialGoMap(elements map[string]attr.Value, valuePath string
 	result := make(map[string]any, len(elements))
 	var unknownPaths []string
 	for key, value := range elements {
-		keyPath := joinValuePath(valuePath, key)
-		converted, paths, err := terraformValueToPartialGoValue(value, keyPath)
+		converted, paths, err := terraformValueToPartialGoValue(value, joinValuePath(valuePath, key))
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", key, err)
 		}
@@ -171,12 +158,9 @@ func validatePackageValuesAgainstSchema(ctx context.Context, values zarfValue.Va
 	return values.Validate(ctx, schemaPath, zarfValue.ValidateOptions{})
 }
 
-// validatePartialPackageValuesAgainstSchema validates the known portion of a
-// package values document. Unknown values are retained as nil during schema
-// validation so their keys can still be checked. Errors attached directly to an
-// unknown value, or aggregate errors whose result depends on an unknown
-// descendant, are deferred; container and key-structure errors remain
-// enforceable at plan time.
+// validatePartialPackageValuesAgainstSchema validates a partially known values
+// document. It returns only errors that can be proven from known data; errors
+// touching an unknown subtree defer until apply.
 func validatePartialPackageValuesAgainstSchema(ctx context.Context, values zarfValue.Values, schemaPath string, unknownPaths []string) error {
 	err := values.Validate(ctx, schemaPath, zarfValue.ValidateOptions{})
 	if err == nil || len(unknownPaths) == 0 {
@@ -188,8 +172,12 @@ func validatePartialPackageValuesAgainstSchema(ctx context.Context, values zarfV
 		return err
 	}
 
+	deferredAggregatePaths := partialSchemaDeferredAggregatePaths(schemaErr, unknownPaths)
 	filteredErrors := schemaErr.Errors[:0:0]
 	for _, validationErr := range schemaErr.Errors {
+		if partialSchemaErrorIsInDeferredAggregate(validationErr.Field(), deferredAggregatePaths) {
+			continue
+		}
 		property, _ := validationErr.Details()["property"].(string)
 		if shouldDeferPartialSchemaError(validationErr.Type(), validationErr.Field(), property, unknownPaths) {
 			continue
@@ -206,30 +194,52 @@ func validatePartialPackageValuesAgainstSchema(ctx context.Context, values zarfV
 	return &filteredSchemaErr
 }
 
-func shouldDeferPartialSchemaError(errorType, field, property string, unknownPaths []string) bool {
-	// These errors describe known keys or container shape, not an unknown value.
-	if isPartialSchemaStructuralError(errorType) {
-		return false
+func partialSchemaDeferredAggregatePaths(schemaErr *zarfValue.SchemaValidationError, unknownPaths []string) []string {
+	var paths []string
+	for _, validationErr := range schemaErr.Errors {
+		if !isPartialSchemaBranchingError(validationErr.Type()) {
+			continue
+		}
+		field := normalizeSchemaValuePath(validationErr.Field())
+		if unknownIntersectsPathSubtree(field, unknownPaths) {
+			paths = append(paths, field)
+		}
 	}
+	return paths
+}
 
-	if isPartialSchemaAggregateError(errorType) {
-		return unknownMayAffectValuePath(field, unknownPaths)
+func partialSchemaErrorIsInDeferredAggregate(field string, aggregatePaths []string) bool {
+	field = normalizeSchemaValuePath(field)
+	for _, aggregatePath := range aggregatePaths {
+		if isValuePathAncestorOrEqual(aggregatePath, field) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldDeferPartialSchemaError(errorType, field, property string, unknownPaths []string) bool {
+	field = normalizeSchemaValuePath(field)
+
+	if isPartialSchemaPropertyError(errorType) {
+		// An explicitly configured unknown value does not make its key unknown.
+		return unknownAncestorMayChangePath(joinValuePath(field, property), unknownPaths)
 	}
 
 	if errorType == "required" {
-		missingPath := joinValuePath(field, property)
-		for _, unknownPath := range unknownPaths {
-			if isValuePathAncestorOrEqual(unknownPath, missingPath) {
-				return true
-			}
-		}
-		return false
+		return unknownAtOrAbovePath(joinValuePath(field, property), unknownPaths)
 	}
 
-	return slices.Contains(unknownPaths, field)
+	if isPartialSchemaDirectValueError(errorType) {
+		return unknownAtOrAbovePath(field, unknownPaths)
+	}
+
+	// JSON Schema can apply every other error type to arrays, objects, or
+	// combinator branches. Keep it only when the entire affected subtree is known.
+	return unknownIntersectsPathSubtree(field, unknownPaths)
 }
 
-func isPartialSchemaStructuralError(errorType string) bool {
+func isPartialSchemaPropertyError(errorType string) bool {
 	switch errorType {
 	case "additional_property_not_allowed", "invalid_property_name", "invalid_property_pattern":
 		return true
@@ -238,26 +248,59 @@ func isPartialSchemaStructuralError(errorType string) bool {
 	}
 }
 
-func isPartialSchemaAggregateError(errorType string) bool {
+func isPartialSchemaDirectValueError(errorType string) bool {
 	switch errorType {
-	case "number_any_of", "number_one_of", "number_all_of", "number_not", "condition_then", "condition_else":
+	case "invalid_type", "string_gte", "string_lte", "pattern", "format", "multiple_of", "number_gte", "number_gt", "number_lte", "number_lt":
 		return true
 	default:
 		return false
 	}
 }
 
-func unknownMayAffectValuePath(field string, unknownPaths []string) bool {
-	// Normalize root field
-	if field == "(root)" {
-		field = ""
+// These validators report child errors from a branch or candidate item that
+// may become valid once an unknown value resolves. Their child errors must
+// defer with the parent result.
+func isPartialSchemaBranchingError(errorType string) bool {
+	switch errorType {
+	case "number_any_of", "number_one_of", "contains", "condition_then", "condition_else":
+		return true
+	default:
+		return false
 	}
+}
+
+func unknownAncestorMayChangePath(path string, unknownPaths []string) bool {
 	for _, unknownPath := range unknownPaths {
-		if isValuePathAncestorOrEqual(field, unknownPath) || isValuePathAncestorOrEqual(unknownPath, field) {
+		if unknownPath != path && isValuePathAncestorOrEqual(unknownPath, path) {
 			return true
 		}
 	}
 	return false
+}
+
+func unknownAtOrAbovePath(path string, unknownPaths []string) bool {
+	for _, unknownPath := range unknownPaths {
+		if isValuePathAncestorOrEqual(unknownPath, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func unknownIntersectsPathSubtree(path string, unknownPaths []string) bool {
+	for _, unknownPath := range unknownPaths {
+		if isValuePathAncestorOrEqual(unknownPath, path) || isValuePathAncestorOrEqual(path, unknownPath) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeSchemaValuePath(path string) string {
+	if path == "(root)" {
+		return ""
+	}
+	return path
 }
 
 func isValuePathAncestorOrEqual(ancestor, descendant string) bool {
@@ -286,7 +329,7 @@ func (r *PackageResource) validatePlannedPackageValuesAgainstSchema(ctx context.
 	defaults = deepMergePackageValues(defaults, overrides)
 
 	schemaPath := filepath.Join(pkgLayout.DirPath(), layout.ValuesSchema)
-	unknownPaths := slices.Concat(valuesUnknownPaths, sensitiveUnknownPaths)
+	unknownPaths := append(valuesUnknownPaths, sensitiveUnknownPaths...)
 	if err := validatePartialPackageValuesAgainstSchema(ctx, defaults, schemaPath, unknownPaths); err != nil {
 		return fmt.Errorf("package values do not match the package values schema: %w", err)
 	}

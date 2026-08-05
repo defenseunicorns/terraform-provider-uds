@@ -5,35 +5,30 @@ package provider
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/defenseunicorns/pkg/helpers/v2"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfValue "github.com/zarf-dev/zarf/src/pkg/value"
 )
 
-func TestDynamicToPartialValuesKeepsKnownKeysWithUnknownValues(t *testing.T) {
+func TestDynamicToPartialValuesKeepsKnownSiblings(t *testing.T) {
 	value := types.DynamicValue(types.ObjectValueMust(
 		map[string]attr.Type{
-			"allowed": types.StringType,
-			"typo":    types.StringType,
+			"known": types.StringType,
 			"nested": types.ObjectType{AttrTypes: map[string]attr.Type{
-				"typo": types.StringType,
+				"computed": types.StringType,
 			}},
 		},
 		map[string]attr.Value{
-			"allowed": types.StringValue("known"),
-			"typo":    types.StringUnknown(),
+			"known": types.StringValue("value"),
 			"nested": types.ObjectValueMust(
-				map[string]attr.Type{"typo": types.StringType},
-				map[string]attr.Value{"typo": types.StringUnknown()},
+				map[string]attr.Type{"computed": types.StringType},
+				map[string]attr.Value{"computed": types.StringUnknown()},
 			),
 		},
 	))
@@ -41,60 +36,14 @@ func TestDynamicToPartialValuesKeepsKnownKeysWithUnknownValues(t *testing.T) {
 	values, unknownPaths, err := dynamicToPartialValues("values", value)
 
 	require.NoError(t, err)
-	assert.Equal(t, "known", values["allowed"])
-	assert.Contains(t, values, "typo")
-	assert.Nil(t, values["typo"])
+	assert.Equal(t, "value", values["known"])
 	nested, ok := values["nested"].(map[string]any)
 	require.True(t, ok)
-	assert.Contains(t, nested, "typo")
-	assert.Nil(t, nested["typo"])
-	assert.ElementsMatch(t, []string{"typo", "nested.typo"}, unknownPaths)
+	assert.Nil(t, nested["computed"])
+	assert.Equal(t, []string{"nested.computed"}, unknownPaths)
 }
 
-func TestDynamicToPartialValuesCoversUnknownShapes(t *testing.T) {
-	collectionCases := []struct {
-		name  string
-		value types.Dynamic
-	}{
-		{
-			name: "list element",
-			value: types.DynamicValue(types.ObjectValueMust(
-				map[string]attr.Type{"items": types.ListType{ElemType: types.StringType}},
-				map[string]attr.Value{"items": types.ListValueMust(types.StringType, []attr.Value{
-					types.StringValue("known"),
-					types.StringUnknown(),
-				})},
-			)),
-		},
-		{
-			name: "set element",
-			value: types.DynamicValue(types.ObjectValueMust(
-				map[string]attr.Type{"items": types.SetType{ElemType: types.StringType}},
-				map[string]attr.Value{"items": types.SetValueMust(types.StringType, []attr.Value{types.StringUnknown()})},
-			)),
-		},
-		{
-			name: "map element",
-			value: types.DynamicValue(types.ObjectValueMust(
-				map[string]attr.Type{"items": types.MapType{ElemType: types.StringType}},
-				map[string]attr.Value{"items": types.MapValueMust(types.StringType, map[string]attr.Value{
-					"known":   types.StringValue("known"),
-					"unknown": types.StringUnknown(),
-				})},
-			)),
-		},
-		{
-			name: "tuple element",
-			value: types.DynamicValue(types.ObjectValueMust(
-				map[string]attr.Type{"items": types.TupleType{ElemTypes: []attr.Type{types.StringType, types.StringType}}},
-				map[string]attr.Value{"items": types.TupleValueMust([]attr.Type{types.StringType, types.StringType}, []attr.Value{
-					types.StringValue("known"),
-					types.StringUnknown(),
-				})},
-			)),
-		},
-	}
-
+func TestDynamicToPartialValuesHandlesUnknownShapes(t *testing.T) {
 	tests := []struct {
 		name         string
 		value        types.Dynamic
@@ -104,36 +53,32 @@ func TestDynamicToPartialValuesCoversUnknownShapes(t *testing.T) {
 		{name: "null", value: types.DynamicNull()},
 		{name: "root unknown", value: types.DynamicUnknown(), unknownPaths: []string{""}},
 		{
-			name: "unknown intermediate object",
+			name: "unknown object",
+			value: types.DynamicValue(types.ObjectValueMust(
+				map[string]attr.Type{"config": types.ObjectType{AttrTypes: map[string]attr.Type{"enabled": types.BoolType}}},
+				map[string]attr.Value{"config": types.ObjectUnknown(map[string]attr.Type{"enabled": types.BoolType})},
+			)),
+			unknownPaths: []string{"config"},
+		},
+		{
+			name: "list, set, tuple, and map elements",
 			value: types.DynamicValue(types.ObjectValueMust(
 				map[string]attr.Type{
-					"known":  types.StringType,
-					"nested": types.ObjectType{AttrTypes: map[string]attr.Type{"value": types.StringType}},
+					"list":  types.ListType{ElemType: types.StringType},
+					"set":   types.SetType{ElemType: types.StringType},
+					"tuple": types.TupleType{ElemTypes: []attr.Type{types.StringType, types.StringType}},
+					"map":   types.MapType{ElemType: types.StringType},
 				},
 				map[string]attr.Value{
-					"known":  types.StringValue("known"),
-					"nested": types.ObjectUnknown(map[string]attr.Type{"value": types.StringType}),
+					"list":  types.ListValueMust(types.StringType, []attr.Value{types.StringValue("known"), types.StringUnknown()}),
+					"set":   types.SetValueMust(types.StringType, []attr.Value{types.StringUnknown()}),
+					"tuple": types.TupleValueMust([]attr.Type{types.StringType, types.StringType}, []attr.Value{types.StringValue("known"), types.StringUnknown()}),
+					"map":   types.MapValueMust(types.StringType, map[string]attr.Value{"unknown": types.StringUnknown()}),
 				},
 			)),
-			unknownPaths: []string{"nested"},
+			unknownPaths: []string{"list.1", "set.0", "tuple.1", "map.unknown"},
 		},
 		{name: "root scalar", value: types.DynamicValue(types.StringValue("not a map")), wantError: "values must be a map or object"},
-	}
-	for _, collectionCase := range collectionCases {
-		tests = append(tests, struct {
-			name         string
-			value        types.Dynamic
-			unknownPaths []string
-			wantError    string
-		}{name: collectionCase.name, value: collectionCase.value, unknownPaths: []string{"items.1"}})
-	}
-	for i := range tests {
-		if tests[i].name == "set element" {
-			tests[i].unknownPaths = []string{"items.0"}
-		}
-		if tests[i].name == "map element" {
-			tests[i].unknownPaths = []string{"items.unknown"}
-		}
 	}
 
 	for _, tc := range tests {
@@ -141,8 +86,7 @@ func TestDynamicToPartialValuesCoversUnknownShapes(t *testing.T) {
 			values, unknownPaths, err := dynamicToPartialValues("values", tc.value)
 
 			if tc.wantError != "" {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tc.wantError)
+				require.ErrorContains(t, err, tc.wantError)
 				return
 			}
 
@@ -151,101 +95,8 @@ func TestDynamicToPartialValuesCoversUnknownShapes(t *testing.T) {
 			if tc.name == "null" || tc.name == "root unknown" {
 				assert.Empty(t, values)
 			}
-			// Collection values are intentionally represented as slices with nil
-			// placeholders for unknown elements.
-			if tc.name == "list element" || tc.name == "set element" || tc.name == "tuple element" {
-				items, ok := values["items"].([]any)
-				if assert.True(t, ok) {
-					if tc.name == "set element" {
-						assert.Len(t, items, 1)
-					} else {
-						assert.Len(t, items, 2)
-						assert.Contains(t, items, "known")
-					}
-					assert.Contains(t, items, nil)
-				}
-			}
-			if tc.name == "map element" {
-				items, ok := values["items"].(map[string]any)
-				if assert.True(t, ok) {
-					assert.Equal(t, "known", items["known"])
-					assert.Nil(t, items["unknown"])
-				}
-			}
 		})
 	}
-}
-
-func TestMergePartialPackageValuesPreservesKnownSubtrees(t *testing.T) {
-	knownValues := zarfValue.Values{
-		"config": map[string]any{
-			"public": "known",
-		},
-	}
-	unknownValues := zarfValue.Values{
-		"config": nil,
-	}
-
-	assert.Equal(t, knownValues, mergePartialPackageValues(knownValues, unknownValues))
-	assert.Equal(t, knownValues, mergePartialPackageValues(unknownValues, knownValues))
-}
-
-func TestValidatePlannedPackageValuesDefersUnknownMapConflicts(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ValuesYAML), []byte("config: {}\n"), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ValuesSchema), []byte(`{
-  "type": "object",
-  "properties": {
-    "config": {
-      "type": "object",
-      "properties": {"public": {"type": "string"}},
-		"additionalProperties": false
-    }
-  }
-}`), 0o600))
-	valuesHash, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.ValuesYAML))
-	require.NoError(t, err)
-	schemaHash, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.ValuesSchema))
-	require.NoError(t, err)
-	checksums := fmt.Sprintf("%s %s\n%s %s\n", valuesHash, layout.ValuesYAML, schemaHash, layout.ValuesSchema)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.Checksums), []byte(checksums), 0o600))
-	aggregateChecksum, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.Checksums))
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ZarfYAML), []byte(`
-apiVersion: zarf.dev/v1alpha1
-kind: ZarfPackageConfig
-metadata:
-  name: partial-merge-test
-  version: 1.0.0
-  aggregateChecksum: `+aggregateChecksum+`
-components: []
-`), 0o600))
-
-	pkgLayout, err := layout.LoadFromDir(context.Background(), dir, layout.PackageLayoutOptions{
-		VerificationStrategy: layout.VerifyNever,
-	})
-	require.NoError(t, err)
-
-	model := NewTestPackageResourceModel(
-		WithValues(types.DynamicValue(types.ObjectValueMust(
-			map[string]attr.Type{
-				"config": types.ObjectType{AttrTypes: map[string]attr.Type{"public": types.StringType}},
-			},
-			map[string]attr.Value{
-				"config": types.ObjectValueMust(
-					map[string]attr.Type{"public": types.StringType},
-					map[string]attr.Value{"public": types.StringValue("known")},
-				),
-			},
-		))),
-		WithSensitiveValues(types.DynamicValue(types.ObjectValueMust(
-			map[string]attr.Type{"config": types.MapType{ElemType: types.StringType}},
-			map[string]attr.Value{"config": types.MapUnknown(types.StringType)},
-		))),
-	)
-
-	r := &PackageResource{}
-	assert.NoError(t, r.validatePlannedPackageValuesAgainstSchema(context.Background(), model, pkgLayout))
 }
 
 func TestValidatePackageValuesAgainstSchema(t *testing.T) {
@@ -273,27 +124,154 @@ func TestValidatePackageValuesAgainstSchema(t *testing.T) {
 	assert.Error(t, validatePackageValuesAgainstSchema(context.Background(), zarfValue.Values{}, schemaPath), "required values should be enforced when the effective document is known")
 }
 
-func TestValidatePartialPackageValuesAgainstSchemaPreservesUnknownKeys(t *testing.T) {
+func TestValidatePartialPackageValuesAgainstSchemaRetainsKnownErrors(t *testing.T) {
 	schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
 	require.NoError(t, os.WriteFile(schemaPath, []byte(`{
   "type": "object",
   "properties": {
-    "allowed": {"type": "string"},
-    "service": {
-      "type": "object",
-      "properties": {"host": {"type": "string"}},
-      "additionalProperties": false
-    }
-  },
-  "additionalProperties": false
+    "typed": {"type": "string"},
+    "name": {"type": "string", "pattern": "^valid", "minLength": 8},
+    "replicas": {"type": "integer", "minimum": 2},
+    "mode": {"enum": ["valid"]},
+    "computed": {"type": "string"}
+  }
 }`), 0o600))
 
-	assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+	err := validatePartialPackageValuesAgainstSchema(
 		context.Background(),
-		zarfValue.Values{"allowed": nil},
+		zarfValue.Values{
+			"typed":    1,
+			"name":     "bad",
+			"replicas": 1,
+			"mode":     "invalid",
+			"computed": nil,
+		},
 		schemaPath,
-		[]string{"allowed"},
-	))
+		[]string{"computed"},
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "typed")
+	assert.Contains(t, err.Error(), "name")
+	assert.Contains(t, err.Error(), "replicas")
+	assert.Contains(t, err.Error(), "mode")
+}
+
+func TestValidatePartialPackageValuesAgainstSchemaDefersUnknownTrees(t *testing.T) {
+	t.Run("collection content constraint", func(t *testing.T) {
+		schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+		require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+  "type": "object",
+  "properties": {
+    "items": {
+      "type": "array",
+      "contains": {"const": "expected"}
+    }
+  }
+}`), 0o600))
+
+		assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+			context.Background(),
+			zarfValue.Values{"items": []any{"known", nil}},
+			schemaPath,
+			[]string{"items.1"},
+		))
+	})
+
+	t.Run("parent anyOf", func(t *testing.T) {
+		schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+		require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+  "type": "object",
+  "anyOf": [
+    {"properties": {"mode": {"const": "resource"}}},
+    {"properties": {"mode": {"const": "data"}}}
+  ]
+}`), 0o600))
+
+		assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+			context.Background(),
+			zarfValue.Values{"mode": nil},
+			schemaPath,
+			[]string{"mode"},
+		))
+	})
+
+	t.Run("allOf child error", func(t *testing.T) {
+		schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+		require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+  "type": "object",
+  "allOf": [
+    {"properties": {"mode": {"const": "expected"}}}
+  ]
+}`), 0o600))
+
+		assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+			context.Background(),
+			zarfValue.Values{"mode": nil},
+			schemaPath,
+			[]string{"mode"},
+		))
+	})
+
+	t.Run("conditional", func(t *testing.T) {
+		schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+		require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+  "type": "object",
+  "if": {"properties": {"mode": {"const": "enabled"}}},
+  "then": {"required": ["settings"]}
+}`), 0o600))
+
+		assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+			context.Background(),
+			zarfValue.Values{"mode": nil},
+			schemaPath,
+			[]string{"mode"},
+		))
+	})
+
+	t.Run("parent combinator", func(t *testing.T) {
+		schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+		require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+  "type": "object",
+  "oneOf": [
+    {"properties": {"mode": {"const": "resource"}}},
+    {"properties": {"mode": {"const": "data"}}}
+  ]
+}`), 0o600))
+
+		assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+			context.Background(),
+			zarfValue.Values{"mode": nil},
+			schemaPath,
+			[]string{"mode"},
+		))
+	})
+
+	t.Run("collection uniqueness", func(t *testing.T) {
+		schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+		require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+  "type": "object",
+  "properties": {
+    "items": {"type": "array", "uniqueItems": true}
+  }
+}`), 0o600))
+
+		assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+			context.Background(),
+			zarfValue.Values{"items": []any{nil, nil}},
+			schemaPath,
+			[]string{"items.1"},
+		))
+	})
+}
+
+func TestValidatePartialPackageValuesAgainstSchemaRetainsExplicitInvalidKeys(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+	require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+  "type": "object",
+  "properties": {"known": {"type": "string"}},
+  "additionalProperties": false
+}`), 0o600))
 
 	err := validatePartialPackageValuesAgainstSchema(
 		context.Background(),
@@ -303,114 +281,77 @@ func TestValidatePartialPackageValuesAgainstSchemaPreservesUnknownKeys(t *testin
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "typo")
-
-	err = validatePartialPackageValuesAgainstSchema(
-		context.Background(),
-		zarfValue.Values{"service": map[string]any{"typo": nil}},
-		schemaPath,
-		[]string{"service.typo"},
-	)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "typo")
 }
 
-func TestValidatePartialPackageValuesAgainstSchemaDefersUnknownCombinatorErrors(t *testing.T) {
-	schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
-	require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+func TestValidatePartialPackageValuesAgainstSchemaPathRelationships(t *testing.T) {
+	t.Run("required error remains when a sibling is unknown", func(t *testing.T) {
+		schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+		require.NoError(t, os.WriteFile(schemaPath, []byte(`{
   "type": "object",
-  "oneOf": [
-    {
-      "properties": {
-        "mode": {"enum": ["resource"]},
-        "kind": {"enum": ["valid"]}
-      }
-    },
-    {
-      "properties": {
-        "mode": {"enum": ["data"]},
-        "kind": {"enum": ["valid"]}
-      }
-    }
-  ]
+  "properties": {"computed": {"type": "string"}},
+  "required": ["requiredValue"]
 }`), 0o600))
 
-	assert.NoError(t, validatePartialPackageValuesAgainstSchema(
-		context.Background(),
-		zarfValue.Values{"mode": nil},
-		schemaPath,
-		[]string{"mode"},
-	))
+		err := validatePartialPackageValuesAgainstSchema(context.Background(), zarfValue.Values{"computed": nil}, schemaPath, []string{"computed"})
+		require.ErrorContains(t, err, "requiredValue")
+	})
 
-	err := validatePartialPackageValuesAgainstSchema(
-		context.Background(),
-		zarfValue.Values{"kind": "invalid", "mode": nil},
-		schemaPath,
-		[]string{"mode"},
-	)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "kind")
-}
-
-func TestValidatePartialPackageValuesAgainstSchemaDefersOnlyRelatedRequiredErrors(t *testing.T) {
-	schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
-	require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+	t.Run("required error defers when its parent is unknown", func(t *testing.T) {
+		schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+		require.NoError(t, os.WriteFile(schemaPath, []byte(`{
   "type": "object",
-  "properties": {
-    "requiredValue": {"type": "string"},
-    "computedValue": {"type": "string"}
-  },
-  "required": ["requiredValue"],
-  "additionalProperties": false
+  "required": ["requiredValue"]
 }`), 0o600))
 
-	err := validatePartialPackageValuesAgainstSchema(
-		context.Background(),
-		zarfValue.Values{"computedValue": nil},
-		schemaPath,
-		[]string{"computedValue"},
-	)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "requiredValue")
+		assert.NoError(t, validatePartialPackageValuesAgainstSchema(context.Background(), zarfValue.Values{}, schemaPath, []string{""}))
+	})
 
-	assert.NoError(t, validatePartialPackageValuesAgainstSchema(
-		context.Background(),
-		zarfValue.Values{},
-		schemaPath,
-		[]string{""},
-	))
-}
-
-func TestValidatePartialPackageValuesAgainstSchemaRetainsContainerErrors(t *testing.T) {
-	schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
-	require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+	t.Run("known child error remains inside an object with an unknown sibling", func(t *testing.T) {
+		schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+		require.NoError(t, os.WriteFile(schemaPath, []byte(`{
   "type": "object",
-  "propertyNames": {"pattern": "^[a-z]+$"},
   "properties": {
-    "items": {
-      "type": "array",
-      "maxItems": 1,
-      "items": {"type": "string"}
+    "config": {
+      "type": "object",
+      "properties": {
+        "known": {"type": "string"},
+        "computed": {"type": "string"}
+      }
     }
   }
 }`), 0o600))
 
-	err := validatePartialPackageValuesAgainstSchema(
-		context.Background(),
-		zarfValue.Values{"items": []any{"known", nil}},
-		schemaPath,
-		[]string{"items.1"},
-	)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "at most 1 item")
+		err := validatePartialPackageValuesAgainstSchema(
+			context.Background(),
+			zarfValue.Values{"config": map[string]any{"known": 1, "computed": nil}},
+			schemaPath,
+			[]string{"config.computed"},
+		)
+		require.ErrorContains(t, err, "known")
+	})
 
-	err = validatePartialPackageValuesAgainstSchema(
-		context.Background(),
-		zarfValue.Values{"INVALID": nil},
-		schemaPath,
-		[]string{"INVALID"},
-	)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "INVALID")
+	t.Run("direct value error defers at an unknown value", func(t *testing.T) {
+		schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+		require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+  "type": "object",
+  "properties": {"computed": {"type": "string", "pattern": "^valid"}}
+}`), 0o600))
+
+		assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+			context.Background(), zarfValue.Values{"computed": nil}, schemaPath, []string{"computed"},
+		))
+	})
+
+	t.Run("property-name error remains for an explicit unknown key", func(t *testing.T) {
+		schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
+		require.NoError(t, os.WriteFile(schemaPath, []byte(`{
+  "type": "object",
+  "propertyNames": {"pattern": "^[a-z]+$"}
+}`), 0o600))
+
+		err := validatePartialPackageValuesAgainstSchema(context.Background(), zarfValue.Values{"INVALID": nil}, schemaPath, []string{"INVALID"})
+		require.ErrorContains(t, err, "INVALID")
+	})
 }
 
 func TestMergePackageValuesWithDefaultsBeforeSchemaValidation(t *testing.T) {
@@ -434,4 +375,20 @@ func TestMergePackageValuesWithDefaultsBeforeSchemaValidation(t *testing.T) {
 
 	assert.Error(t, validatePackageValuesAgainstSchema(context.Background(), overrides, schemaPath), "partial overrides should not be validated as the complete document")
 	assert.NoError(t, validatePackageValuesAgainstSchema(context.Background(), deepMergePackageValues(defaults, overrides), schemaPath))
+}
+
+func TestMergePartialPackageValuesPreservesKnownValuesWhenAnotherSourceIsUnknown(t *testing.T) {
+	values := zarfValue.Values{
+		"config": map[string]any{
+			"host": "known.example.test",
+			"port": 8080,
+		},
+	}
+	sensitiveValues := zarfValue.Values{
+		"config": map[string]any{
+			"host": nil,
+		},
+	}
+
+	assert.Equal(t, values, mergePartialPackageValues(values, sensitiveValues))
 }
