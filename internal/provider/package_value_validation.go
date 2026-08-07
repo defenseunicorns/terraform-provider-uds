@@ -160,7 +160,9 @@ func validatePackageValuesAgainstSchema(ctx context.Context, values zarfValue.Va
 
 // validatePartialPackageValuesAgainstSchema validates a partially known values
 // document. It returns only errors that can be proven from known data; errors
-// touching an unknown subtree defer until apply.
+// touching an unknown subtree defer until apply. Aggregate errors can include
+// child errors without branch provenance, so an unknown-affected aggregate
+// defers its descendants as a group and may delay unrelated descendant errors.
 func validatePartialPackageValuesAgainstSchema(ctx context.Context, values zarfValue.Values, schemaPath string, unknownPaths []string) error {
 	err := values.Validate(ctx, schemaPath, zarfValue.ValidateOptions{})
 	if err == nil || len(unknownPaths) == 0 {

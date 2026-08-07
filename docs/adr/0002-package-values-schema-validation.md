@@ -39,7 +39,7 @@ The partial converter preserves known map keys and values. It represents unknown
 
 The provider leverages Zarf code to perform the validation (against the JSON schema) and then "filters" any returned schema errors taking into account the unknown paths:
 
-- Keep type, string, format, numeric, and scalar enum errors for known values.
+- Keep type, string, format, numeric, and scalar enum errors for known values when they are outside an unknown-affected aggregate.
 - Keep additional-property and property-name errors for explicitly configured keys, including keys whose values are unknown.
 - Ignore a required-property error when an unknown parent could supply the missing property at apply.
 - Ignore `oneOf`, `anyOf`, `contains`, and conditional aggregate errors, plus their child errors, when an unknown can change the aggregate result.
@@ -58,7 +58,7 @@ At apply time no additional validation is performed by the provider - Zarf's dep
 - The provider validates package defaults and both override attributes as one document.
 - Package authors can use JSON Schema for constraints that chart source-path inspection cannot express.
 - Packages can consume values through chart mappings, `templateValuesFiles`, and other Zarf templating without provider plan failures.
-- Unknown Terraform outputs defer only errors that require the unresolved value. Known sibling errors remain visible.
+- Unknown Terraform outputs defer errors that require the unresolved value. This can include some related/descendant values also due to aggregate schema checks (`oneOf`, `anyOf`, `contains`).
 - Zarf repeats validation at apply with resolved values, so deferred plan errors cannot bypass the schema.
 
 ### Negative
