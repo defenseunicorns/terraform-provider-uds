@@ -61,13 +61,8 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
-      - name: Setup mise
-        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
-        with:
-          # renovate: datasource=github-releases depName=jdx/mise versioning=semver
-          version: 2026.8.1
-          install: true
-          cache: true
+      - name: Setup tools
+        uses: ./.github/actions/setup
 
       - name: Install syft
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
