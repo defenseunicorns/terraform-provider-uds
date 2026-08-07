@@ -19,9 +19,7 @@ import (
 
 func deepMergePackageValues(values ...zarfValue.Values) zarfValue.Values {
 	merged := zarfValue.Values{}
-	for _, value := range values {
-		merged.DeepMerge(value)
-	}
+	merged.DeepMerge(values...)
 	return merged
 }
 
