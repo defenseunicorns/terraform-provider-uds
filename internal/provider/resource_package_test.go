@@ -1537,23 +1537,6 @@ func TestPackageResource_Upsert_Values(t *testing.T) {
 			expectedErrorMsg: "db.password",
 		},
 		{
-			name: "package with unexposed value path returns error",
-			values: types.DynamicValue(types.ObjectValueMust(
-				map[string]attr.Type{
-					"image": types.ObjectType{AttrTypes: map[string]attr.Type{
-						"tag": types.StringType,
-					}},
-				},
-				map[string]attr.Value{
-					"image": types.ObjectValueMust(
-						map[string]attr.Type{"tag": types.StringType},
-						map[string]attr.Value{"tag": types.StringValue("latest")},
-					),
-				},
-			)),
-			expectedErrorMsg: "image.tag",
-		},
-		{
 			name:             "package with root unknown values returns error",
 			values:           types.DynamicUnknown(),
 			expectedErrorMsg: "invalid package values for apply: values must be known",
@@ -1571,16 +1554,6 @@ func TestPackageResource_Upsert_Values(t *testing.T) {
 			mockPackageComponentFilter := &MockPackageComponentFilter{}
 
 			validLoadPackageResult := newValidLoadPackageResult()
-			validLoadPackageResult.Layout.Pkg.Components[0].Charts = []v1alpha1.ZarfChart{
-				{
-					Name: "test-chart",
-					Values: []v1alpha1.ZarfChartValue{
-						{SourcePath: ".pod.replicaCount", TargetPath: ".pod.replicaCount"},
-						{SourcePath: ".logLevel", TargetPath: ".logLevel"},
-						{SourcePath: ".db", TargetPath: ".db"},
-					},
-				},
-			}
 			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
 				validLoadPackageResult.Layout,
 				validLoadPackageResult.Error,
@@ -2093,7 +2066,7 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 
 			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 			model := NewTestPackageResourceModel(tc.modelOpts...)
-			result := packageResource.runPackagePlanChecks(context.Background(), model, nil)
+			result := packageResource.runPackagePlanChecks(context.Background(), model)
 
 			if tc.expectLoadErr {
 				assert.NotNil(t, result.LoadErr)
@@ -2171,7 +2144,7 @@ func TestPackageResource_RunPackagePlanChecks_ErrorRouting(t *testing.T) {
 
 			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 			model := NewTestPackageResourceModel(tc.modelOpts...)
-			result := packageResource.runPackagePlanChecks(context.Background(), model, nil)
+			result := packageResource.runPackagePlanChecks(context.Background(), model)
 
 			if tc.expectLoadErr {
 				assert.NotNil(t, result.LoadErr, "expected LoadErr")
@@ -5907,327 +5880,6 @@ func TestDynamicContainsUnknown(t *testing.T) {
 	}
 }
 
-func TestCollectDynamicValuePaths(t *testing.T) {
-	nestedKnownObject := types.DynamicValue(types.ObjectValueMust(
-		map[string]attr.Type{
-			"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
-				"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
-					"pet-name": types.StringType,
-				}},
-				"empty": types.ObjectType{AttrTypes: map[string]attr.Type{}},
-			}},
-			"items": types.ListType{ElemType: types.StringType},
-		},
-		map[string]attr.Value{
-			"pod": types.ObjectValueMust(
-				map[string]attr.Type{
-					"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
-						"pet-name": types.StringType,
-					}},
-					"empty": types.ObjectType{AttrTypes: map[string]attr.Type{}},
-				},
-				map[string]attr.Value{
-					"annotations": types.ObjectValueMust(
-						map[string]attr.Type{"pet-name": types.StringType},
-						map[string]attr.Value{"pet-name": types.StringValue("fluffy")},
-					),
-					"empty": types.ObjectValueMust(map[string]attr.Type{}, map[string]attr.Value{}),
-				},
-			),
-			"items": types.ListValueMust(types.StringType, []attr.Value{
-				types.StringValue("one"),
-				types.StringValue("two"),
-			}),
-		},
-	))
-	nestedUnknownObject := types.DynamicValue(types.ObjectValueMust(
-		map[string]attr.Type{
-			"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
-				"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
-					"pet-name": types.StringType,
-				}},
-			}},
-		},
-		map[string]attr.Value{
-			"pod": types.ObjectValueMust(
-				map[string]attr.Type{
-					"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
-						"pet-name": types.StringType,
-					}},
-				},
-				map[string]attr.Value{
-					"annotations": types.ObjectValueMust(
-						map[string]attr.Type{"pet-name": types.StringType},
-						map[string]attr.Value{"pet-name": types.StringUnknown()},
-					),
-				},
-			),
-		},
-	))
-	listWithUnknown := types.DynamicValue(types.ObjectValueMust(
-		map[string]attr.Type{
-			"items": types.ListType{ElemType: types.StringType},
-		},
-		map[string]attr.Value{
-			"items": types.ListValueMust(types.StringType, []attr.Value{
-				types.StringValue("known"),
-				types.StringUnknown(),
-			}),
-		},
-	))
-	unknownIntermediateObject := types.DynamicValue(types.ObjectValueMust(
-		map[string]attr.Type{
-			"pod": types.DynamicType,
-		},
-		map[string]attr.Value{
-			"pod": types.DynamicUnknown(),
-		},
-	))
-
-	tests := []struct {
-		name               string
-		input              types.Dynamic
-		expectedPaths      []plannedPackageValuePath
-		expectedHasUnknown bool
-		errorText          string
-	}{
-		{name: "null has no paths", input: types.DynamicNull(), expectedPaths: []plannedPackageValuePath{}},
-		{name: "root unknown has no paths but records unknown", input: types.DynamicUnknown(), expectedPaths: []plannedPackageValuePath{}, expectedHasUnknown: true},
-		{name: "known object returns leaf paths", input: nestedKnownObject, expectedPaths: []plannedPackageValuePath{{path: "pod.annotations.pet-name"}, {path: "pod.empty"}, {path: "items"}}},
-		{name: "nested unknown scalar returns path and records unknown", input: nestedUnknownObject, expectedPaths: []plannedPackageValuePath{{path: "pod.annotations.pet-name"}}, expectedHasUnknown: true},
-		{name: "unknown intermediate object returns unknown subtree path", input: unknownIntermediateObject, expectedPaths: []plannedPackageValuePath{{path: "pod", unknownSubtree: true}}, expectedHasUnknown: true},
-		{name: "list with unknown returns list path and records unknown", input: listWithUnknown, expectedPaths: []plannedPackageValuePath{{path: "items"}}, expectedHasUnknown: true},
-		{name: "root scalar returns error", input: types.DynamicValue(types.StringValue("nope")), errorText: "values must be a map or object"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			paths, hasUnknown, err := collectDynamicValuePaths(tc.input, "values")
-
-			if tc.errorText != "" {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), tc.errorText)
-				return
-			}
-
-			assert.NoError(t, err)
-			assert.ElementsMatch(t, tc.expectedPaths, paths)
-			assert.Equal(t, tc.expectedHasUnknown, hasUnknown)
-		})
-	}
-}
-
-func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesValidateKnownPaths(t *testing.T) {
-	mockPackager := &MockPackager{}
-	model := NewTestPackageResourceModel(
-		WithOptionalComponents([]string{}),
-		WithValues(types.DynamicValue(types.ObjectValueMust(
-			map[string]attr.Type{
-				"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
-					"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
-						"pet-name": types.StringType,
-					}},
-				}},
-			},
-			map[string]attr.Value{
-				"pod": types.ObjectValueMust(
-					map[string]attr.Type{
-						"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
-							"pet-name": types.StringType,
-						}},
-					},
-					map[string]attr.Value{
-						"annotations": types.ObjectValueMust(
-							map[string]attr.Type{"pet-name": types.StringType},
-							map[string]attr.Value{"pet-name": types.StringUnknown()},
-						),
-					},
-				),
-			},
-		))),
-	)
-	pkgLayout := &layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{
-			Components: []v1alpha1.ZarfComponent{
-				{
-					Name:     "required-component",
-					Required: helpers.BoolPtr(true),
-					Charts: []v1alpha1.ZarfChart{
-						{
-							Name: "chart",
-							Values: []v1alpha1.ZarfChartValue{
-								{SourcePath: ".pod.annotations", TargetPath: ".pod.annotations"},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil)
-	packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
-	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
-
-	valuePaths := collectConfiguredPackageValuePaths(model, resp)
-	result := packageResource.runPackagePlanChecks(context.Background(), model, valuePaths)
-
-	assert.False(t, resp.Diagnostics.HasError(), "expected nested unknown values with exposed paths to pass, got: %v", resp.Diagnostics.Errors())
-	assert.Nil(t, result.LoadErr)
-	assert.Nil(t, result.ValuePathsErr)
-	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
-}
-
-func TestPackageResource_RunPackagePlanChecks_UnknownIntermediateObjectSourcePathValidation(t *testing.T) {
-	tests := []struct {
-		name        string
-		valuePath   string
-		sourcePaths []string
-		expectErr   bool
-		errorText   string
-	}{
-		{
-			name:        "defers when descendant source path is exposed",
-			valuePath:   "pod",
-			sourcePaths: []string{".pod.replicaCount"},
-		},
-		{
-			name:        "defers when unknown object path is under exposed source path",
-			valuePath:   "config.settings.sub_key",
-			sourcePaths: []string{".config.settings"},
-		},
-		{
-			name:        "fails when no source path can match unknown object",
-			valuePath:   "pod",
-			sourcePaths: []string{".service.enabled"},
-			expectErr:   true,
-			errorText:   "pod",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			mockPackager := &MockPackager{}
-			model := NewTestPackageResourceModel(
-				WithOptionalComponents([]string{}),
-				WithValues(dynamicUnknownObjectAtPath(tc.valuePath)),
-			)
-			chartValues := make([]v1alpha1.ZarfChartValue, 0, len(tc.sourcePaths))
-			for _, sourcePath := range tc.sourcePaths {
-				chartValues = append(chartValues, v1alpha1.ZarfChartValue{SourcePath: sourcePath, TargetPath: sourcePath})
-			}
-			pkgLayout := &layout.PackageLayout{
-				Pkg: v1alpha1.ZarfPackage{
-					Components: []v1alpha1.ZarfComponent{
-						{
-							Name:     "required-component",
-							Required: helpers.BoolPtr(true),
-							Charts: []v1alpha1.ZarfChart{
-								{
-									Name:   "chart",
-									Values: chartValues,
-								},
-							},
-						},
-					},
-				},
-			}
-			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil)
-			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
-			resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
-
-			valuePaths := collectConfiguredPackageValuePaths(model, resp)
-			result := packageResource.runPackagePlanChecks(context.Background(), model, valuePaths)
-
-			assert.False(t, resp.Diagnostics.HasError(), "expected local validation to pass, got: %v", resp.Diagnostics.Errors())
-			assert.NoError(t, result.LoadErr)
-			if tc.expectErr {
-				assert.Error(t, result.ValuePathsErr)
-				assert.Contains(t, result.ValuePathsErr.Error(), tc.errorText)
-			} else {
-				assert.NoError(t, result.ValuePathsErr)
-			}
-			mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
-		})
-	}
-}
-
-func TestPackageResource_RunPackagePlanChecks_NestedUnknownValuesFailKnownUnexposedPaths(t *testing.T) {
-	mockPackager := &MockPackager{}
-	model := NewTestPackageResourceModel(
-		WithOptionalComponents([]string{}),
-		WithValues(types.DynamicValue(types.ObjectValueMust(
-			map[string]attr.Type{
-				"pod": types.ObjectType{AttrTypes: map[string]attr.Type{
-					"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
-						"pet-name": types.StringType,
-					}},
-				}},
-				"image": types.ObjectType{AttrTypes: map[string]attr.Type{
-					"tag": types.StringType,
-				}},
-			},
-			map[string]attr.Value{
-				"pod": types.ObjectValueMust(
-					map[string]attr.Type{
-						"annotations": types.ObjectType{AttrTypes: map[string]attr.Type{
-							"pet-name": types.StringType,
-						}},
-					},
-					map[string]attr.Value{
-						"annotations": types.ObjectValueMust(
-							map[string]attr.Type{"pet-name": types.StringType},
-							map[string]attr.Value{"pet-name": types.StringUnknown()},
-						),
-					},
-				),
-				"image": types.ObjectValueMust(
-					map[string]attr.Type{"tag": types.StringType},
-					map[string]attr.Value{"tag": types.StringValue("1.2.3")},
-				),
-			},
-		))),
-	)
-	pkgLayout := &layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{
-			Components: []v1alpha1.ZarfComponent{
-				{
-					Name:     "required-component",
-					Required: helpers.BoolPtr(true),
-					Charts: []v1alpha1.ZarfChart{
-						{
-							Name: "chart",
-							Values: []v1alpha1.ZarfChartValue{
-								{SourcePath: ".pod.annotations", TargetPath: ".pod.annotations"},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil)
-	packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
-	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
-
-	valuePaths := collectConfiguredPackageValuePaths(model, resp)
-	result := packageResource.runPackagePlanChecks(context.Background(), model, valuePaths)
-
-	assert.False(t, resp.Diagnostics.HasError(), "expected local validation to pass, got: %v", resp.Diagnostics.Errors())
-	assert.NotNil(t, result.ValuePathsErr, "expected unexposed known path to fail")
-	assert.Contains(t, result.ValuePathsErr.Error(), "image.tag")
-	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
-}
-
-func TestCollectConfiguredPackageValuePaths_RootUnknownValuesReturnNoPaths(t *testing.T) {
-	model := NewTestPackageResourceModel(WithValues(types.DynamicUnknown()))
-	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
-
-	valuePaths := collectConfiguredPackageValuePaths(model, resp)
-
-	assert.False(t, resp.Diagnostics.HasError(), "expected root unknown values to defer validation, got: %v", resp.Diagnostics.Errors())
-	assert.Empty(t, valuePaths)
-}
-
 func TestValidateConfiguredPackageValueConflicts(t *testing.T) {
 	unknownDuplicateModel := NewTestPackageResourceModel(
 		WithValues(types.DynamicValue(types.ObjectValueMust(
@@ -6404,6 +6056,148 @@ func TestModifyPlan_ConfigValuesFailKnownConflictsWhenPlanValuesAreUnknown(t *te
 	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "logLevel")
 }
 
+func TestPackageResource_RunPackagePlanChecks_SchemaRejectsUnrecognizedValuePath(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ValuesYAML), []byte("config:\n  enabled: false\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ValuesSchema), []byte(`{
+  "type": "object",
+  "properties": {
+    "config": {"type": "object", "properties": {"enabled": {"type": "boolean"}}}
+  },
+  "additionalProperties": false
+}`), 0o600))
+
+	valuesHash, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.ValuesYAML))
+	require.NoError(t, err)
+	schemaHash, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.ValuesSchema))
+	require.NoError(t, err)
+	checksums := fmt.Sprintf("%s %s\n%s %s\n", valuesHash, layout.ValuesYAML, schemaHash, layout.ValuesSchema)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.Checksums), []byte(checksums), 0o600))
+	aggregateChecksum, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.Checksums))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ZarfYAML), []byte(fmt.Sprintf(`
+apiVersion: zarf.dev/v1alpha1
+kind: ZarfPackageConfig
+metadata:
+  name: warning-test
+  version: 1.0.0
+  aggregateChecksum: %s
+values:
+  files:
+    - values.yaml
+  schema: values.schema.json
+components:
+  - name: required-component
+    required: true
+    charts:
+      - name: chart
+        values:
+          - sourcePath: .config.enabled
+            targetPath: .config.enabled
+`, aggregateChecksum)), 0o600))
+
+	pkgLayout, err := layout.LoadFromDir(context.Background(), dir, layout.PackageLayoutOptions{
+		VerificationStrategy: layout.VerifyNever,
+	})
+	require.NoError(t, err)
+
+	model := NewTestPackageResourceModel(
+		WithValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{"foo": types.BoolType, "computed": types.StringType},
+			map[string]attr.Value{"foo": types.BoolValue(true), "computed": types.StringUnknown()},
+		))),
+	)
+	model.OptionalComponents = types.SetUnknown(types.StringType)
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil)
+	r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+	result := r.runPackagePlanChecks(context.Background(), model)
+
+	require.Error(t, result.ValuesErr)
+	assert.Contains(t, result.ValuesErr.Error(), "foo")
+}
+
+func TestModifyPlan_SchemaChecksKnownConfigurationValuesWhenPlanIsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ValuesYAML), []byte("global:\n  domain: example.test\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ValuesSchema), []byte(`{
+  "type": "object",
+  "properties": {
+    "global": {"type": "object", "properties": {"domain": {"type": "string"}}}
+  },
+  "additionalProperties": false
+}`), 0o600))
+
+	valuesHash, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.ValuesYAML))
+	require.NoError(t, err)
+	schemaHash, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.ValuesSchema))
+	require.NoError(t, err)
+	checksums := fmt.Sprintf("%s %s\n%s %s\n", valuesHash, layout.ValuesYAML, schemaHash, layout.ValuesSchema)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.Checksums), []byte(checksums), 0o600))
+	aggregateChecksum, err := helpers.GetSHA256OfFile(filepath.Join(dir, layout.Checksums))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, layout.ZarfYAML), []byte(fmt.Sprintf(`
+apiVersion: zarf.dev/v1alpha1
+kind: ZarfPackageConfig
+metadata:
+  name: plan-test
+  version: 1.0.0
+  aggregateChecksum: %s
+values:
+  files:
+    - values.yaml
+  schema: values.schema.json
+components:
+  - name: required-component
+    required: true
+`, aggregateChecksum)), 0o600))
+
+	pkgLayout, err := layout.LoadFromDir(context.Background(), dir, layout.PackageLayoutOptions{
+		VerificationStrategy: layout.VerifyNever,
+	})
+	require.NoError(t, err)
+
+	configModel := NewTestPackageResourceModel(
+		WithValues(types.DynamicValue(types.ObjectValueMust(
+			map[string]attr.Type{
+				"foo":      types.BoolType,
+				"computed": types.StringType,
+			},
+			map[string]attr.Value{
+				"foo":      types.BoolValue(true),
+				"computed": types.StringUnknown(),
+			},
+		))),
+	)
+	setUnknownComputedPackageState := func(model *PackageResourceModel) {
+		model.Metadata = types.ObjectUnknown(map[string]attr.Type{
+			"name":        types.StringType,
+			"description": types.StringType,
+			"version":     types.StringType,
+		})
+		model.ConnectStrings = types.SetUnknown(types.ObjectType{AttrTypes: connectStringAttrTypes})
+		model.SetVariables = types.MapUnknown(types.StringType)
+	}
+	setUnknownComputedPackageState(&configModel)
+	planModel := configModel
+	planModel.Values = types.DynamicUnknown()
+	setUnknownComputedPackageState(&planModel)
+
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil)
+	r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+	plan := buildTestPlan(t, r, planModel)
+	resp := resource.ModifyPlanResponse{Plan: plan}
+	r.ModifyPlan(context.Background(), resource.ModifyPlanRequest{
+		Config: buildTestConfig(t, r, configModel),
+		Plan:   plan,
+	}, &resp)
+
+	require.True(t, resp.Diagnostics.HasError(), "expected known foo value to fail schema validation")
+	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "foo")
+	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+}
+
 func TestPackageResource_RunPackagePlanChecks_ReturnsLoadErrWhenValuesRequirePackageLoad(t *testing.T) {
 	mockPackager := &MockPackager{}
 	model := NewTestPackageResourceModel(
@@ -6438,12 +6232,9 @@ func TestPackageResource_RunPackagePlanChecks_ReturnsLoadErrWhenValuesRequirePac
 		fmt.Errorf("package metadata unavailable"),
 	)
 	packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
-	resp := &resource.ModifyPlanResponse{Diagnostics: diag.Diagnostics{}}
 
-	valuePaths := collectConfiguredPackageValuePaths(model, resp)
-	result := packageResource.runPackagePlanChecks(context.Background(), model, valuePaths)
+	result := packageResource.runPackagePlanChecks(context.Background(), model)
 
-	assert.False(t, resp.Diagnostics.HasError(), "expected local validation to pass, got: %v", resp.Diagnostics.Errors())
 	assert.NotNil(t, result.LoadErr)
 	assert.Contains(t, result.LoadErr.Error(), "package metadata unavailable")
 	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
@@ -6552,181 +6343,6 @@ func TestMergePackageValues(t *testing.T) {
 		},
 		"replicaCount": 2,
 	}, merged)
-}
-
-func TestCollectValuePaths(t *testing.T) {
-	paths := collectValuePaths(map[string]any{
-		"pod": map[string]any{
-			"replicaCount": int64(3),
-			"annotations": map[string]any{
-				"example.com/source": "terraform-provider-uds",
-			},
-			"empty": map[string]any{},
-		},
-		"logLevel": "info",
-	})
-
-	assert.ElementsMatch(t, []string{
-		"pod.replicaCount",
-		"pod.annotations.example.com/source",
-		"pod.empty",
-		"logLevel",
-	}, paths)
-}
-
-func TestIsValuePathExposed(t *testing.T) {
-	exposedPaths := []string{".pod.annotations", ".pod.replicaCount", ".logLevel"}
-
-	tests := []struct {
-		name        string
-		valuePath   string
-		exposedPath []string
-		expected    bool
-	}{
-		{
-			name:      "exact path is exposed",
-			valuePath: "pod.replicaCount",
-			expected:  true,
-		},
-		{
-			name:      "descendant path is exposed by map source path",
-			valuePath: "pod.annotations.example.com/source",
-			expected:  true,
-		},
-		{
-			name:      "unmapped sibling is not exposed",
-			valuePath: "pod.unmapped",
-			expected:  false,
-		},
-		{
-			name:        "root source path exposes all values",
-			valuePath:   "anything.nested",
-			exposedPath: []string{"."},
-			expected:    true,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			paths := exposedPaths
-			if tc.exposedPath != nil {
-				paths = tc.exposedPath
-			}
-			assert.Equal(t, tc.expected, isValuePathExposed(tc.valuePath, paths))
-		})
-	}
-}
-
-func TestIsUnknownValuePathPotentiallyExposed(t *testing.T) {
-	tests := []struct {
-		name         string
-		valuePath    string
-		exposedPaths []string
-		expected     bool
-	}{
-		{
-			name:         "root source path potentially exposes unknown object",
-			valuePath:    "pod",
-			exposedPaths: []string{"."},
-			expected:     true,
-		},
-		{
-			name:         "exact source path potentially exposes unknown object",
-			valuePath:    "pod",
-			exposedPaths: []string{".pod"},
-			expected:     true,
-		},
-		{
-			name:         "descendant source path potentially exposes unknown object",
-			valuePath:    "pod",
-			exposedPaths: []string{".pod.replicaCount"},
-			expected:     true,
-		},
-		{
-			name:         "ancestor source path potentially exposes unknown descendant object",
-			valuePath:    "config.settings.sub_key",
-			exposedPaths: []string{".config.settings"},
-			expected:     true,
-		},
-		{
-			name:         "unrelated source path does not potentially expose unknown object",
-			valuePath:    "pod",
-			exposedPaths: []string{".service.enabled"},
-			expected:     false,
-		},
-		{
-			name:         "similar prefix source path does not potentially expose unknown object",
-			valuePath:    "pod",
-			exposedPaths: []string{".podinfo.replicaCount"},
-			expected:     false,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.expected, isUnknownValuePathPotentiallyExposed(tc.valuePath, tc.exposedPaths))
-		})
-	}
-}
-
-func TestPackageResource_GetPlannedComponentValueSourcePaths(t *testing.T) {
-	pkgLayout := &layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{
-			Components: []v1alpha1.ZarfComponent{
-				{
-					Name:     "required-component",
-					Required: helpers.BoolPtr(true),
-					Charts: []v1alpha1.ZarfChart{
-						{
-							Name: "required-chart",
-							Values: []v1alpha1.ZarfChartValue{
-								{SourcePath: ".required.value", TargetPath: ".required.value"},
-							},
-						},
-					},
-				},
-				{
-					Name:     "optional-component",
-					Required: helpers.BoolPtr(false),
-					Charts: []v1alpha1.ZarfChart{
-						{
-							Name: "optional-chart",
-							Values: []v1alpha1.ZarfChartValue{
-								{SourcePath: ".optional.value", TargetPath: ".optional.value"},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	packageResource := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
-	tests := []struct {
-		name          string
-		model         PackageResourceModel
-		expectedPaths []string
-	}{
-		{
-			name:          "empty optional_components uses required components only",
-			model:         NewTestPackageResourceModel(WithOptionalComponents([]string{})),
-			expectedPaths: []string{".required.value"},
-		},
-		{
-			name:          "selected optional component includes optional value paths",
-			model:         NewTestPackageResourceModel(WithOptionalComponents([]string{"optional-component"})),
-			expectedPaths: []string{".required.value", ".optional.value"},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			paths, err := packageResource.getPlannedComponentValueSourcePaths(context.Background(), tc.model, pkgLayout)
-
-			assert.NoError(t, err)
-			assert.ElementsMatch(t, tc.expectedPaths, paths)
-		})
-	}
 }
 
 func TestBuildVerifyBlobOptions(t *testing.T) {
