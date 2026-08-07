@@ -3,7 +3,7 @@
 
 [tools]
 go = "1.26.5"
-hk = "1.53.0"
+hk = "1.54.0"
 golangci-lint = "2.12.2"
 "aqua:google/addlicense" = "1.2.0"
 opentofu = "1.12.5"
