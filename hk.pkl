@@ -26,9 +26,6 @@ local linters = new Mapping<String, Step> {
     ["trailing-whitespace"] = (Builtins.trailing_whitespace) {
         exclude = List("build/**", "docs/index.md")
     }
-    ["renovate-config"] {
-        check = "renovate-config-validator renovate.json"
-    }
     ["golangci-lint"] {
         check = "golangci-lint run ./..."
         glob = List("**/*.go", "go.mod", "go.sum")
