@@ -62,6 +62,10 @@ tasks:
             echo "TOFU_DIR is required. Example: uds run dev-plan --set TOFU_DIR=examples/zarf_values"
             exit 1
           fi
+          if [ -z "${TF_CLI_CONFIG_FILE}" ]; then
+            echo "TF_CLI_CONFIG_FILE is required. Activate mise in your shell before running this task."
+            exit 1
+          fi
       - cmd: uds run build
       - cmd: tofu -chdir=${TOFU_DIR} plan
 
@@ -73,6 +77,10 @@ tasks:
             echo "TOFU_DIR is required. Example: uds run dev-plan --set TOFU_DIR=examples/zarf_values"
             exit 1
           fi
+          if [ -z "${TF_CLI_CONFIG_FILE}" ]; then
+            echo "TF_CLI_CONFIG_FILE is required. Activate mise in your shell before running this task."
+            exit 1
+          fi
       - cmd: uds run build
       - cmd: tofu -chdir=${TOFU_DIR} apply
 
@@ -82,6 +90,10 @@ tasks:
       - cmd: |
           if [ -z "${TOFU_DIR}" ]; then
             echo "TOFU_DIR is required. Example: uds run dev-plan --set TOFU_DIR=examples/zarf_values"
+            exit 1
+          fi
+          if [ -z "${TF_CLI_CONFIG_FILE}" ]; then
+            echo "TF_CLI_CONFIG_FILE is required. Activate mise in your shell before running this task."
             exit 1
           fi
       - cmd: uds run build

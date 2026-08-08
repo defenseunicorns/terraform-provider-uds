@@ -49,7 +49,7 @@ tofu destroy
 ```
 
 > [!IMPORTANT]
-> After making provider code changes, you must rebuild the provider executable by running `uds run build` prior to testing with OpenTofu.
+> After making provider code changes, you must rebuild the provider executable by running `uds run build` from the repository root prior to testing with OpenTofu.
 
 > [!TIP]
 > Alternatively, the `dev-plan`, `dev-apply`, and `dev-destroy` tasks are available as conveniences that rebuild the provider before running common OpenTofu operations; each requires `TOFU_DIR` to be set to the directory containing the OpenTofu code you'd like to test, for example:
