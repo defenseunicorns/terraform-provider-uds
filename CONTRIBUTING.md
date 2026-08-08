@@ -20,34 +20,43 @@ hk install
 uds run build
 ```
 
-`uds run build` builds the provider from the repository root and generates the
-repository-local `.tofurc.dev` configuration used by the OpenTofu tasks. After
-mise is activated in your shell, run `uds` commands directly; `mise exec` is
-not needed.
+`uds run build` builds the provider from the repository root and generates the repository-local `.tofurc.dev` configuration. Mise sets `TF_CLI_CONFIG_FILE` to this file automatically throughout the repository, so OpenTofu will use the local provider build from any subdirectory of this repository. After mise is activated in your shell, run `uds` and `tofu` commands directly; `mise exec` is not needed.
 
 ## Development loop
 
-Run the checks and local OpenTofu workflow with:
+Run the unit and acceptance tests with:
 
 ```console
 uds run test-unit
-uds run dev-plan --set TOFU_DIR=examples/zarf_values
-uds run dev-apply --set TOFU_DIR=examples/zarf_values
-uds run dev-destroy --set TOFU_DIR=examples/zarf_values
-uds run setup-cluster
 uds run test-acc
 ```
 
-Unit tests compile changed packages automatically. The OpenTofu tasks rebuild
-the provider as needed and generate the local configuration before planning,
-applying, or destroying. `TOFU_DIR` is required for each OpenTofu task. The
-examples above use `examples/zarf_values`; set another configuration directory
-with `--set TOFU_DIR=path/to/configuration`.
+> [!NOTE]
+> The acceptance test suite requires live-cluster infrastructure. The `test-acc` task automatically creates a fresh k3d cluster prior to running acceptance tests and then leaves it running afterward to aid with troubleshooting if failures occur. This cluster can also be used for subsequent manual testing, such as running the example below.
 
-The acceptance test suite requires live-cluster infrastructure. `test-acc` sets
-up the cluster and runs the acceptance tests in one workflow. To reuse an
-existing cluster across local iterations, run `uds run setup-cluster` once and
-then use `uds run test:acc`.
+> [!TIP]
+> To rerun acceptance tests against the cluster left running by `test-acc`, use
+> `uds run test:acc`. Unlike `test-acc`, this task does not recreate the cluster.
+
+Run OpenTofu directly from a configuration directory:
+
+```console
+cd examples/zarf_values
+uds zarf package create ./podinfo --confirm
+tofu plan
+tofu apply
+tofu destroy
+```
+
+> [!IMPORTANT]
+> After making provider code changes, you must rebuild the provider executable by running `uds run build` prior to testing with OpenTofu.
+
+> [!TIP]
+> Alternatively, the `dev-plan`, `dev-apply`, and `dev-destroy` tasks are available as conveniences that rebuild the provider before running common OpenTofu operations; each requires `TOFU_DIR` to be set to the directory containing the OpenTofu code you'd like to test, for example:
+
+```console
+uds run dev-plan --set TOFU_DIR=examples/zarf_values
+```
 
 Commits run hk automatically. Other available development tasks include:
 

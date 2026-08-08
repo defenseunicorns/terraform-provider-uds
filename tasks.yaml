@@ -63,7 +63,7 @@ tasks:
             exit 1
           fi
       - cmd: uds run build
-      - cmd: TF_CLI_CONFIG_FILE="$(pwd)/.tofurc.dev" tofu -chdir=${TOFU_DIR} plan
+      - cmd: tofu -chdir=${TOFU_DIR} plan
 
   - name: dev-apply
     description: "Apply using the locally built provider"
@@ -74,7 +74,7 @@ tasks:
             exit 1
           fi
       - cmd: uds run build
-      - cmd: TF_CLI_CONFIG_FILE="$(pwd)/.tofurc.dev" tofu -chdir=${TOFU_DIR} apply
+      - cmd: tofu -chdir=${TOFU_DIR} apply
 
   - name: dev-destroy
     description: "Destroy using the locally built provider"
@@ -85,4 +85,4 @@ tasks:
             exit 1
           fi
       - cmd: uds run build
-      - cmd: TF_CLI_CONFIG_FILE="$(pwd)/.tofurc.dev" tofu -chdir=${TOFU_DIR} destroy
+      - cmd: tofu -chdir=${TOFU_DIR} destroy
