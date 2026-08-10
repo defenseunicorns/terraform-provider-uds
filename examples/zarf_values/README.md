@@ -5,7 +5,7 @@ This example deploys a local Podinfo Zarf package with `uds_package.values` and 
 Run these commands from this example directory:
 
 ```sh
-uds zarf package create ./podinfo --features="values=true" --confirm --skip-sbom
+uds zarf package create ./podinfo --confirm
 tofu init
 
 # The example uses `arm64` by default. To change the architecture, use one

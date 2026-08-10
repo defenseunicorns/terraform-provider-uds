@@ -62,8 +62,12 @@ tasks:
             echo "TOFU_DIR is required. Example: uds run dev-plan --set TOFU_DIR=examples/zarf_values"
             exit 1
           fi
+          if [ -z "${TF_CLI_CONFIG_FILE}" ]; then
+            echo "TF_CLI_CONFIG_FILE is required. Activate mise in your shell before running this task."
+            exit 1
+          fi
       - cmd: uds run build
-      - cmd: TF_CLI_CONFIG_FILE="$(pwd)/.tofurc.dev" tofu -chdir=${TOFU_DIR} plan
+      - cmd: tofu -chdir=${TOFU_DIR} plan
 
   - name: dev-apply
     description: "Apply using the locally built provider"
@@ -73,8 +77,12 @@ tasks:
             echo "TOFU_DIR is required. Example: uds run dev-plan --set TOFU_DIR=examples/zarf_values"
             exit 1
           fi
+          if [ -z "${TF_CLI_CONFIG_FILE}" ]; then
+            echo "TF_CLI_CONFIG_FILE is required. Activate mise in your shell before running this task."
+            exit 1
+          fi
       - cmd: uds run build
-      - cmd: TF_CLI_CONFIG_FILE="$(pwd)/.tofurc.dev" tofu -chdir=${TOFU_DIR} apply
+      - cmd: tofu -chdir=${TOFU_DIR} apply
 
   - name: dev-destroy
     description: "Destroy using the locally built provider"
@@ -84,5 +92,9 @@ tasks:
             echo "TOFU_DIR is required. Example: uds run dev-plan --set TOFU_DIR=examples/zarf_values"
             exit 1
           fi
+          if [ -z "${TF_CLI_CONFIG_FILE}" ]; then
+            echo "TF_CLI_CONFIG_FILE is required. Activate mise in your shell before running this task."
+            exit 1
+          fi
       - cmd: uds run build
-      - cmd: TF_CLI_CONFIG_FILE="$(pwd)/.tofurc.dev" tofu -chdir=${TOFU_DIR} destroy
+      - cmd: tofu -chdir=${TOFU_DIR} destroy
