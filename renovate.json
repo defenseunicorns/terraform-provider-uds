@@ -38,7 +38,7 @@
       "excludeDepNames": ["go"],
       "groupName": "support-deps",
       "commitMessageTopic": "support dependencies"
-    }
+    },
     {
       "matchManagers": ["mise"],
       "matchDepNames": ["go"],
