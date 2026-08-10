@@ -28,6 +28,7 @@
         "release-please-config.json",
         "renovate.json",
         "tasks.yaml",
+        "tasks/**",
         "test/**"
       ],
       "groupName": "support-deps",
@@ -38,7 +39,7 @@
       "excludeDepNames": ["go"],
       "groupName": "support-deps",
       "commitMessageTopic": "support dependencies"
-    }
+    },
     {
       "matchManagers": ["mise"],
       "matchDepNames": ["go"],

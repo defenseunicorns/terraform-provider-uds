@@ -5,7 +5,7 @@ terraform {
   required_providers {
     uds = {
       source  = "defenseunicorns/uds"
-      version = "~> 0.5.0" # x-release-please-version
+      version = "~> 0.5.1" # x-release-please-version
     }
   }
 }
@@ -21,10 +21,10 @@ locals {
   uds_package_flavor = "upstream"
 
   # renovate: datasource=docker depName=ghcr.io/zarf-dev/packages/init versioning=semver
-  zarf_init_version = "v0.82.0"
+  zarf_init_version = "v0.83.0"
 
   # renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/core-crds versioning=semver extractVersion=^(?<version>.*)-upstream$
-  uds_core_crds_version = "1.9.0"
+  uds_core_crds_version = "1.10.0"
 
   # renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/nginx versioning=semver extractVersion=^(?<version>.*)-upstream$
   uds_nginx_version = "1.31.1-uds.1"
