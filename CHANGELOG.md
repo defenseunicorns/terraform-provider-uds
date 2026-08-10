@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.5.1](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.5.0...v0.5.1) (2026-08-10)
+
+
+### Bug Fixes
+
+* **deps:** update application dependencies to v0.11.0 ([#309](https://github.com/defenseunicorns/terraform-provider-uds/issues/309)) ([e7dc81b](https://github.com/defenseunicorns/terraform-provider-uds/commit/e7dc81bfcd8ae742c3f7c27949fa0ab1968c09ee))
+* **deps:** update zarf to v0.83.0 ([#319](https://github.com/defenseunicorns/terraform-provider-uds/issues/319)) ([c828c1e](https://github.com/defenseunicorns/terraform-provider-uds/commit/c828c1e9462d42dab39aabd7dbfd0194d8b43c23))
+* nightly release permissions ([#312](https://github.com/defenseunicorns/terraform-provider-uds/issues/312)) ([e9fbe9f](https://github.com/defenseunicorns/terraform-provider-uds/commit/e9fbe9f0324ba3b4ca913a01e831190b410f2f9e))
+* renovate config ([#315](https://github.com/defenseunicorns/terraform-provider-uds/issues/315)) ([2fbfbe2](https://github.com/defenseunicorns/terraform-provider-uds/commit/2fbfbe28b1c307e1a22ac56318029706c8549550))
+
+
+### Refactoring
+
+* validate values against zarf schemas ([#310](https://github.com/defenseunicorns/terraform-provider-uds/issues/310)) ([b13fb26](https://github.com/defenseunicorns/terraform-provider-uds/commit/b13fb26f0c59673098345bfcd0df5daf3e2987b7))
+
+
+### Miscellaneous
+
+* add check license to pre-commit and lint workflows ([#313](https://github.com/defenseunicorns/terraform-provider-uds/issues/313)) ([3b58b35](https://github.com/defenseunicorns/terraform-provider-uds/commit/3b58b359144f50a9db6b416952252d52b4aff5b7))
+* deprecate components block ([#305](https://github.com/defenseunicorns/terraform-provider-uds/issues/305)) ([1a6e350](https://github.com/defenseunicorns/terraform-provider-uds/commit/1a6e35092b211a44ab59d57068a0cdc1d601335e))
+* **deps:** update support-deps ([#306](https://github.com/defenseunicorns/terraform-provider-uds/issues/306)) ([c91ec48](https://github.com/defenseunicorns/terraform-provider-uds/commit/c91ec483ab53f4320ba7d6fc400e37cf9041fd66))
+* **deps:** update support-deps ([#318](https://github.com/defenseunicorns/terraform-provider-uds/issues/318)) ([8139ef1](https://github.com/defenseunicorns/terraform-provider-uds/commit/8139ef1d8758db2e461f657576bc211ebfe1c3fc))
+* group tasks with support deps ([#320](https://github.com/defenseunicorns/terraform-provider-uds/issues/320)) ([beeb410](https://github.com/defenseunicorns/terraform-provider-uds/commit/beeb410cff0e978d8dfda54a4c726db2cced621d))
+* update readme with registry references ([#307](https://github.com/defenseunicorns/terraform-provider-uds/issues/307)) ([9bee6ce](https://github.com/defenseunicorns/terraform-provider-uds/commit/9bee6ce1980724039e22f7a4151acadcc53726e5))
+
 ## [0.5.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.4.1...v0.5.0) (2026-07-31)
 
 
