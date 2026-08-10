@@ -3,13 +3,13 @@
 
 [tools]
 go = "1.26.5"
-hk = "1.54.0"
+hk = "1.54.1"
 golangci-lint = "2.12.2"
 "aqua:google/addlicense" = "1.2.0"
 opentofu = "1.12.5"
 terraform = "1.15.8"
 k3d = "5.9.0"
-"aqua:defenseunicorns/uds-cli" = "0.34.3"
+"aqua:defenseunicorns/uds-cli" = "0.35.1"
 
 [env]
 MISE_USE_VERSIONS_HOST_TRACK = "0"
