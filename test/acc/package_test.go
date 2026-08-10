@@ -188,13 +188,15 @@ func TestAccPackageResourcePlanValidation(t *testing.T) {
 				ExpectNonEmptyPlan: true,
 			},
 			{
-				Config:      testAccPackageResourceRemoteValuesInvalidPathConfig,
-				PlanOnly:    true,
-				ExpectError: regexp.MustCompile(`value path "nginx\.definitely_unexposed_by_nginx_values_test" does not match\s+any`),
+				Config:   testAccPackageResourceRemoteValuesInvalidPathConfig,
+				PlanOnly: true,
+				ExpectError: regexp.MustCompile(
+					`Additional property definitely_unexposed_by_nginx_values_test is not\s+allowed`,
+				),
 			},
 			// Disabling package validation on plan skips package-dependent checks.
 			// This unavailable source would otherwise fail package loading, signature
-			// verification, optional_components validation, and values sourcePath validation.
+			// verification and optional_components validation.
 			{
 				Config:             testAccPackageResourcePlanValidationDisabledConfig,
 				PlanOnly:           true,
@@ -523,20 +525,6 @@ func checkZarfLifecycleResourcesDestroyed(_ *terraform.State) error {
 	return nil
 }
 
-func renderZarfValuesInvalidPathConfig(packagePath string) string {
-	return fmt.Sprintf(`
-resource "uds_package" "values" {
-  source       = %q
-  architecture = "%s"
-  namespace    = "zarf-values"
-
-  values = {
-    not_exposed = "invalid"
-  }
-}
-`, packagePath, runtime.GOARCH)
-}
-
 func TestAccPackageResourceZarfValues(t *testing.T) {
 	if os.Getenv(resource.EnvTfAcc) == "" {
 		t.Skip("Acceptance tests skipped unless TF_ACC=1")
@@ -571,11 +559,6 @@ func TestAccPackageResourceZarfValues(t *testing.T) {
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		CheckDestroy:             checkZarfValuesResourcesDestroyed,
 		Steps: []resource.TestStep{
-			{
-				Config:      renderZarfValuesInvalidPathConfig(packagePath),
-				PlanOnly:    true,
-				ExpectError: regexp.MustCompile(`value path "not_exposed" does not match any`),
-			},
 			{
 				Config: renderZarfValuesPackageConfig(t, initialValues),
 				Check: resource.ComposeAggregateTestCheckFunc(

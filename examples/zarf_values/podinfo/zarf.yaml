@@ -10,6 +10,7 @@ metadata:
 values:
   files:
     - values.yaml
+  schema: values.schema.json
 
 components:
   - name: podinfo
