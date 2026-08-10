@@ -28,6 +28,7 @@
         "release-please-config.json",
         "renovate.json",
         "tasks.yaml",
+        "tasks/**",
         "test/**"
       ],
       "groupName": "support-deps",
