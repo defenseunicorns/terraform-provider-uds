@@ -1208,10 +1208,17 @@ func TestPackageResource_CreateFailedDeploymentPreservesState(t *testing.T) {
 
 	clientset := fake.NewSimpleClientset()
 	mockCluster := &MockCluster{}
-	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{Clientset: clientset}, nil).Twice()
+	var activeClusterCalls int
+	deploymentFinished := false
+	mockCluster.On("NewWithWait", mock.Anything).Run(func(args mock.Arguments) {
+		if deploymentFinished && args.Get(0).(context.Context).Err() == nil {
+			activeClusterCalls++
+		}
+	}).Return(&zarfCluster.Cluster{Clientset: clientset}, nil).Twice()
 	mockPackager := &MockPackager{}
 	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Once()
-	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Run(func(_ mock.Arguments) {
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		<-args.Get(0).(context.Context).Done()
 		_, err := clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(
 			context.Background(),
 			&corev1.Secret{
@@ -1221,12 +1228,13 @@ func TestPackageResource_CreateFailedDeploymentPreservesState(t *testing.T) {
 			metav1.CreateOptions{},
 		)
 		require.NoError(t, err)
+		deploymentFinished = true
 	}).Return(packager.DeployResult{}, errors.New("deployment failed"))
 	mockPackageComponentFilter := &MockPackageComponentFilter{}
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
-	planModel := NewTestPackageResourceModel()
+	planModel := NewTestPackageResourceModel(WithCreateTimeout("50ms"))
 	planModel.SetVariables = types.MapValueMust(types.StringType, map[string]attr.Value{})
 	planModel.ConnectStrings = emptyConnectStringSet()
 	planModel.Metadata = types.ObjectUnknown(packageMetadataAttrTypes)
@@ -1244,6 +1252,7 @@ func TestPackageResource_CreateFailedDeploymentPreservesState(t *testing.T) {
 	assert.Equal(t, "Failed", metadata["status"].(types.String).ValueString())
 	assert.Equal(t, int64(4), metadata["generation"].(types.Int64).ValueInt64())
 	assert.Equal(t, "sha256:failed", metadata["digest"].(types.String).ValueString())
+	assert.Equal(t, 1, activeClusterCalls, "failed-create recovery should use a fresh context after timeout")
 	mockPackager.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
 }
 
@@ -3052,7 +3061,9 @@ func TestPackageResource_Upsert_LogEvents(t *testing.T) {
 	ctx = logging.WithPackageContext(ctx, "create", "", "demo")
 	operationCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	t.Cleanup(cancel)
-	r := NewPackageResource(&udsProviderConfig{DefaultArchitecture: "arm64"}, packagerMock, filterMock, nil).(*PackageResource)
+	clusterMock := &MockCluster{}
+	clusterMock.On("NewWithWait", mock.Anything).Return(newFakeCluster(), nil).Twice()
+	r := NewPackageResource(&udsProviderConfig{DefaultArchitecture: "arm64"}, packagerMock, filterMock, clusterMock).(*PackageResource)
 	model := NewTestPackageResourceModel(WithDeployedState(),
 		WithArchitecture("arm64"),
 		WithNamespace("demo"),
@@ -3171,7 +3182,9 @@ func TestPackageResource_CreateFailure_LogEventAndDiagnostic(t *testing.T) {
 	packagerMock.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
 		&layout.PackageLayout{}, errors.New("load failed"),
 	)
-	r := NewPackageResource(nil, packagerMock, nil, nil).(*PackageResource)
+	clusterMock := &MockCluster{}
+	clusterMock.On("NewWithWait", mock.Anything).Return(newFakeCluster(), nil).Once()
+	r := NewPackageResource(nil, packagerMock, nil, clusterMock).(*PackageResource)
 	model := NewTestPackageResourceModel(WithDeployedState(), WithNamespace("demo"))
 	plan := buildTestPlan(t, r, model)
 	var output bytes.Buffer
@@ -3207,7 +3220,9 @@ captured Zarf output:
 Error from server (AlreadyExists): namespaces "already-exists" already exists`))
 	filterMock.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
-	r := NewPackageResource(nil, packagerMock, filterMock, nil).(*PackageResource)
+	clusterMock := &MockCluster{}
+	clusterMock.On("NewWithWait", mock.Anything).Return(newFakeCluster(), nil).Twice()
+	r := NewPackageResource(nil, packagerMock, filterMock, clusterMock).(*PackageResource)
 	model := NewTestPackageResourceModel(
 		WithDeployedState(),
 		WithNamespace("demo"),

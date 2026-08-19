@@ -630,11 +630,13 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 			canRecoverState := !errors.Is(err, errDuplicatePackage) && !errors.Is(err, errPackageExistenceCheck)
 			hasKnownPackageName := !plan.Name.IsNull() && !plan.Name.IsUnknown() && plan.Name.ValueString() != ""
 			if canRecoverState && hasKnownPackageName {
-				refreshedPlan, found, stateErr := r.refreshStateFromCluster(timeoutCtx, plan)
+				stateCtx, stateCancel := withStateRecoveryTimeout(timeoutCtx)
+				defer stateCancel()
+				refreshedPlan, found, stateErr := r.refreshStateFromCluster(stateCtx, plan)
 				if stateErr != nil {
 					resp.Diagnostics.AddError(
 						"Error getting failed package state",
-						lifecycleErrorDetail(timeoutCtx, "create", stateErr),
+						lifecycleErrorDetail(stateCtx, "create", stateErr),
 					)
 				} else if found {
 					resp.Diagnostics.Append(resp.State.Set(timeoutCtx, &refreshedPlan)...)
@@ -2171,6 +2173,14 @@ func preserveComputedState(ctx context.Context, state tfsdk.State, plan *tfsdk.P
 // withClusterTimeout returns a context with a timeout
 func withClusterTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, clusterTimeoutMinutes*time.Minute)
+}
+
+// withStateRecoveryTimeout gives failed deployments a fresh cluster lookup window after a timeout.
+func withStateRecoveryTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), clusterTimeoutMinutes*time.Minute)
 }
 
 // zarfOperationTimeout derives the full time budget for a Zarf Deploy or Remove
