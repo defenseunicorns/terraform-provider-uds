@@ -1,0 +1,15 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+{{- if .Values.failDeployment }}
+{{- fail "intentional acceptance-test deployment failure" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: failed-package
+  namespace: failed-package
+  annotations:
+    diagnostic-value: {{ .Values.diagnosticValue | quote }}
+data:
+  status: healthy

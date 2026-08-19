@@ -280,7 +280,10 @@ Read-Only:
 Read-Only:
 
 - `description` (String) Description of the UDS package, from the zarf.yaml file.
+- `digest` (String) Digest of the deployed UDS package.
+- `generation` (Number) Deployment generation of the UDS package.
 - `name` (String) Name of the UDS package. Used to identify the deployed UDS package.
+- `status` (String) Deployment status of the UDS package.
 - `version` (String) Version of the UDS package, from the zarf.yaml file.
 
 ## Import
