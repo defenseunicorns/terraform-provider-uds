@@ -250,10 +250,10 @@ Optional:
 
 Optional:
 
-- `create` (String) Total create-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and Helm/Zarf execution.
+- `create` (String) Timeout for package deployment (default 30 m). Covers cluster connection, package load, and Helm/Zarf execution. If deployment fails after package state may have been recorded, the provider performs a separate recovery lookup for up to 5 m to preserve that state. This recovery window is additional to the configured timeout and remains bounded by the overall operation deadline or cancellation.
 - `delete` (String) Total delete-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and removal.
 - `read` (String) Total read-operation wall-clock timeout (default 5 m). Covers cluster connection and state retrieval.
-- `update` (String) Total update-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and redeployment.
+- `update` (String) Timeout for package update (default 30 m). Covers cluster connection, package load, and redeployment. Failed updates return their error within this timeout; no separate failed-operation recovery lookup is performed.
 
 
 <a id="nestedatt--vars"></a>

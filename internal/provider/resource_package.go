@@ -322,9 +322,9 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				Read:              true,
 				Update:            true,
 				Delete:            true,
-				CreateDescription: "Total create-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and Helm/Zarf execution.",
+				CreateDescription: "Timeout for package deployment (default 30 m). Covers cluster connection, package load, and Helm/Zarf execution. If deployment fails after package state may have been recorded, the provider performs a separate recovery lookup for up to 5 m to preserve that state. This recovery window is additional to the configured timeout and remains bounded by the overall operation deadline or cancellation.",
 				ReadDescription:   "Total read-operation wall-clock timeout (default 5 m). Covers cluster connection and state retrieval.",
-				UpdateDescription: "Total update-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and redeployment.",
+				UpdateDescription: "Timeout for package update (default 30 m). Covers cluster connection, package load, and redeployment. Failed updates return their error within this timeout; no separate failed-operation recovery lookup is performed.",
 				DeleteDescription: "Total delete-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and removal.",
 			}),
 			"kind": schema.StringAttribute{
@@ -639,7 +639,6 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 						lifecycleErrorDetail(stateCtx, "create", stateErr),
 					)
 				} else if found {
-					preservePlannedPackageAttributes(&refreshedPlan, &plan)
 					completeRecoveredState(&refreshedPlan)
 					resp.Diagnostics.Append(resp.State.Set(stateCtx, &refreshedPlan)...)
 				}

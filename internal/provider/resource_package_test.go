@@ -1198,7 +1198,11 @@ func TestPackageResource_CreateFailedDeploymentPreservesState(t *testing.T) {
 		Name:       packageLayout.Pkg.Metadata.Name,
 		Digest:     "sha256:failed",
 		Generation: 4,
-		Data:       packageLayout.Pkg,
+		Data: func() v1alpha1.ZarfPackage {
+			data := packageLayout.Pkg
+			data.Metadata.Architecture = "amd64"
+			return data
+		}(),
 		DeployedComponents: []zarfState.DeployedComponent{
 			{Name: "test-required-component-0", Status: zarfState.ComponentStatusFailed},
 		},
@@ -1234,7 +1238,7 @@ func TestPackageResource_CreateFailedDeploymentPreservesState(t *testing.T) {
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
-	planModel := NewTestPackageResourceModel(WithCreateTimeout("50ms"))
+	planModel := NewTestPackageResourceModel(WithCreateTimeout("50ms"), WithArchitecture("arm64"))
 	planModel.SetVariables = types.MapUnknown(types.StringType)
 	planModel.ConnectStrings = emptyConnectStringSet()
 	planModel.Metadata = types.ObjectUnknown(packageMetadataAttrTypes)
@@ -1248,6 +1252,7 @@ func TestPackageResource_CreateFailedDeploymentPreservesState(t *testing.T) {
 	var state PackageResourceModel
 	require.False(t, resp.State.Get(context.Background(), &state).HasError())
 	assert.Equal(t, computePackageID("", "test-package"), state.ID.ValueString())
+	assert.Equal(t, "amd64", state.Architecture.ValueString(), "failed recovery should reflect cluster state")
 	metadata := state.Metadata.Attributes()
 	assert.Equal(t, "Failed", metadata["status"].(types.String).ValueString())
 	assert.Equal(t, int64(4), metadata["generation"].(types.Int64).ValueInt64())
