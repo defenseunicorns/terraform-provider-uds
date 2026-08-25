@@ -1235,7 +1235,7 @@ func TestPackageResource_CreateFailedDeploymentPreservesState(t *testing.T) {
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
 	planModel := NewTestPackageResourceModel(WithCreateTimeout("50ms"))
-	planModel.SetVariables = types.MapValueMust(types.StringType, map[string]attr.Value{})
+	planModel.SetVariables = types.MapUnknown(types.StringType)
 	planModel.ConnectStrings = emptyConnectStringSet()
 	planModel.Metadata = types.ObjectUnknown(packageMetadataAttrTypes)
 	plan := buildTestPlan(t, packageResource, planModel)
@@ -1252,6 +1252,8 @@ func TestPackageResource_CreateFailedDeploymentPreservesState(t *testing.T) {
 	assert.Equal(t, "Failed", metadata["status"].(types.String).ValueString())
 	assert.Equal(t, int64(4), metadata["generation"].(types.Int64).ValueInt64())
 	assert.Equal(t, "sha256:failed", metadata["digest"].(types.String).ValueString())
+	assert.False(t, state.SetVariables.IsUnknown(), "recovered state must not contain unknown set_variables")
+	assert.Equal(t, types.MapValueMust(types.StringType, map[string]attr.Value{}), state.SetVariables)
 	assert.Equal(t, 1, activeClusterCalls, "failed-create recovery should use a fresh context after timeout")
 	mockPackager.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
 }
@@ -7174,6 +7176,62 @@ func TestValidateComponentBlockOptionalComponentsMutualExclusivity(t *testing.T)
 			}
 		})
 	}
+}
+
+func TestWithStateRecoveryTimeoutUsesFreshWindowAndPreservesCancellation(t *testing.T) {
+	operationCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	expiredCtx, expiredCancel := context.WithTimeout(operationCtx, time.Nanosecond)
+	defer expiredCancel()
+	require.Eventually(t, func() bool {
+		return errors.Is(expiredCtx.Err(), context.DeadlineExceeded)
+	}, time.Second, time.Millisecond)
+
+	stateCtx, stateCancel := withStateRecoveryTimeout(operationCtx)
+	defer stateCancel()
+
+	deadline, ok := stateCtx.Deadline()
+	require.True(t, ok)
+	assert.True(t, time.Until(deadline) > time.Minute)
+
+	cancel()
+	require.Eventually(t, func() bool {
+		return errors.Is(stateCtx.Err(), context.Canceled)
+	}, time.Second, time.Millisecond)
+}
+
+func TestPreservePlannedPackageAttributes(t *testing.T) {
+	plan := NewTestPackageResourceModel(
+		WithArchitecture("arm64"),
+		WithOptionalComponents([]string{"metrics"}),
+	)
+	refreshed := NewTestPackageResourceModel(
+		WithArchitecture("amd64"),
+		WithOptionalComponents([]string{"logging"}),
+	)
+
+	preservePlannedPackageAttributes(&refreshed, &plan)
+
+	assert.Equal(t, plan.Architecture, refreshed.Architecture)
+	assert.Equal(t, plan.OptionalComponents, refreshed.OptionalComponents)
+
+	plan.Architecture = types.StringUnknown()
+	plan.OptionalComponents = types.SetUnknown(types.StringType)
+	refreshed.Architecture = types.StringValue("amd64")
+	refreshed.OptionalComponents = types.SetValueMust(types.StringType, []attr.Value{types.StringValue("logging")})
+	preservePlannedPackageAttributes(&refreshed, &plan)
+
+	assert.Equal(t, "amd64", refreshed.Architecture.ValueString())
+	assert.Equal(t, []string{"logging"}, mustStringSetElements(t, refreshed.OptionalComponents))
+}
+
+func mustStringSetElements(t *testing.T, value types.Set) []string {
+	t.Helper()
+	var result []string
+	diags := value.ElementsAs(context.Background(), &result, false)
+	require.False(t, diags.HasError(), "%v", diags)
+	return result
 }
 
 func TestZarfOperationTimeout(t *testing.T) {

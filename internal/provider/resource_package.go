@@ -630,7 +630,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 			canRecoverState := !errors.Is(err, errDuplicatePackage) && !errors.Is(err, errPackageExistenceCheck)
 			hasKnownPackageName := !plan.Name.IsNull() && !plan.Name.IsUnknown() && plan.Name.ValueString() != ""
 			if canRecoverState && hasKnownPackageName {
-				stateCtx, stateCancel := withStateRecoveryTimeout(timeoutCtx)
+				stateCtx, stateCancel := withStateRecoveryTimeout(operationCtx)
 				defer stateCancel()
 				refreshedPlan, found, stateErr := r.refreshStateFromCluster(stateCtx, plan)
 				if stateErr != nil {
@@ -639,7 +639,9 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 						lifecycleErrorDetail(stateCtx, "create", stateErr),
 					)
 				} else if found {
-					resp.Diagnostics.Append(resp.State.Set(timeoutCtx, &refreshedPlan)...)
+					preservePlannedPackageAttributes(&refreshedPlan, &plan)
+					completeRecoveredState(&refreshedPlan)
+					resp.Diagnostics.Append(resp.State.Set(stateCtx, &refreshedPlan)...)
 				}
 			}
 			resp.Diagnostics.AddError(
@@ -659,6 +661,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 	if found {
+		preservePlannedPackageAttributes(&refreshedPlan, &plan)
 		plan = refreshedPlan
 	}
 
@@ -813,6 +816,7 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 	if found {
+		preservePlannedPackageAttributes(&refreshedPlan, &plan)
 		plan = refreshedPlan
 	}
 
@@ -1505,6 +1509,23 @@ func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageR
 	return plan, nil
 }
 
+func preservePlannedPackageAttributes(refreshed, plan *PackageResourceModel) {
+	if !plan.Architecture.IsUnknown() {
+		refreshed.Architecture = plan.Architecture
+	}
+	if !plan.OptionalComponents.IsUnknown() {
+		refreshed.OptionalComponents = plan.OptionalComponents
+	}
+}
+
+// completeRecoveredState ensures computed-only attributes are known before
+// persisting state recovered after a failed deployment.
+func completeRecoveredState(data *PackageResourceModel) {
+	if data.SetVariables.IsUnknown() {
+		data.SetVariables = types.MapValueMust(types.StringType, map[string]attr.Value{})
+	}
+}
+
 func (r *PackageResource) refreshStateFromCluster(ctx context.Context, data PackageResourceModel) (PackageResourceModel, bool, error) {
 	deployedPackage, found, err := r.getDeployedPackage(ctx, data.Name.ValueString(), data.Namespace.ValueString())
 	if err != nil {
@@ -2175,12 +2196,9 @@ func withClusterTimeout(ctx context.Context) (context.Context, context.CancelFun
 	return context.WithTimeout(ctx, clusterTimeoutMinutes*time.Minute)
 }
 
-// withStateRecoveryTimeout gives failed deployments a fresh cluster lookup window after a timeout.
+// withStateRecoveryTimeout gives failed deployments a fresh cluster lookup window.
 func withStateRecoveryTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return ctx, func() {}
-	}
-	return context.WithTimeout(context.WithoutCancel(ctx), clusterTimeoutMinutes*time.Minute)
+	return context.WithTimeout(ctx, clusterTimeoutMinutes*time.Minute)
 }
 
 // zarfOperationTimeout derives the full time budget for a Zarf Deploy or Remove
