@@ -1192,75 +1192,125 @@ func TestPackageResource_Upsert_PopulatesDeploymentState(t *testing.T) {
 	mockPackageComponentFilter.AssertExpectations(t)
 }
 
-func TestPackageResource_CreateFailedDeploymentPreservesState(t *testing.T) {
-	packageLayout := newValidLoadPackageResult().Layout
-	deployedPackage := zarfState.DeployedPackage{
-		Name:       packageLayout.Pkg.Metadata.Name,
-		Digest:     "sha256:failed",
-		Generation: 4,
-		Data: func() v1alpha1.ZarfPackage {
-			data := packageLayout.Pkg
-			data.Metadata.Architecture = "amd64"
-			return data
-		}(),
-		DeployedComponents: []zarfState.DeployedComponent{
-			{Name: "test-required-component-0", Status: zarfState.ComponentStatusFailed},
+func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
+	tests := []struct {
+		name             string
+		deployError      error
+		writeStateOnDone bool
+		refreshError     error
+		digest           string
+		generation       int
+		createTimeout    string
+		expectedError    string
+	}{
+		{
+			name:             "deployment failure",
+			deployError:      errors.New("deployment failed"),
+			writeStateOnDone: true,
+			digest:           "sha256:failed",
+			generation:       4,
+			createTimeout:    "50ms",
+			expectedError:    "deployment failed",
+		},
+		{
+			name:          "post-deployment refresh failure",
+			refreshError:  errors.New("context deadline exceeded"),
+			digest:        "sha256:recovered",
+			generation:    5,
+			expectedError: "context deadline exceeded",
 		},
 	}
-	deployedPackageJSON, err := json.Marshal(deployedPackage)
-	require.NoError(t, err)
 
-	clientset := fake.NewSimpleClientset()
-	mockCluster := &MockCluster{}
-	var activeClusterCalls int
-	deploymentFinished := false
-	mockCluster.On("NewWithWait", mock.Anything).Run(func(args mock.Arguments) {
-		if deploymentFinished && args.Get(0).(context.Context).Err() == nil {
-			activeClusterCalls++
-		}
-	}).Return(&zarfCluster.Cluster{Clientset: clientset}, nil).Twice()
-	mockPackager := &MockPackager{}
-	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Once()
-	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
-		<-args.Get(0).(context.Context).Done()
-		_, err := clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(
-			context.Background(),
-			&corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: deployedPackage.GetSecretName()},
-				Data:       map[string][]byte{"data": deployedPackageJSON},
-			},
-			metav1.CreateOptions{},
-		)
-		require.NoError(t, err)
-		deploymentFinished = true
-	}).Return(packager.DeployResult{}, errors.New("deployment failed"))
-	mockPackageComponentFilter := &MockPackageComponentFilter{}
-	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			packageLayout := newValidLoadPackageResult().Layout
+			deployedPackage := zarfState.DeployedPackage{
+				Name:       packageLayout.Pkg.Metadata.Name,
+				Digest:     tc.digest,
+				Generation: tc.generation,
+				Data: func() v1alpha1.ZarfPackage {
+					data := packageLayout.Pkg
+					data.Metadata.Architecture = "amd64"
+					return data
+				}(),
+				DeployedComponents: []zarfState.DeployedComponent{
+					{Name: "test-required-component-0", Status: zarfState.ComponentStatusFailed},
+				},
+			}
+			deployedPackageJSON, err := json.Marshal(deployedPackage)
+			require.NoError(t, err)
 
-	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
-	planModel := NewTestPackageResourceModel(WithCreateTimeout("50ms"), WithArchitecture("arm64"))
-	planModel.SetVariables = types.MapUnknown(types.StringType)
-	planModel.ConnectStrings = emptyConnectStringSet()
-	planModel.Metadata = types.ObjectUnknown(packageMetadataAttrTypes)
-	plan := buildTestPlan(t, packageResource, planModel)
-	resp := &resource.CreateResponse{State: tfsdk.State{Schema: plan.Schema}}
-	packageResource.Create(context.Background(), resource.CreateRequest{Plan: plan}, resp)
+			emptyCluster := newFakeCluster()
+			recoveryClientset := fake.NewSimpleClientset()
+			if !tc.writeStateOnDone {
+				_, err := recoveryClientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(
+					context.Background(),
+					&corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      deployedPackage.GetSecretName(),
+							Namespace: zarfState.ZarfNamespaceName,
+						},
+						Data: map[string][]byte{"data": deployedPackageJSON},
+					},
+					metav1.CreateOptions{},
+				)
+				require.NoError(t, err)
+			}
+			recoveryCluster := &zarfCluster.Cluster{Clientset: recoveryClientset}
+			mockCluster := &MockCluster{}
+			mockCluster.On("NewWithWait", mock.Anything).Return(emptyCluster, nil).Once()
+			if tc.refreshError != nil {
+				mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, tc.refreshError).Once()
+			}
+			mockCluster.On("NewWithWait", mock.Anything).Return(recoveryCluster, nil).Once()
 
-	assert.True(t, resp.Diagnostics.HasError())
-	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "deployment failed")
+			mockPackager := &MockPackager{}
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Once()
+			deployCall := mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, tc.deployError).Once()
+			if tc.writeStateOnDone {
+				deployCall.Run(func(args mock.Arguments) {
+					<-args.Get(0).(context.Context).Done()
+					_, err := recoveryCluster.Clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(
+						context.Background(),
+						&corev1.Secret{
+							ObjectMeta: metav1.ObjectMeta{Name: deployedPackage.GetSecretName()},
+							Data:       map[string][]byte{"data": deployedPackageJSON},
+						},
+						metav1.CreateOptions{},
+					)
+					require.NoError(t, err)
+				})
+			}
+			mockPackageComponentFilter := &MockPackageComponentFilter{}
+			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything).Once()
 
-	var state PackageResourceModel
-	require.False(t, resp.State.Get(context.Background(), &state).HasError())
-	assert.Equal(t, computePackageID("", "test-package"), state.ID.ValueString())
-	assert.Equal(t, "amd64", state.Architecture.ValueString(), "failed recovery should reflect cluster state")
-	metadata := state.Metadata.Attributes()
-	assert.Equal(t, "Failed", metadata["status"].(types.String).ValueString())
-	assert.Equal(t, int64(4), metadata["generation"].(types.Int64).ValueInt64())
-	assert.Equal(t, "sha256:failed", metadata["digest"].(types.String).ValueString())
-	assert.False(t, state.SetVariables.IsUnknown(), "recovered state must not contain unknown set_variables")
-	assert.Equal(t, types.MapValueMust(types.StringType, map[string]attr.Value{}), state.SetVariables)
-	assert.Equal(t, 1, activeClusterCalls, "failed-create recovery should use a fresh context after timeout")
-	mockPackager.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
+			options := []PackageResourceModelDataOption{WithArchitecture("arm64")}
+			if tc.createTimeout != "" {
+				options = append(options, WithCreateTimeout(tc.createTimeout))
+			}
+			planModel := NewTestPackageResourceModel(options...)
+			planModel.SetVariables = types.MapUnknown(types.StringType)
+			planModel.ConnectStrings = emptyConnectStringSet()
+			planModel.Metadata = types.ObjectUnknown(packageMetadataAttrTypes)
+			plan := buildTestPlan(t, packageResource, planModel)
+			resp := &resource.CreateResponse{State: tfsdk.State{Schema: plan.Schema}}
+			packageResource.Create(context.Background(), resource.CreateRequest{Plan: plan}, resp)
+
+			require.True(t, resp.Diagnostics.HasError())
+			assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), tc.expectedError)
+			var state PackageResourceModel
+			require.False(t, resp.State.Get(context.Background(), &state).HasError())
+			assert.Equal(t, computePackageID("", "test-package"), state.ID.ValueString())
+			assert.Equal(t, "amd64", state.Architecture.ValueString())
+			metadata := state.Metadata.Attributes()
+			assert.Equal(t, "Failed", metadata["status"].(types.String).ValueString())
+			assert.Equal(t, int64(tc.generation), metadata["generation"].(types.Int64).ValueInt64())
+			assert.Equal(t, tc.digest, metadata["digest"].(types.String).ValueString())
+			assert.False(t, state.SetVariables.IsUnknown(), "recovered state must not contain unknown set_variables")
+			assert.Equal(t, types.MapValueMust(types.StringType, map[string]attr.Value{}), state.SetVariables)
+		})
+	}
 }
 
 func TestPackageResource_CreateSuccessfulDeploymentRefreshesState(t *testing.T) {

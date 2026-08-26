@@ -653,6 +653,18 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 
 	refreshedPlan, found, refreshErr := r.refreshStateFromCluster(timeoutCtx, plan)
 	if refreshErr != nil {
+		stateCtx, stateCancel := withStateRecoveryTimeout(operationCtx)
+		defer stateCancel()
+		recoveredPlan, recovered, stateErr := r.refreshStateFromCluster(stateCtx, plan)
+		if stateErr != nil {
+			resp.Diagnostics.AddError(
+				"Error getting failed package state",
+				lifecycleErrorDetail(stateCtx, "create", stateErr),
+			)
+		} else if recovered {
+			completeRecoveredState(&recoveredPlan)
+			resp.Diagnostics.Append(resp.State.Set(stateCtx, &recoveredPlan)...)
+		}
 		resp.Diagnostics.AddError(
 			"Error creating package",
 			lifecycleErrorDetail(timeoutCtx, "create", refreshErr),
