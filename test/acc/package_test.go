@@ -31,7 +31,7 @@ const (
 	initPackageVersion = "v0.83.0"
 
 	// renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/core-crds versioning=semver extractVersion=^(?<version>.*)-upstream$
-	udsCoreCRDsPackageVersion = "1.10.0"
+	udsCoreCRDsPackageVersion = "1.11.1"
 
 	// renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/nginx versioning=semver extractVersion=^(?<version>.*)-upstream$
 	udsNginxPackageVersion = "1.31.1-uds.1"
