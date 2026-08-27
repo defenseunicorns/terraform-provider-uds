@@ -1415,6 +1415,47 @@ func TestPackageResource_CreatePreflightFailureDoesNotDeployOrPersistState(t *te
 	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
 }
 
+func TestPackageResource_CreateSignatureFailureDoesNotAdoptExistingPackage(t *testing.T) {
+	packageLayout := newValidLoadPackageResult().Layout
+	packageLayout.Pkg.Build.Signed = helpers.BoolPtr(true)
+	existingPackage := newLifecycleDeployedPackage(packageLayout)
+	cluster := &zarfCluster.Cluster{
+		Clientset: fake.NewSimpleClientset(newPackageStateSecret(t, existingPackage)),
+	}
+	mockCluster := &MockCluster{}
+	mockCluster.On("NewWithWait", mock.Anything).Return(cluster, nil).Maybe()
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Once()
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
+	packageResource.verifyPackageSignatureFunc = func(context.Context, *layout.PackageLayout, zarfSigning.VerifyBlobOptions) error {
+		return errors.New("signature verification failed")
+	}
+
+	resp := runCreateLifecycleTest(t, packageResource, newCreateLifecycleModel(WithSignatureVerificationEnabled(true)))
+
+	require.True(t, resp.Diagnostics.HasError())
+	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "signature verification failed")
+	assertNoPackageState(t, resp.State)
+	mockCluster.AssertNotCalled(t, "NewWithWait", mock.Anything)
+	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestPackageResource_UpsertLoadedPackagePreDeploymentFailureDoesNotInvokeDeploy(t *testing.T) {
+	packageLayout := newValidLoadPackageResult().Layout
+	mockPackager := &MockPackager{}
+	packageResource := NewPackageResource(nil, mockPackager, nil, nil).(*PackageResource)
+	plan := newCreateLifecycleModel()
+	plan.Values = types.DynamicUnknown()
+
+	_, deployInvoked, err := packageResource.upsertLoadedPackage(testCtx(t), plan, packageLayout)
+
+	require.ErrorContains(t, err, "values must be known")
+	assert.False(t, deployInvoked)
+	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+}
+
 func TestPackageResource_CreateSuccessfulDeploymentWithoutStateSecretRetainsFallbackMetadata(t *testing.T) {
 	packageLayout := newValidLoadPackageResult().Layout
 	mockCluster := &MockCluster{}

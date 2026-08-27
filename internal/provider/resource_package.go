@@ -618,7 +618,8 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	defer cancel()
 
 	var err error
-	plan, err = r.deployAsNew(timeoutCtx, plan)
+	var deployInvoked bool
+	plan, deployInvoked, err = r.deployAsNew(timeoutCtx, plan)
 	if !plan.Name.IsNull() && !plan.Name.IsUnknown() {
 		operationCtx = logging.WithPackageContext(operationCtx, "create", plan.Name.ValueString(), plan.Namespace.ValueString())
 	}
@@ -627,9 +628,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		if errors.As(err, &optErr) {
 			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", optErr.Error())
 		} else {
-			canRecoverState := !errors.Is(err, errDuplicatePackage) && !errors.Is(err, errPackageExistenceCheck)
-			hasKnownPackageName := !plan.Name.IsNull() && !plan.Name.IsUnknown() && plan.Name.ValueString() != ""
-			if canRecoverState && hasKnownPackageName {
+			if deployInvoked {
 				r.recoverCreateState(operationCtx, plan, resp)
 			}
 			resp.Diagnostics.AddError(
@@ -1287,11 +1286,13 @@ func (r *PackageResource) getDeployedPackage(ctx context.Context, name string, n
 	return *pkg, true, nil
 }
 
-func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
+// deployAsNew deploys a package only when its name and namespace are not already
+// present. The bool result reports whether packager.Deploy was invoked.
+func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, bool, error) {
 	// Load the package to establish identity before checking for an existing deployment.
 	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
 	if err != nil {
-		return plan, err
+		return plan, false, err
 	}
 	plan.Name = types.StringValue(pkgLayout.Pkg.Metadata.Name)
 	ctx = logging.WithPackageContext(ctx, "", plan.Name.ValueString(), plan.Namespace.ValueString())
@@ -1301,7 +1302,7 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 		}
 	}()
 	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
-		return plan, err
+		return plan, false, err
 	}
 
 	packageNamespace := plan.Namespace.ValueString()
@@ -1315,10 +1316,10 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	_, found, err := r.getDeployedPackage(clusterTimeoutCtx, packageName, packageNamespace)
 	if err != nil {
 		// Do not deploy when package existence cannot be determined.
-		return plan, fmt.Errorf("%w: %w", errPackageExistenceCheck, err)
+		return plan, false, fmt.Errorf("%w: %w", errPackageExistenceCheck, err)
 	}
 	if found {
-		return plan, fmt.Errorf("%w: package with namespace '%s' and name '%s'", errDuplicatePackage, plan.Namespace.ValueString(), packageName)
+		return plan, false, fmt.Errorf("%w: package with namespace '%s' and name '%s'", errDuplicatePackage, plan.Namespace.ValueString(), packageName)
 	}
 	return r.upsertLoadedPackage(ctx, plan, pkgLayout)
 }
@@ -1363,48 +1364,50 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
 		}
 	}()
-	return r.upsertLoadedPackage(ctx, plan, pkgLayout)
+	updatedPlan, _, err := r.upsertLoadedPackage(ctx, plan, pkgLayout)
+	return updatedPlan, err
 }
 
 // upsertLoadedPackage deploys an already-loaded package layout. The caller owns
-// loading and cleanup of the package layout.
-func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) (PackageResourceModel, error) {
+// loading and cleanup of the package layout. The bool result reports whether
+// packager.Deploy was invoked.
+func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) (PackageResourceModel, bool, error) {
 	ctx = r.withOCISchemeNegotiator(ctx)
 	if plan.OptionalComponents.IsUnknown() {
-		return plan, fmt.Errorf("optional_components must be known before apply")
+		return plan, false, fmt.Errorf("optional_components must be known before apply")
 	}
 	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
-		return plan, err
+		return plan, false, err
 	}
 
 	optionalComponents, err := getOptionalComponentsForDeploy(ctx, plan, pkgLayout)
 	if err != nil {
-		return plan, err
+		return plan, false, err
 	}
 
 	// TODO: remove when component block is removed (components extraction, flattenComponentOverrides, and ValuesOverridesMap)
 	var components []ComponentModel
 	if !plan.Components.IsNull() && !plan.Components.IsUnknown() {
 		if diags := plan.Components.ElementsAs(ctx, &components, false); diags.HasError() {
-			return plan, fmt.Errorf("failed to read component blocks: %v", diags)
+			return plan, false, fmt.Errorf("failed to read component blocks: %v", diags)
 		}
 	}
 
 	valuesOverridesMap, err := flattenComponentOverrides(ctx, components)
 	if err != nil {
-		return plan, err
+		return plan, false, err
 	}
 	values, err := dynamicToValues("values", plan.Values)
 	if err != nil {
-		return plan, fmt.Errorf("invalid package values for apply: %w", err)
+		return plan, false, fmt.Errorf("invalid package values for apply: %w", err)
 	}
 	sensitiveValues, err := dynamicToValues("sensitive_values", plan.SensitiveValues)
 	if err != nil {
-		return plan, fmt.Errorf("invalid sensitive package values for apply: %w", err)
+		return plan, false, fmt.Errorf("invalid sensitive package values for apply: %w", err)
 	}
 	deployValues, err := mergePackageValues(values, sensitiveValues)
 	if err != nil {
-		return plan, err
+		return plan, false, err
 	}
 
 	// TODO(erickson): Add support for Retries, OCIConcurrency?
@@ -1429,12 +1432,12 @@ func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageR
 	filter := r.packageFilter.ForDeploy(optionalComponents)
 	pkgLayout.Pkg.Components, err = filter.Apply(pkgLayout.Pkg)
 	if err != nil {
-		return plan, err
+		return plan, false, err
 	}
 
 	zarfTimeout, err := zarfOperationTimeout(ctx)
 	if err != nil {
-		return plan, fmt.Errorf("insufficient time remaining before deployment: %w", err)
+		return plan, false, fmt.Errorf("insufficient time remaining before deployment: %w", err)
 	}
 	deployOpts.Timeout = zarfTimeout
 
@@ -1444,7 +1447,7 @@ func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageR
 	}
 	deployResult, err := r.packager.Deploy(ctx, pkgLayout, deployOpts)
 	if err != nil {
-		return plan, err
+		return plan, true, err
 	}
 
 	// Populate computed `set_variables` from variables returned by the
@@ -1465,7 +1468,7 @@ func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageR
 	var d diag.Diagnostics
 	plan.SetVariables, d = types.MapValue(types.StringType, varsMap)
 	if d.HasError() {
-		return plan, fmt.Errorf("failed to construct set_variables map: %v", d)
+		return plan, true, fmt.Errorf("failed to construct set_variables map: %v", d)
 	}
 
 	// Populate connect strings from deploy result
@@ -1477,7 +1480,7 @@ func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageR
 
 	r.populatePackageModelFromLayout(&plan, pkgLayout)
 	if err := populatePackageMetadataFromLayout(&plan, pkgLayout); err != nil {
-		return plan, err
+		return plan, true, err
 	}
 	plan.ConnectStrings = connectStrings
 
@@ -1491,11 +1494,11 @@ func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageR
 		}
 		plan.OptionalComponents, d = types.SetValue(types.StringType, optionalVals)
 		if d.HasError() {
-			return plan, fmt.Errorf("failed to set optional_components from deployed components: %v", d)
+			return plan, true, fmt.Errorf("failed to set optional_components from deployed components: %v", d)
 		}
 	}
 
-	return plan, nil
+	return plan, true, nil
 }
 
 func (r *PackageResource) recoverCreateState(ctx context.Context, plan PackageResourceModel, resp *resource.CreateResponse) {
