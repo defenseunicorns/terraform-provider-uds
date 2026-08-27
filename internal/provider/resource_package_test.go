@@ -170,6 +170,88 @@ func newFakeCluster() *zarfCluster.Cluster {
 	return &zarfCluster.Cluster{Clientset: fake.NewSimpleClientset()}
 }
 
+// newLifecycleDeployedPackage builds cluster state from pkgLayout with an amd64
+// architecture and the supplied deployed components.
+func newLifecycleDeployedPackage(pkgLayout *layout.PackageLayout, components ...zarfState.DeployedComponent) zarfState.DeployedPackage {
+	data := pkgLayout.Pkg
+	data.Metadata.Architecture = "amd64"
+	return zarfState.DeployedPackage{
+		Name:               pkgLayout.Pkg.Metadata.Name,
+		Data:               data,
+		DeployedComponents: components,
+	}
+}
+
+// newPackageStateSecret serializes pkg into the Secret shape Zarf uses for
+// deployed package state.
+func newPackageStateSecret(t *testing.T, pkg zarfState.DeployedPackage) *corev1.Secret {
+	t.Helper()
+	data, err := json.Marshal(pkg)
+	require.NoError(t, err)
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: pkg.GetSecretName(), Namespace: zarfState.ZarfNamespaceName},
+		Data:       map[string][]byte{"data": data},
+	}
+}
+
+// newCreateLifecycleModel builds a Create plan model from options, with known
+// empty runtime outputs and unknown metadata as Terraform supplies before Create.
+func newCreateLifecycleModel(options ...PackageResourceModelDataOption) PackageResourceModel {
+	model := NewTestPackageResourceModel(options...)
+	model.SetVariables = types.MapValueMust(types.StringType, map[string]attr.Value{})
+	model.ConnectStrings = emptyConnectStringSet()
+	model.Metadata = types.ObjectUnknown(packageMetadataAttrTypes)
+	return model
+}
+
+// runCreateLifecycleTest builds a Terraform plan from model, calls Create, and
+// returns the response for lifecycle assertions.
+func runCreateLifecycleTest(t *testing.T, packageResource *PackageResource, model PackageResourceModel) resource.CreateResponse {
+	t.Helper()
+	plan := buildTestPlan(t, packageResource, model)
+	resp := resource.CreateResponse{State: tfsdk.State{Schema: plan.Schema}}
+	packageResource.Create(context.Background(), resource.CreateRequest{Plan: plan}, &resp)
+	return resp
+}
+
+// runUpdateLifecycleTest builds Terraform plan and prior state from planModel
+// and stateModel, calls Update, and returns the response.
+func runUpdateLifecycleTest(t *testing.T, packageResource *PackageResource, planModel, stateModel PackageResourceModel) resource.UpdateResponse {
+	t.Helper()
+	plan := buildTestPlan(t, packageResource, planModel)
+	state := buildTestState(t, packageResource, stateModel)
+	resp := resource.UpdateResponse{State: tfsdk.State{Schema: plan.Schema}}
+	packageResource.Update(context.Background(), resource.UpdateRequest{Plan: plan, State: state}, &resp)
+	return resp
+}
+
+// requirePackageState decodes state into a package model and fails the test if
+// the framework reports state conversion diagnostics.
+func requirePackageState(t *testing.T, state tfsdk.State) PackageResourceModel {
+	t.Helper()
+	var model PackageResourceModel
+	require.False(t, state.Get(context.Background(), &model).HasError())
+	return model
+}
+
+// assertNoPackageState verifies that state has no readable package resource ID.
+func assertNoPackageState(t *testing.T, state tfsdk.State) {
+	t.Helper()
+	var model PackageResourceModel
+	diags := state.Get(context.Background(), &model)
+	assert.True(t, diags.HasError() || model.ID.IsNull())
+}
+
+// assertPackageMetadata verifies the cluster-derived status, generation, and
+// digest values stored in the package metadata object.
+func assertPackageMetadata(t *testing.T, metadata types.Object, status string, generation int64, digest string) {
+	t.Helper()
+	attributes := metadata.Attributes()
+	assert.Equal(t, status, attributes["status"].(types.String).ValueString())
+	assert.Equal(t, generation, attributes["generation"].(types.Int64).ValueInt64())
+	assert.Equal(t, digest, attributes["digest"].(types.String).ValueString())
+}
+
 func (m *MockCluster) NewWithWait(ctx context.Context) (*zarfCluster.Cluster, error) {
 	args := m.Called(ctx)
 	return args.Get(0).(*zarfCluster.Cluster), args.Error(1)
@@ -1187,32 +1269,18 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			packageLayout := newValidLoadPackageResult().Layout
-			deployedPackageData := packageLayout.Pkg
-			deployedPackageData.Metadata.Architecture = "amd64"
-			deployedPackage := zarfState.DeployedPackage{
-				Name:       packageLayout.Pkg.Metadata.Name,
-				Digest:     tc.digest,
-				Generation: tc.generation,
-				Data:       deployedPackageData,
-				DeployedComponents: []zarfState.DeployedComponent{
-					{Name: "test-required-component-0", Status: zarfState.ComponentStatusFailed},
-				},
-			}
-			deployedPackageJSON, err := json.Marshal(deployedPackage)
-			require.NoError(t, err)
+			deployedPackage := newLifecycleDeployedPackage(packageLayout,
+				zarfState.DeployedComponent{Name: "test-required-component-0", Status: zarfState.ComponentStatusFailed},
+			)
+			deployedPackage.Digest = tc.digest
+			deployedPackage.Generation = tc.generation
 
 			emptyCluster := newFakeCluster()
 			recoveryClientset := fake.NewSimpleClientset()
 			if tc.seedRecoveryState {
 				_, err := recoveryClientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(
 					context.Background(),
-					&corev1.Secret{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      deployedPackage.GetSecretName(),
-							Namespace: zarfState.ZarfNamespaceName,
-						},
-						Data: map[string][]byte{"data": deployedPackageJSON},
-					},
+					newPackageStateSecret(t, deployedPackage),
 					metav1.CreateOptions{},
 				)
 				require.NoError(t, err)
@@ -1233,14 +1301,13 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Once()
 			deployCall := mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, tc.deployError).Once()
 			if tc.writeStateOnDone {
+				// Simulate Zarf persisting failed package state after the deployment
+				// context expires but before the recovery lookup.
 				deployCall.Run(func(args mock.Arguments) {
 					<-args.Get(0).(context.Context).Done()
 					_, err := recoveryCluster.Clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(
 						context.Background(),
-						&corev1.Secret{
-							ObjectMeta: metav1.ObjectMeta{Name: deployedPackage.GetSecretName()},
-							Data:       map[string][]byte{"data": deployedPackageJSON},
-						},
+						newPackageStateSecret(t, deployedPackage),
 						metav1.CreateOptions{},
 					)
 					require.NoError(t, err)
@@ -1254,37 +1321,28 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 			if tc.createTimeout != "" {
 				options = append(options, WithCreateTimeout(tc.createTimeout))
 			}
-			planModel := NewTestPackageResourceModel(options...)
+			planModel := newCreateLifecycleModel(options...)
 			planModel.SetVariables = types.MapUnknown(types.StringType)
-			planModel.ConnectStrings = emptyConnectStringSet()
-			planModel.Metadata = types.ObjectUnknown(packageMetadataAttrTypes)
-			plan := buildTestPlan(t, packageResource, planModel)
-			resp := &resource.CreateResponse{State: tfsdk.State{Schema: plan.Schema}}
-			packageResource.Create(context.Background(), resource.CreateRequest{Plan: plan}, resp)
+
+			resp := runCreateLifecycleTest(t, packageResource, planModel)
 
 			require.True(t, resp.Diagnostics.HasError())
 			var diagnosticDetails []string
 			for _, diagnostic := range resp.Diagnostics.Errors() {
 				diagnosticDetails = append(diagnosticDetails, diagnostic.Detail())
 			}
-			diagnosticsText := strings.Join(diagnosticDetails, "\n")
 			for _, expectedError := range tc.expectedErrors {
-				assert.Contains(t, diagnosticsText, expectedError)
+				assert.Contains(t, strings.Join(diagnosticDetails, "\n"), expectedError)
 			}
 
-			var state PackageResourceModel
-			stateDiags := resp.State.Get(context.Background(), &state)
 			if !tc.expectState {
-				assert.True(t, stateDiags.HasError() || state.ID.IsNull())
+				assertNoPackageState(t, resp.State)
 				return
 			}
-			require.False(t, stateDiags.HasError())
+			state := requirePackageState(t, resp.State)
 			assert.Equal(t, computePackageID("", "test-package"), state.ID.ValueString())
 			assert.Equal(t, "amd64", state.Architecture.ValueString())
-			metadata := state.Metadata.Attributes()
-			assert.Equal(t, "Failed", metadata["status"].(types.String).ValueString())
-			assert.Equal(t, int64(tc.generation), metadata["generation"].(types.Int64).ValueInt64())
-			assert.Equal(t, tc.digest, metadata["digest"].(types.String).ValueString())
+			assertPackageMetadata(t, state.Metadata, "Failed", int64(tc.generation), tc.digest)
 			assert.Equal(t, types.MapValueMust(types.StringType, map[string]attr.Value{}), state.SetVariables)
 		})
 	}
@@ -1292,20 +1350,12 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 
 func TestPackageResource_CreateSuccessfulDeploymentRefreshesState(t *testing.T) {
 	packageLayout := newValidLoadPackageResult().Layout
-	deployedPackageData := packageLayout.Pkg
-	deployedPackageData.Metadata.Architecture = "amd64"
-	deployedPackage := zarfState.DeployedPackage{
-		Name:       packageLayout.Pkg.Metadata.Name,
-		Digest:     "sha256:created",
-		Generation: 8,
-		Data:       deployedPackageData,
-		DeployedComponents: []zarfState.DeployedComponent{
-			{Name: "test-required-component-0", Status: zarfState.ComponentStatusSucceeded},
-			{Name: "test-optional-non-default-component-0", Status: zarfState.ComponentStatusSucceeded},
-		},
-	}
-	deployedPackageJSON, err := json.Marshal(deployedPackage)
-	require.NoError(t, err)
+	deployedPackage := newLifecycleDeployedPackage(packageLayout,
+		zarfState.DeployedComponent{Name: "test-required-component-0", Status: zarfState.ComponentStatusSucceeded},
+		zarfState.DeployedComponent{Name: "test-optional-non-default-component-0", Status: zarfState.ComponentStatusSucceeded},
+	)
+	deployedPackage.Digest = "sha256:created"
+	deployedPackage.Generation = 8
 	clientset := fake.NewSimpleClientset()
 	mockCluster := &MockCluster{}
 	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{Clientset: clientset}, nil).Twice()
@@ -1314,10 +1364,7 @@ func TestPackageResource_CreateSuccessfulDeploymentRefreshesState(t *testing.T) 
 	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Run(func(_ mock.Arguments) {
 		_, err := clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(
 			context.Background(),
-			&corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: deployedPackage.GetSecretName()},
-				Data:       map[string][]byte{"data": deployedPackageJSON},
-			},
+			newPackageStateSecret(t, deployedPackage),
 			metav1.CreateOptions{},
 		)
 		require.NoError(t, err)
@@ -1329,26 +1376,19 @@ func TestPackageResource_CreateSuccessfulDeploymentRefreshesState(t *testing.T) 
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
-	planModel := NewTestPackageResourceModel(
+	// Conflict with the cluster values above to prove known planned values win.
+	planModel := newCreateLifecycleModel(
 		WithArchitecture("arm64"),
 		WithOptionalComponents([]string{"test-optional-default-component-0"}),
 	)
-	planModel.SetVariables = types.MapValueMust(types.StringType, map[string]attr.Value{})
-	planModel.ConnectStrings = emptyConnectStringSet()
-	planModel.Metadata = types.ObjectUnknown(packageMetadataAttrTypes)
-	plan := buildTestPlan(t, packageResource, planModel)
-	resp := &resource.CreateResponse{State: tfsdk.State{Schema: plan.Schema}}
-	packageResource.Create(context.Background(), resource.CreateRequest{Plan: plan}, resp)
+
+	resp := runCreateLifecycleTest(t, packageResource, planModel)
 
 	require.False(t, resp.Diagnostics.HasError(), "create diagnostics: %v", resp.Diagnostics)
-	var state PackageResourceModel
-	require.False(t, resp.State.Get(context.Background(), &state).HasError())
+	state := requirePackageState(t, resp.State)
 	assert.Equal(t, "arm64", state.Architecture.ValueString())
 	assert.Equal(t, []string{"test-optional-default-component-0"}, mustStringSetElements(t, state.OptionalComponents))
-	metadata := state.Metadata.Attributes()
-	assert.Equal(t, "Succeeded", metadata["status"].(types.String).ValueString())
-	assert.Equal(t, int64(8), metadata["generation"].(types.Int64).ValueInt64())
-	assert.Equal(t, "sha256:created", metadata["digest"].(types.String).ValueString())
+	assertPackageMetadata(t, state.Metadata, "Succeeded", 8, "sha256:created")
 }
 
 func TestPackageResource_CreatePreflightFailureDoesNotDeployOrPersistState(t *testing.T) {
@@ -1360,20 +1400,12 @@ func TestPackageResource_CreatePreflightFailureDoesNotDeployOrPersistState(t *te
 	mockPackageComponentFilter := &MockPackageComponentFilter{}
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
-	planModel := NewTestPackageResourceModel()
-	planModel.SetVariables = types.MapValueMust(types.StringType, map[string]attr.Value{})
-	planModel.ConnectStrings = emptyConnectStringSet()
-	planModel.Metadata = types.ObjectUnknown(packageMetadataAttrTypes)
-	plan := buildTestPlan(t, packageResource, planModel)
-	resp := &resource.CreateResponse{State: tfsdk.State{Schema: plan.Schema}}
 
-	packageResource.Create(context.Background(), resource.CreateRequest{Plan: plan}, resp)
+	resp := runCreateLifecycleTest(t, packageResource, newCreateLifecycleModel())
 
 	require.True(t, resp.Diagnostics.HasError())
 	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "failed to check for existing package")
-	var state PackageResourceModel
-	stateDiags := resp.State.Get(context.Background(), &state)
-	assert.True(t, stateDiags.HasError() || state.ID.IsNull())
+	assertNoPackageState(t, resp.State)
 	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
 }
 
@@ -1388,25 +1420,16 @@ func TestPackageResource_CreateSuccessfulDeploymentWithoutStateSecretRetainsFall
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything).Once()
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
-	planModel := NewTestPackageResourceModel()
-	planModel.SetVariables = types.MapValueMust(types.StringType, map[string]attr.Value{})
-	planModel.ConnectStrings = emptyConnectStringSet()
-	planModel.Metadata = types.ObjectUnknown(packageMetadataAttrTypes)
-	plan := buildTestPlan(t, packageResource, planModel)
-	resp := &resource.CreateResponse{State: tfsdk.State{Schema: plan.Schema}}
 
-	packageResource.Create(context.Background(), resource.CreateRequest{Plan: plan}, resp)
+	resp := runCreateLifecycleTest(t, packageResource, newCreateLifecycleModel())
 
 	require.False(t, resp.Diagnostics.HasError(), "create diagnostics: %v", resp.Diagnostics)
-	var state PackageResourceModel
-	require.False(t, resp.State.Get(context.Background(), &state).HasError())
+	state := requirePackageState(t, resp.State)
 	metadata := state.Metadata.Attributes()
 	assert.Equal(t, packageLayout.Pkg.Metadata.Name, metadata["name"].(types.String).ValueString())
 	assert.Equal(t, packageLayout.Pkg.Metadata.Description, metadata["description"].(types.String).ValueString())
 	assert.Equal(t, packageLayout.Pkg.Metadata.Version, metadata["version"].(types.String).ValueString())
-	assert.Equal(t, "Succeeded", metadata["status"].(types.String).ValueString())
-	assert.Equal(t, int64(0), metadata["generation"].(types.Int64).ValueInt64())
-	assert.Equal(t, packageLayout.Digest(), metadata["digest"].(types.String).ValueString())
+	assertPackageMetadata(t, state.Metadata, "Succeeded", 0, packageLayout.Digest())
 }
 
 func TestPackageResource_UpdateSuccessfulDeploymentWithoutStateSecretRetainsFallbackMetadata(t *testing.T) {
@@ -1423,37 +1446,19 @@ func TestPackageResource_UpdateSuccessfulDeploymentWithoutStateSecretRetainsFall
 	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
 	planModel := stateModel
 	planModel.Source = types.StringValue("oci://ghcr.io/defenseunicorns/packages/test:updated")
-	plan := buildTestPlan(t, packageResource, planModel)
-	state := buildTestState(t, packageResource, stateModel)
-	resp := resource.UpdateResponse{State: tfsdk.State{Schema: plan.Schema}}
 
-	packageResource.Update(context.Background(), resource.UpdateRequest{Plan: plan, State: state}, &resp)
+	resp := runUpdateLifecycleTest(t, packageResource, planModel, stateModel)
 
 	require.False(t, resp.Diagnostics.HasError(), "update diagnostics: %v", resp.Diagnostics)
-	var updated PackageResourceModel
-	require.False(t, resp.State.Get(context.Background(), &updated).HasError())
-	metadata := updated.Metadata.Attributes()
-	assert.Equal(t, "Succeeded", metadata["status"].(types.String).ValueString())
-	assert.Equal(t, int64(0), metadata["generation"].(types.Int64).ValueInt64())
-	assert.Equal(t, packageLayout.Digest(), metadata["digest"].(types.String).ValueString())
+	updated := requirePackageState(t, resp.State)
+	assertPackageMetadata(t, updated.Metadata, "Succeeded", 0, packageLayout.Digest())
 }
 
 func TestPackageResource_CreateDuplicatePackageDoesNotAdoptState(t *testing.T) {
 	packageLayout := newValidLoadPackageResult().Layout
-	deployedPackage := zarfState.DeployedPackage{
-		Name: packageLayout.Pkg.Metadata.Name,
-		Data: packageLayout.Pkg,
-	}
-	deployedPackageJSON, err := json.Marshal(deployedPackage)
-	require.NoError(t, err)
+	deployedPackage := newLifecycleDeployedPackage(packageLayout)
 	cluster := &zarfCluster.Cluster{
-		Clientset: fake.NewSimpleClientset(&corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      deployedPackage.GetSecretName(),
-				Namespace: zarfState.ZarfNamespaceName,
-			},
-			Data: map[string][]byte{"data": deployedPackageJSON},
-		}),
+		Clientset: fake.NewSimpleClientset(newPackageStateSecret(t, deployedPackage)),
 	}
 	mockCluster := &MockCluster{}
 	mockCluster.On("NewWithWait", mock.Anything).Return(cluster, nil).Once()
@@ -1462,19 +1467,12 @@ func TestPackageResource_CreateDuplicatePackageDoesNotAdoptState(t *testing.T) {
 	mockPackageComponentFilter := &MockPackageComponentFilter{}
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
-	planModel := NewTestPackageResourceModel()
-	planModel.SetVariables = types.MapValueMust(types.StringType, map[string]attr.Value{})
-	planModel.ConnectStrings = emptyConnectStringSet()
-	planModel.Metadata = types.ObjectUnknown(packageMetadataAttrTypes)
-	plan := buildTestPlan(t, packageResource, planModel)
-	resp := &resource.CreateResponse{State: tfsdk.State{Schema: plan.Schema}}
-	packageResource.Create(context.Background(), resource.CreateRequest{Plan: plan}, resp)
+
+	resp := runCreateLifecycleTest(t, packageResource, newCreateLifecycleModel())
 
 	require.Len(t, resp.Diagnostics.Errors(), 1)
 	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "already exists")
-	var state PackageResourceModel
-	stateDiags := resp.State.Get(context.Background(), &state)
-	assert.True(t, stateDiags.HasError() || state.ID.IsNull())
+	assertNoPackageState(t, resp.State)
 	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
 	mockPackager.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
 }
@@ -3734,21 +3732,13 @@ func TestUpdate_TimeoutOnlyChangeSkipsPackageOperations(t *testing.T) {
 
 func TestPackageResource_UpdateSuccessfulDeploymentRefreshesState(t *testing.T) {
 	packageLayout := newValidLoadPackageResult().Layout
-	deployedPackageData := packageLayout.Pkg
-	deployedPackageData.Metadata.Architecture = "amd64"
-	deployedPackage := zarfState.DeployedPackage{
-		Name:              packageLayout.Pkg.Metadata.Name,
-		Digest:            "sha256:updated",
-		Generation:        10,
-		NamespaceOverride: "updated",
-		Data:              deployedPackageData,
-		DeployedComponents: []zarfState.DeployedComponent{
-			{Name: "test-required-component-0", Status: zarfState.ComponentStatusSucceeded},
-			{Name: "test-optional-non-default-component-0", Status: zarfState.ComponentStatusSucceeded},
-		},
-	}
-	deployedPackageJSON, err := json.Marshal(deployedPackage)
-	require.NoError(t, err)
+	deployedPackage := newLifecycleDeployedPackage(packageLayout,
+		zarfState.DeployedComponent{Name: "test-required-component-0", Status: zarfState.ComponentStatusSucceeded},
+		zarfState.DeployedComponent{Name: "test-optional-non-default-component-0", Status: zarfState.ComponentStatusSucceeded},
+	)
+	deployedPackage.Digest = "sha256:updated"
+	deployedPackage.Generation = 10
+	deployedPackage.NamespaceOverride = "updated"
 	clientset := fake.NewSimpleClientset()
 	mockCluster := &MockCluster{}
 	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{Clientset: clientset}, nil).Once()
@@ -3757,10 +3747,7 @@ func TestPackageResource_UpdateSuccessfulDeploymentRefreshesState(t *testing.T) 
 	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Run(func(_ mock.Arguments) {
 		_, err := clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(
 			context.Background(),
-			&corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: deployedPackage.GetSecretName()},
-				Data:       map[string][]byte{"data": deployedPackageJSON},
-			},
+			newPackageStateSecret(t, deployedPackage),
 			metav1.CreateOptions{},
 		)
 		require.NoError(t, err)
@@ -3775,22 +3762,17 @@ func TestPackageResource_UpdateSuccessfulDeploymentRefreshesState(t *testing.T) 
 	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
 	planModel := stateModel
 	WithNamespace("updated")(&planModel)
+	// Conflict with the cluster values above to prove known planned values win.
 	WithArchitecture("arm64")(&planModel)
 	WithOptionalComponents([]string{"test-optional-default-component-0"})(&planModel)
-	plan := buildTestPlan(t, packageResource, planModel)
-	state := buildTestState(t, packageResource, stateModel)
-	resp := resource.UpdateResponse{State: tfsdk.State{Schema: plan.Schema}}
-	packageResource.Update(context.Background(), resource.UpdateRequest{Plan: plan, State: state}, &resp)
+
+	resp := runUpdateLifecycleTest(t, packageResource, planModel, stateModel)
 
 	require.False(t, resp.Diagnostics.HasError(), "update diagnostics: %v", resp.Diagnostics)
-	var updated PackageResourceModel
-	require.False(t, resp.State.Get(context.Background(), &updated).HasError())
+	updated := requirePackageState(t, resp.State)
 	assert.Equal(t, "arm64", updated.Architecture.ValueString())
 	assert.Equal(t, []string{"test-optional-default-component-0"}, mustStringSetElements(t, updated.OptionalComponents))
-	metadata := updated.Metadata.Attributes()
-	assert.Equal(t, "Succeeded", metadata["status"].(types.String).ValueString())
-	assert.Equal(t, int64(10), metadata["generation"].(types.Int64).ValueInt64())
-	assert.Equal(t, "sha256:updated", metadata["digest"].(types.String).ValueString())
+	assertPackageMetadata(t, updated.Metadata, "Succeeded", 10, "sha256:updated")
 }
 
 func TestPackageResource_UpdateFailedDeploymentDoesNotReplaceStateOrRemove(t *testing.T) {
@@ -3806,10 +3788,8 @@ func TestPackageResource_UpdateFailedDeploymentDoesNotReplaceStateOrRemove(t *te
 	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
 	planModel := stateModel
 	WithNamespace("updated")(&planModel)
-	plan := buildTestPlan(t, packageResource, planModel)
-	state := buildTestState(t, packageResource, stateModel)
-	resp := resource.UpdateResponse{State: tfsdk.State{Schema: plan.Schema}}
-	packageResource.Update(context.Background(), resource.UpdateRequest{Plan: plan, State: state}, &resp)
+
+	resp := runUpdateLifecycleTest(t, packageResource, planModel, stateModel)
 
 	require.True(t, resp.Diagnostics.HasError())
 	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "update deployment failed")
