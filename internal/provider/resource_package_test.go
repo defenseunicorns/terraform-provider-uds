@@ -49,9 +49,7 @@ import (
 	zarfZoci "github.com/zarf-dev/zarf/src/pkg/zoci"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
-	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/defenseunicorns/terraform-provider-uds/internal/logging"
 
@@ -168,65 +166,13 @@ type MockCluster struct {
 	mock.Mock
 }
 
-func newFakeClusterWithPackageState() *zarfCluster.Cluster {
-	clientset := fake.NewSimpleClientset()
-	clientset.PrependReactor("get", "secrets", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
-		getAction := action.(k8stesting.GetAction)
-		packageName := strings.TrimPrefix(getAction.GetName(), "zarf-package-")
-		deployedPackage := zarfState.DeployedPackage{
-			Name:       packageName,
-			Digest:     "sha256:test",
-			Generation: 1,
-			Data: v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{
-				Name:         packageName,
-				Version:      "0.0.1",
-				Architecture: "amd64",
-			}},
-			DeployedComponents: []zarfState.DeployedComponent{{Status: zarfState.ComponentStatusSucceeded}},
-		}
-		data, err := json.Marshal(deployedPackage)
-		if err != nil {
-			return true, nil, err
-		}
-		return true, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: getAction.GetName(), Namespace: zarfState.ZarfNamespaceName},
-			Data:       map[string][]byte{"data": data},
-		}, nil
-	})
-	return &zarfCluster.Cluster{Clientset: clientset}
-}
-
 func newFakeCluster() *zarfCluster.Cluster {
 	return &zarfCluster.Cluster{Clientset: fake.NewSimpleClientset()}
 }
 
-func newTestPackageResource(t *testing.T, packager udsPackager.Packager, filter udsPackager.PackageComponentFilter) *PackageResource {
-	t.Helper()
-	cluster := newFakeClusterWithPackageState()
-	mockCluster := &MockCluster{}
-	mockCluster.On("NewWithWait", mock.Anything).Return(cluster, nil)
-	return NewPackageResource(nil, packager, filter, mockCluster).(*PackageResource)
-}
-
-func newTestPackageResourceWithProvider(providerConfig *udsProviderConfig, packager udsPackager.Packager, filter udsPackager.PackageComponentFilter) *PackageResource {
-	mockCluster := &MockCluster{}
-	mockCluster.On("NewWithWait", mock.Anything).Return(newFakeClusterWithPackageState(), nil)
-	return NewPackageResource(providerConfig, packager, filter, mockCluster).(*PackageResource)
-}
-
 func (m *MockCluster) NewWithWait(ctx context.Context) (*zarfCluster.Cluster, error) {
 	args := m.Called(ctx)
-	cluster := args.Get(0).(*zarfCluster.Cluster)
-	if err := args.Error(1); err != nil {
-		return cluster, err
-	}
-	if cluster == nil {
-		return nil, nil
-	}
-	if cluster.Clientset == nil {
-		cluster = newFakeClusterWithPackageState()
-	}
-	return cluster, nil
+	return args.Get(0).(*zarfCluster.Cluster), args.Error(1)
 }
 
 type MockPackager struct {
@@ -774,7 +720,7 @@ func TestPackageResource_Upsert_VariableModels(t *testing.T) {
 			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
 			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
-			packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 			testModel := NewTestPackageResourceModel(
 				WithVars(tc.vars),
 				WithSensitiveVars(tc.sensitiveVars),
@@ -825,7 +771,7 @@ func TestPackageResource_Upsert_ForceHelmSSAConflicts(t *testing.T) {
 			providerCfg := &udsProviderConfig{
 				ForceHelmSSAConflicts: tc.forceHelmSSAConflicts,
 			}
-			packageResource := newTestPackageResourceWithProvider(providerCfg, mockPackager, mockPackageComponentFilter)
+			packageResource := NewPackageResource(providerCfg, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 
 			_, err := packageResource.upsert(testCtx(t), NewTestPackageResourceModel())
 			assert.NoError(t, err)
@@ -858,7 +804,7 @@ func TestPackageResource_UpsertNegotiatesPackageSourceAndPreservesRegistryOption
 		InsecureForceHTTP:           true,
 		InsecureSkipTLSVerification: true,
 	}
-	packageResource := newTestPackageResourceWithProvider(providerConfig, mockPackager, mockPackageComponentFilter)
+	packageResource := NewPackageResource(providerConfig, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 	model := NewTestPackageResourceModel(WithSource(testOCISource(server.URL)))
 
 	_, err := packageResource.upsert(testCtx(t), model)
@@ -983,7 +929,7 @@ func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployRes, nil)
 			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
-			packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 
 			testModel := NewTestPackageResourceModel()
 
@@ -1031,7 +977,7 @@ func TestPackageResource_Upsert_DeployValues_NotPersisted(t *testing.T) {
 	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployRes, nil)
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
-	packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 
 	testModel := NewTestPackageResourceModel()
 
@@ -1072,7 +1018,7 @@ func TestPackageResource_Upsert_InputVars_NotPersisted(t *testing.T) {
 	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
-	packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 
 	// Provide vars and sensitive_vars in the model inputs
 	testModel := NewTestPackageResourceModel(
@@ -1122,7 +1068,7 @@ func TestPackageResource_Upsert_SetVariables_EmptyAndNull(t *testing.T) {
 	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
-	packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 
 	// Case A: No set variables configured and no deploy results
 	testModelNull := NewTestPackageResourceModel()
@@ -1241,15 +1187,13 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			packageLayout := newValidLoadPackageResult().Layout
+			deployedPackageData := packageLayout.Pkg
+			deployedPackageData.Metadata.Architecture = "amd64"
 			deployedPackage := zarfState.DeployedPackage{
 				Name:       packageLayout.Pkg.Metadata.Name,
 				Digest:     tc.digest,
 				Generation: tc.generation,
-				Data: func() v1alpha1.ZarfPackage {
-					data := packageLayout.Pkg
-					data.Metadata.Architecture = "amd64"
-					return data
-				}(),
+				Data:       deployedPackageData,
 				DeployedComponents: []zarfState.DeployedComponent{
 					{Name: "test-required-component-0", Status: zarfState.ComponentStatusFailed},
 				},
@@ -1348,15 +1292,13 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 
 func TestPackageResource_CreateSuccessfulDeploymentRefreshesState(t *testing.T) {
 	packageLayout := newValidLoadPackageResult().Layout
+	deployedPackageData := packageLayout.Pkg
+	deployedPackageData.Metadata.Architecture = "amd64"
 	deployedPackage := zarfState.DeployedPackage{
 		Name:       packageLayout.Pkg.Metadata.Name,
 		Digest:     "sha256:created",
 		Generation: 8,
-		Data: func() v1alpha1.ZarfPackage {
-			data := packageLayout.Pkg
-			data.Metadata.Architecture = "amd64"
-			return data
-		}(),
+		Data:       deployedPackageData,
 		DeployedComponents: []zarfState.DeployedComponent{
 			{Name: "test-required-component-0", Status: zarfState.ComponentStatusSucceeded},
 			{Name: "test-optional-non-default-component-0", Status: zarfState.ComponentStatusSucceeded},
@@ -1617,7 +1559,7 @@ func TestPackageResource_Upsert_OptionalComponentInstallation(t *testing.T) {
 				mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 			}
 
-			packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 			componentModels := NewComponentModelsFromNames(tc.componentNames)
 			testModel := NewTestPackageResourceModel(
 				WithComponents(componentModels),
@@ -1834,7 +1776,7 @@ func TestPackageResource_Upsert_ComponentOverrides(t *testing.T) {
 				mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 			}
 
-			packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 			testModel := NewTestPackageResourceModel(
 				WithComponents(tc.components),
 			)
@@ -1877,7 +1819,7 @@ func TestPackageResource_Upsert_ComponentOverrides_ReturnsDecodeError(t *testing
 		validLoadPackageResult.Error,
 	)
 
-	packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 	testModel := NewTestPackageResourceModel(WithOptionalComponents([]string{}))
 	testModel.Components = malformedComponentSet()
 
@@ -2016,7 +1958,7 @@ func TestPackageResource_Upsert_Values(t *testing.T) {
 			}
 			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
-			packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 			testModel := NewTestPackageResourceModel(
 				WithValues(tc.values),
 				WithSensitiveValues(tc.sensitiveValues),
@@ -2205,7 +2147,7 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 				mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 			}
 
-			packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 			testModel := NewTestPackageResourceModel(WithSource(tc.source))
 			expectErrors := len(tc.expectedErrorContains) > 0
 
@@ -2415,7 +2357,7 @@ func TestPackageResource_Upsert_NamespaceOverride(t *testing.T) {
 			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
 			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
-			packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 			testModel := NewTestPackageResourceModel(WithNamespace(tc.namespace))
 
 			_, err := packageResource.upsert(testCtx(t), testModel)
@@ -2809,7 +2751,7 @@ func TestPackageResource_Upsert_SkipsSignatureVerificationWhenDisabled(t *testin
 	)
 	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
-	packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 	model := NewTestPackageResourceModel(WithSignatureVerificationEnabled(false))
 
 	_, err := packageResource.upsert(testCtx(t), model)
@@ -2850,7 +2792,7 @@ func TestPackageResource_Upsert_DeploysWhenSignatureVerificationSucceeds(t *test
 	)
 	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
-	packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 	var called bool
 	packageResource.verifyPackageSignatureFunc = func(context.Context, *layout.PackageLayout, zarfSigning.VerifyBlobOptions) error {
 		called = true
@@ -2909,7 +2851,7 @@ func TestPackageResource_Upsert_Architecture(t *testing.T) {
 			providerConfig := &udsProviderConfig{
 				DefaultArchitecture: tc.providerArchitecture,
 			}
-			packageResource := newTestPackageResourceWithProvider(providerConfig, mockPackager, mockPackageComponentFilter)
+			packageResource := NewPackageResource(providerConfig, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 
 			var testModel PackageResourceModel
 			if tc.modelArchitecture != "" {
@@ -3046,7 +2988,7 @@ func TestPackageResource_Upsert_ConnectStrings(t *testing.T) {
 			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(deployResult, nil)
 			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
-			packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 			testModel := NewTestPackageResourceModel()
 
 			result, err := packageResource.upsert(testCtx(t), testModel)
@@ -3792,16 +3734,14 @@ func TestUpdate_TimeoutOnlyChangeSkipsPackageOperations(t *testing.T) {
 
 func TestPackageResource_UpdateSuccessfulDeploymentRefreshesState(t *testing.T) {
 	packageLayout := newValidLoadPackageResult().Layout
+	deployedPackageData := packageLayout.Pkg
+	deployedPackageData.Metadata.Architecture = "amd64"
 	deployedPackage := zarfState.DeployedPackage{
 		Name:              packageLayout.Pkg.Metadata.Name,
 		Digest:            "sha256:updated",
 		Generation:        10,
 		NamespaceOverride: "updated",
-		Data: func() v1alpha1.ZarfPackage {
-			data := packageLayout.Pkg
-			data.Metadata.Architecture = "amd64"
-			return data
-		}(),
+		Data:              deployedPackageData,
 		DeployedComponents: []zarfState.DeployedComponent{
 			{Name: "test-required-component-0", Status: zarfState.ComponentStatusSucceeded},
 			{Name: "test-optional-non-default-component-0", Status: zarfState.ComponentStatusSucceeded},
@@ -7307,7 +7247,7 @@ func TestPackageResource_Upsert_OptionalComponents(t *testing.T) {
 			mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
 			mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
-			packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 
 			opts := []PackageResourceModelDataOption{WithComponents(tc.components)}
 			if tc.optionalComponents != nil {
@@ -7334,7 +7274,7 @@ func TestPackageResource_Upsert_UnknownOptionalComponents(t *testing.T) {
 	mockPackager := &MockPackager{}
 	mockPackageComponentFilter := &MockPackageComponentFilter{}
 
-	packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 	model := NewTestPackageResourceModel(func(model *PackageResourceModel) {
 		model.OptionalComponents = types.SetUnknown(types.StringType)
 	})
@@ -7564,11 +7504,7 @@ func TestPopulateStateFromDeployedPackage(t *testing.T) {
 	assert.Equal(t, "ZarfPackageConfig", data.Kind.ValueString())
 	assert.Equal(t, "arm64", data.Architecture.ValueString())
 	assert.Equal(t, "custom-namespace", data.Namespace.ValueString())
-	assert.Equal(t, []string{"required"}, func() []string {
-		var names []string
-		data.OptionalComponents.ElementsAs(context.Background(), &names, false)
-		return names
-	}())
+	assert.Equal(t, []string{"required"}, mustStringSetElements(t, data.OptionalComponents))
 
 	metadata := data.Metadata.Attributes()
 	assert.Equal(t, "deployed-package", metadata["name"].(types.String).ValueString())
@@ -7685,7 +7621,7 @@ func TestPackageResource_Upsert_ZarfReceivesRemainingBudget(t *testing.T) {
 		mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
 		mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
-		packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+		packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 
 		lifecycleBudget := 5 * time.Minute
 		ctx, cancel := context.WithTimeout(context.Background(), lifecycleBudget)
@@ -7712,7 +7648,7 @@ func TestPackageResource_Upsert_ZarfReceivesRemainingBudget(t *testing.T) {
 		mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil)
 		mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
-		packageResource := newTestPackageResource(t, mockPackager, mockPackageComponentFilter)
+		packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
 
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 		defer cancel()

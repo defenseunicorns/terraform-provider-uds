@@ -630,18 +630,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 			canRecoverState := !errors.Is(err, errDuplicatePackage) && !errors.Is(err, errPackageExistenceCheck)
 			hasKnownPackageName := !plan.Name.IsNull() && !plan.Name.IsUnknown() && plan.Name.ValueString() != ""
 			if canRecoverState && hasKnownPackageName {
-				stateCtx, stateCancel := withStateRecoveryTimeout(operationCtx)
-				defer stateCancel()
-				refreshedPlan, found, stateErr := r.refreshStateFromCluster(stateCtx, plan)
-				if stateErr != nil {
-					resp.Diagnostics.AddError(
-						"Error getting failed package state",
-						lifecycleErrorDetail(stateCtx, "create", stateErr),
-					)
-				} else if found {
-					completeRecoveredState(&refreshedPlan)
-					resp.Diagnostics.Append(resp.State.Set(stateCtx, &refreshedPlan)...)
-				}
+				r.recoverCreateState(operationCtx, plan, resp)
 			}
 			resp.Diagnostics.AddError(
 				"Error creating package",
@@ -653,18 +642,7 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 
 	refreshedPlan, found, refreshErr := r.refreshStateFromCluster(timeoutCtx, plan)
 	if refreshErr != nil {
-		stateCtx, stateCancel := withStateRecoveryTimeout(operationCtx)
-		defer stateCancel()
-		recoveredPlan, recovered, stateErr := r.refreshStateFromCluster(stateCtx, plan)
-		if stateErr != nil {
-			resp.Diagnostics.AddError(
-				"Error getting failed package state",
-				lifecycleErrorDetail(stateCtx, "create", stateErr),
-			)
-		} else if recovered {
-			completeRecoveredState(&recoveredPlan)
-			resp.Diagnostics.Append(resp.State.Set(stateCtx, &recoveredPlan)...)
-		}
+		r.recoverCreateState(operationCtx, plan, resp)
 		resp.Diagnostics.AddError(
 			"Error creating package",
 			lifecycleErrorDetail(timeoutCtx, "create", refreshErr),
@@ -1518,6 +1496,26 @@ func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageR
 	}
 
 	return plan, nil
+}
+
+func (r *PackageResource) recoverCreateState(ctx context.Context, plan PackageResourceModel, resp *resource.CreateResponse) {
+	stateCtx, cancel := withStateRecoveryTimeout(ctx)
+	defer cancel()
+
+	recoveredPlan, found, err := r.refreshStateFromCluster(stateCtx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error getting failed package state",
+			lifecycleErrorDetail(stateCtx, "create", err),
+		)
+		return
+	}
+	if !found {
+		return
+	}
+
+	completeRecoveredState(&recoveredPlan)
+	resp.Diagnostics.Append(resp.State.Set(stateCtx, &recoveredPlan)...)
 }
 
 func preservePlannedPackageAttributes(refreshed, plan *PackageResourceModel) {
