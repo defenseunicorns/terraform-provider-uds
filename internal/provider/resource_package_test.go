@@ -1222,32 +1222,33 @@ func TestPackageResource_Upsert_PopulatesDeploymentState(t *testing.T) {
 
 func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 	tests := []struct {
-		name              string
-		deployError       error
-		writeStateOnDone  bool
-		refreshError      error
-		recoveryError     error
-		seedRecoveryState bool
-		expectState       bool
-		digest            string
-		generation        int
-		createTimeout     string
-		expectedErrors    []string
+		name                 string
+		deployError          error
+		writePackageState    bool
+		waitForDeployTimeout bool
+		refreshError         error
+		recoveryError        error
+		expectState          bool
+		digest               string
+		generation           int
+		createTimeout        string
+		expectedErrors       []string
 	}{
 		{
-			name:             "deployment failure recovers package state",
-			deployError:      errors.New("deployment failed"),
-			writeStateOnDone: true,
-			expectState:      true,
-			digest:           "sha256:failed",
-			generation:       4,
-			createTimeout:    "50ms",
-			expectedErrors:   []string{"deployment failed"},
+			name:                 "deployment failure recovers package state",
+			deployError:          errors.New("deployment failed"),
+			writePackageState:    true,
+			waitForDeployTimeout: true,
+			expectState:          true,
+			digest:               "sha256:failed",
+			generation:           4,
+			createTimeout:        "50ms",
+			expectedErrors:       []string{"deployment failed"},
 		},
 		{
 			name:              "post-deployment refresh failure recovers package state",
 			refreshError:      errors.New("context deadline exceeded"),
-			seedRecoveryState: true,
+			writePackageState: true,
 			expectState:       true,
 			digest:            "sha256:recovered",
 			generation:        5,
@@ -1277,14 +1278,6 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 
 			emptyCluster := newFakeCluster()
 			recoveryClientset := fake.NewSimpleClientset()
-			if tc.seedRecoveryState {
-				_, err := recoveryClientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(
-					context.Background(),
-					newPackageStateSecret(t, deployedPackage),
-					metav1.CreateOptions{},
-				)
-				require.NoError(t, err)
-			}
 			recoveryCluster := &zarfCluster.Cluster{Clientset: recoveryClientset}
 			mockCluster := &MockCluster{}
 			mockCluster.On("NewWithWait", mock.Anything).Return(emptyCluster, nil).Once()
@@ -1306,11 +1299,13 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 			mockPackager := &MockPackager{}
 			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Once()
 			deployCall := mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, tc.deployError).Once()
-			if tc.writeStateOnDone {
-				// Simulate Zarf persisting failed package state after the deployment
-				// context expires but before the recovery lookup.
+			if tc.writePackageState {
 				deployCall.Run(func(args mock.Arguments) {
-					<-args.Get(0).(context.Context).Done()
+					if tc.waitForDeployTimeout {
+						// Simulate Zarf persisting failed package state after the deployment
+						// context expires but before the recovery lookup.
+						<-args.Get(0).(context.Context).Done()
+					}
 					_, err := recoveryCluster.Clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(
 						context.Background(),
 						newPackageStateSecret(t, deployedPackage),
@@ -1442,17 +1437,18 @@ func TestPackageResource_CreateSignatureFailureDoesNotAdoptExistingPackage(t *te
 	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
 }
 
-func TestPackageResource_UpsertLoadedPackagePreDeploymentFailureDoesNotInvokeDeploy(t *testing.T) {
+func TestPackageResource_UpsertLoadedPackagePreDeploymentFailureIsNotMarkedAsAttempted(t *testing.T) {
 	packageLayout := newValidLoadPackageResult().Layout
 	mockPackager := &MockPackager{}
 	packageResource := NewPackageResource(nil, mockPackager, nil, nil).(*PackageResource)
 	plan := newCreateLifecycleModel()
 	plan.Values = types.DynamicUnknown()
 
-	_, deployInvoked, err := packageResource.upsertLoadedPackage(testCtx(t), plan, packageLayout)
+	_, err := packageResource.upsertLoadedPackage(testCtx(t), plan, packageLayout)
 
 	require.ErrorContains(t, err, "values must be known")
-	assert.False(t, deployInvoked)
+	var deploymentErr *deploymentAttemptedError
+	assert.False(t, errors.As(err, &deploymentErr))
 	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
 }
 
