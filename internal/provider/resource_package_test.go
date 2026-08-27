@@ -1291,11 +1291,17 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 			if tc.refreshError != nil {
 				mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, tc.refreshError).Once()
 			}
+			recoveryResult := recoveryCluster
 			if tc.recoveryError != nil {
-				mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, tc.recoveryError).Once()
-			} else {
-				mockCluster.On("NewWithWait", mock.Anything).Return(recoveryCluster, nil).Once()
+				recoveryResult = &zarfCluster.Cluster{}
 			}
+			mockCluster.On("NewWithWait", mock.Anything).
+				Run(func(args mock.Arguments) {
+					recoveryCtx := args.Get(0).(context.Context)
+					assert.NoError(t, recoveryCtx.Err(), "recovery must not reuse the expired Create context")
+				}).
+				Return(recoveryResult, tc.recoveryError).
+				Once()
 
 			mockPackager := &MockPackager{}
 			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Once()
@@ -7080,6 +7086,20 @@ func TestValidateComponentBlockOptionalComponentsMutualExclusivity(t *testing.T)
 			}
 		})
 	}
+}
+
+func TestWithStateRecoveryTimeoutPreservesParentCancellation(t *testing.T) {
+	operationCtx, cancelOperation := context.WithCancel(context.Background())
+	recoveryCtx, cancelRecovery := withStateRecoveryTimeout(operationCtx)
+	defer cancelRecovery()
+
+	recoveryDeadline, hasDeadline := recoveryCtx.Deadline()
+	require.True(t, hasDeadline)
+	assert.Greater(t, time.Until(recoveryDeadline), time.Minute)
+	require.NoError(t, recoveryCtx.Err())
+
+	cancelOperation()
+	require.ErrorIs(t, recoveryCtx.Err(), context.Canceled)
 }
 
 func TestPreservePlannedPackageAttributesNullAndUnknown(t *testing.T) {
