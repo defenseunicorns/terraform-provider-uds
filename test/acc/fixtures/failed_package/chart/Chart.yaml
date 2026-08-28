@@ -1,0 +1,9 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+apiVersion: v2
+name: failed-package
+description: Acceptance test chart for failed deployment recovery
+type: application
+version: 0.1.0
+appVersion: 0.1.0

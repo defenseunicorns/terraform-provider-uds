@@ -6,6 +6,7 @@ package acc
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -98,6 +100,38 @@ func buildZarfLifecycleFixture(t *testing.T) string {
 	packagePath := filepath.Join(outputDir, fmt.Sprintf("zarf-package-zarf-lifecycle-%s-0.1.0.tar.zst", runtime.GOARCH))
 	if _, err := os.Stat(packagePath); err != nil {
 		t.Fatalf("expected lifecycle package at %s: %v\n%s", packagePath, err, output)
+	}
+	return packagePath
+}
+
+func buildFailedPackageFixture(t *testing.T) string {
+	t.Helper()
+
+	fixtureDir, err := filepath.Abs("fixtures/failed_package")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputDir := t.TempDir()
+
+	cmd := exec.Command(
+		"uds",
+		"zarf",
+		"package",
+		"create",
+		fixtureDir,
+		"--architecture", runtime.GOARCH,
+		"--confirm",
+		"--output", outputDir,
+		"--skip-sbom",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to build failed package: %v\n%s", err, output)
+	}
+
+	packagePath := filepath.Join(outputDir, fmt.Sprintf("zarf-package-failed-package-%s-0.1.0.tar.zst", runtime.GOARCH))
+	if _, err := os.Stat(packagePath); err != nil {
+		t.Fatalf("expected failed package at %s: %v\n%s", packagePath, err, output)
 	}
 	return packagePath
 }
@@ -609,6 +643,244 @@ func TestAccPackageResourceZarfLifecycle(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestAccPackageResourceFailedCreateRetry(t *testing.T) {
+	if os.Getenv(resource.EnvTfAcc) == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC=1")
+	}
+
+	packagePath := buildFailedPackageFixture(t)
+	initialDigest := ""
+	recoveryGeneration := 0
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             checkFailedPackageResourcesDestroyed,
+		Steps: []resource.TestStep{
+			{
+				Config: renderFailedPackageConfig(packagePath, true, ""),
+				ExpectError: regexp.MustCompile(
+					`intentional acceptance-test\s+deployment failure`,
+				),
+			},
+			{
+				Config: renderFailedPackageConfig(packagePath, false, ""),
+				// terraform-plugin-testing does not execute Check for an ExpectError
+				// step. The successful same-address recovery below therefore verifies
+				// Terraform's partial state indirectly: without the persisted state,
+				// Create would reject the existing package as a duplicate.
+				PreConfig: func() {
+					deployedPackage, err := readFailedPackageState()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if deployedPackage.Generation != 1 {
+						t.Fatalf("expected initial package generation 1, got %d", deployedPackage.Generation)
+					}
+					if deployedPackage.Digest == "" {
+						t.Fatal("expected non-empty failed package digest")
+					}
+					if len(deployedPackage.DeployedComponents) != 1 || deployedPackage.DeployedComponents[0].Status != zarfState.ComponentStatusFailed {
+						t.Fatalf("expected failed component status, got %#v", deployedPackage.DeployedComponents)
+					}
+					if charts := deployedPackage.DeployedComponents[0].InstalledCharts; len(charts) != 1 || charts[0].Status != zarfState.ChartStatusFailed {
+						t.Fatalf("expected failed installed chart status, got %#v", charts)
+					}
+					initialDigest = deployedPackage.Digest
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("uds_package.failed", "id", "failed-package:failed-package"),
+					resource.TestCheckResourceAttr("uds_package.failed", "metadata.status", "Succeeded"),
+					checkRecoveredFailedPackageState(&initialDigest, &recoveryGeneration),
+				),
+			},
+			{
+				Config: renderFailedPackageConfig(packagePath, false, "subsequent-update"),
+				Check:  checkSubsequentPackageUpdate(&recoveryGeneration, &initialDigest),
+			},
+		},
+	})
+}
+
+func renderFailedPackageConfig(packagePath string, failDeployment bool, diagnosticValue string) string {
+	return fmt.Sprintf(`
+resource "uds_package" "failed" {
+  source       = %q
+  architecture = "%s"
+  namespace    = "failed-package"
+
+  signature_verification = {
+    verify = false
+  }
+
+  values = {
+    failed = {
+      failDeployment = %t
+      diagnosticValue = %q
+    }
+  }
+}
+`, packagePath, runtime.GOARCH, failDeployment, diagnosticValue)
+}
+
+func checkRecoveredFailedPackageState(initialDigest *string, recoveryGeneration *int) resource.TestCheckFunc {
+	return func(state *terraform.State) error {
+		resourceState, ok := state.RootModule().Resources["uds_package.failed"]
+		if !ok || resourceState.Primary == nil {
+			return fmt.Errorf("expected recovered failed package in Terraform state")
+		}
+		if actual := resourceState.Primary.Attributes["namespace"]; actual != "failed-package" {
+			return fmt.Errorf("expected Terraform namespace %q, got %q", "failed-package", actual)
+		}
+		if actual := resourceState.Primary.Attributes["metadata.digest"]; actual != *initialDigest {
+			return fmt.Errorf("expected Terraform digest %q, got %q", *initialDigest, actual)
+		}
+		deployedPackage, err := readFailedPackageState()
+		if err != nil {
+			return err
+		}
+		terraformGeneration, err := strconv.Atoi(resourceState.Primary.Attributes["metadata.generation"])
+		if err != nil {
+			return fmt.Errorf("invalid Terraform metadata.generation %q: %w", resourceState.Primary.Attributes["metadata.generation"], err)
+		}
+		if terraformGeneration != deployedPackage.Generation {
+			return fmt.Errorf("expected Terraform generation %d to match Zarf generation %d", terraformGeneration, deployedPackage.Generation)
+		}
+		*recoveryGeneration = deployedPackage.Generation
+		if deployedPackage.NamespaceOverride != "failed-package" {
+			return fmt.Errorf("expected package namespace override %q, got %q", "failed-package", deployedPackage.NamespaceOverride)
+		}
+		if deployedPackage.Digest != *initialDigest {
+			return fmt.Errorf("expected digest %q, got %q", *initialDigest, deployedPackage.Digest)
+		}
+		if len(deployedPackage.DeployedComponents) != 1 || deployedPackage.DeployedComponents[0].Status != zarfState.ComponentStatusSucceeded {
+			return fmt.Errorf("expected succeeded component status, got %#v", deployedPackage.DeployedComponents)
+		}
+
+		clientset, err := acceptanceKubernetesClient()
+		if err != nil {
+			return err
+		}
+		configMap, err := clientset.CoreV1().ConfigMaps("failed-package").Get(context.Background(), "failed-package", metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to get recovered package configmap: %w", err)
+		}
+		if configMap.Data["status"] != "healthy" {
+			return fmt.Errorf("expected recovered package to be healthy, got %#v", configMap.Data)
+		}
+		return nil
+	}
+}
+
+func checkSubsequentPackageUpdate(recoveryGeneration *int, initialDigest *string) resource.TestCheckFunc {
+	return func(state *terraform.State) error {
+		resourceState := state.RootModule().Resources["uds_package.failed"]
+		if resourceState == nil || resourceState.Primary == nil {
+			return fmt.Errorf("expected package state after subsequent update")
+		}
+		deployedPackage, err := readFailedPackageState()
+		if err != nil {
+			return err
+		}
+		if resourceState.Primary.Attributes["namespace"] != "failed-package" {
+			return fmt.Errorf("expected Terraform namespace %q, got %q", "failed-package", resourceState.Primary.Attributes["namespace"])
+		}
+		if resourceState.Primary.Attributes["metadata.status"] != "Succeeded" {
+			return fmt.Errorf("expected Terraform status %q, got %q", "Succeeded", resourceState.Primary.Attributes["metadata.status"])
+		}
+		terraformGeneration, err := strconv.Atoi(resourceState.Primary.Attributes["metadata.generation"])
+		if err != nil {
+			return fmt.Errorf("invalid Terraform metadata.generation %q: %w", resourceState.Primary.Attributes["metadata.generation"], err)
+		}
+		if terraformGeneration != deployedPackage.Generation {
+			return fmt.Errorf("expected Terraform generation %d to match Zarf generation %d", terraformGeneration, deployedPackage.Generation)
+		}
+		if deployedPackage.Generation <= *recoveryGeneration {
+			return fmt.Errorf("expected subsequent Zarf generation greater than %d, got %d", *recoveryGeneration, deployedPackage.Generation)
+		}
+		if terraformGeneration <= *recoveryGeneration {
+			return fmt.Errorf("expected subsequent Terraform generation greater than %d, got %d", *recoveryGeneration, terraformGeneration)
+		}
+		if deployedPackage.Digest != *initialDigest {
+			return fmt.Errorf("expected subsequent digest %q, got %q", *initialDigest, deployedPackage.Digest)
+		}
+		if len(deployedPackage.DeployedComponents) != 1 || deployedPackage.DeployedComponents[0].Status != zarfState.ComponentStatusSucceeded {
+			return fmt.Errorf("expected succeeded component status, got %#v", deployedPackage.DeployedComponents)
+		}
+		clientset, err := acceptanceKubernetesClient()
+		if err != nil {
+			return err
+		}
+		configMap, err := clientset.CoreV1().ConfigMaps("failed-package").Get(context.Background(), "failed-package", metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to get subsequent package configmap: %w", err)
+		}
+		if configMap.Data["status"] != "healthy" || configMap.Annotations["diagnostic-value"] != "subsequent-update" {
+			return fmt.Errorf("expected healthy subsequent package resources, got data=%#v annotations=%#v", configMap.Data, configMap.Annotations)
+		}
+		return nil
+	}
+}
+
+func checkFailedPackageResourcesDestroyed(_ *terraform.State) error {
+	clientset, err := acceptanceKubernetesClient()
+	if err != nil {
+		return err
+	}
+
+	_, err = clientset.CoreV1().ConfigMaps("failed-package").Get(context.Background(), "failed-package", metav1.GetOptions{})
+	if err == nil {
+		return fmt.Errorf("expected failed package ConfigMap to be deleted")
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check failed package ConfigMap cleanup: %w", err)
+	}
+
+	deployedPackageRef := zarfState.DeployedPackage{Name: "failed-package", NamespaceOverride: "failed-package"}
+	_, err = clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Get(context.Background(), deployedPackageRef.GetSecretName(), metav1.GetOptions{})
+	if err == nil {
+		return fmt.Errorf("expected failed package state Secret to be deleted")
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check failed package state Secret cleanup: %w", err)
+	}
+
+	return nil
+}
+
+func readFailedPackageState() (zarfState.DeployedPackage, error) {
+	clientset, err := acceptanceKubernetesClient()
+	if err != nil {
+		return zarfState.DeployedPackage{}, err
+	}
+	deployedPackageRef := zarfState.DeployedPackage{Name: "failed-package", NamespaceOverride: "failed-package"}
+	secret, err := clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Get(context.Background(), deployedPackageRef.GetSecretName(), metav1.GetOptions{})
+	if err != nil {
+		return zarfState.DeployedPackage{}, fmt.Errorf("failed to get failed package state secret: %w", err)
+	}
+	var deployedPackage zarfState.DeployedPackage
+	if err := json.Unmarshal(secret.Data["data"], &deployedPackage); err != nil {
+		return zarfState.DeployedPackage{}, fmt.Errorf("failed to decode failed package state secret: %w", err)
+	}
+	return deployedPackage, nil
+}
+
+func acceptanceKubernetesClient() (*kubernetes.Clientset, error) {
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		kubeconfigPath = clientcmd.RecommendedHomeFile
+	}
+	kubeClientConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build kubernetes config: %w", err)
+	}
+	clientset, err := kubernetes.NewForConfig(kubeClientConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create kubernetes client: %w", err)
+	}
+	return clientset, nil
 }
 
 func testAccMultiplePackageResourcesConfig(t *testing.T) string {

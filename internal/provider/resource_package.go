@@ -55,6 +55,25 @@ import (
 	"oras.land/oras-go/v2/registry"
 )
 
+var (
+	errDuplicatePackage      = errors.New("package already exists")
+	errPackageExistenceCheck = errors.New("failed to check for existing package")
+)
+
+// deploymentAttemptedError marks failures after packager.Deploy was invoked
+// without changing the error text shown to users.
+type deploymentAttemptedError struct {
+	cause error
+}
+
+func (e *deploymentAttemptedError) Error() string {
+	return e.cause.Error()
+}
+
+func (e *deploymentAttemptedError) Unwrap() error {
+	return e.cause
+}
+
 // Ensure provider defined types fully satisfy framework interfaces.
 var (
 	_ resource.Resource                     = &PackageResource{}
@@ -200,6 +219,15 @@ var connectStringAttrTypes = map[string]attr.Type{
 	"description": types.StringType,
 }
 
+var packageMetadataAttrTypes = map[string]attr.Type{
+	"name":        types.StringType,
+	"description": types.StringType,
+	"version":     types.StringType,
+	"status":      types.StringType,
+	"generation":  types.Int64Type,
+	"digest":      types.StringType,
+}
+
 var defaultSignatureVerification = types.ObjectValueMust(
 	signatureVerificationAttrTypes,
 	map[string]attr.Value{
@@ -308,9 +336,9 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				Read:              true,
 				Update:            true,
 				Delete:            true,
-				CreateDescription: "Total create-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and Helm/Zarf execution.",
+				CreateDescription: "Timeout for package deployment (default 30 m). Covers cluster connection, package load, and Helm/Zarf execution. If deployment fails after package state may have been recorded, the provider performs a separate recovery lookup for up to 5 m to preserve that state. This recovery window is additional to the configured timeout and remains bounded by the overall operation deadline or cancellation.",
 				ReadDescription:   "Total read-operation wall-clock timeout (default 5 m). Covers cluster connection and state retrieval.",
-				UpdateDescription: "Total update-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and redeployment.",
+				UpdateDescription: "Timeout for package update (default 30 m). Covers cluster connection, package load, and redeployment. Failed updates return their error within this timeout; no separate failed-operation recovery lookup is performed.",
 				DeleteDescription: "Total delete-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and removal.",
 			}),
 			"kind": schema.StringAttribute{
@@ -332,6 +360,18 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 					"version": &schema.StringAttribute{
 						Computed:            true,
 						MarkdownDescription: "Version of the UDS package, from the zarf.yaml file.",
+					},
+					"status": &schema.StringAttribute{
+						Computed:            true,
+						MarkdownDescription: "Deployment status of the UDS package.",
+					},
+					"generation": &schema.Int64Attribute{
+						Computed:            true,
+						MarkdownDescription: "Deployment generation of the UDS package.",
+					},
+					"digest": &schema.StringAttribute{
+						Computed:            true,
+						MarkdownDescription: "Digest of the deployed UDS package.",
 					},
 				},
 			},
@@ -574,7 +614,6 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		logging.PackageFailed(operationCtx, "", err)
 	}()
 
-	// Retrieve values from plan
 	var plan PackageResourceModel
 	diags := req.Plan.Get(operationCtx, &plan)
 	resp.Diagnostics.Append(diags...)
@@ -602,6 +641,10 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		if errors.As(err, &optErr) {
 			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", optErr.Error())
 		} else {
+			var deploymentErr *deploymentAttemptedError
+			if errors.As(err, &deploymentErr) {
+				r.recoverCreateState(operationCtx, plan, resp)
+			}
 			resp.Diagnostics.AddError(
 				"Error creating package",
 				lifecycleErrorDetail(timeoutCtx, "create", err),
@@ -610,7 +653,20 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-	// Set state to fully populated data
+	refreshedPlan, found, refreshErr := r.refreshStateFromCluster(timeoutCtx, plan)
+	if refreshErr != nil {
+		r.recoverCreateState(operationCtx, plan, resp)
+		resp.Diagnostics.AddError(
+			"Error creating package",
+			lifecycleErrorDetail(timeoutCtx, "create", refreshErr),
+		)
+		return
+	}
+	if found {
+		preservePlannedPackageAttributes(&refreshedPlan, &plan)
+		plan = refreshedPlan
+	}
+
 	diags = resp.State.Set(timeoutCtx, plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -626,7 +682,6 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 
 	var data PackageResourceModel
 
-	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -667,58 +722,10 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	// Populate/set resource computed values from deployed package info so that they can be saved to state
-	data.Name = types.StringValue(deployedPackage.Name)
-	data.Version = types.StringValue(deployedPackage.Data.Metadata.Version)
-	data.Kind = types.StringValue(string(deployedPackage.Data.Kind))
-	data.Architecture = types.StringValue(deployedPackage.Data.Metadata.Architecture)
-	if deployedPackage.NamespaceOverride != "" {
-		data.Namespace = types.StringValue(deployedPackage.NamespaceOverride)
-	}
-	// populate the package metadata type.
-	// TODO(clint): this is ugly and I got it from https://developer.hashicorp.com/terraform/plugin/framework/handling-data/types/custom
-	// There are probably a few optimizations or cleanups to be done here.
-	// TODO(clint): this can be combined with the same code from the Create
-	// method.
-	elementTypes := map[string]attr.Type{
-		"name":        types.StringType,
-		"description": types.StringType,
-		"version":     types.StringType,
-	}
-	elements := map[string]attr.Value{
-		"name":        types.StringValue(deployedPackage.Name),
-		"description": types.StringValue(deployedPackage.Data.Metadata.Description),
-		"version":     types.StringValue(deployedPackage.Data.Metadata.Version),
-	}
-	pkgMetadata, diags := types.ObjectValue(elementTypes, elements)
-	if diags.HasError() {
-		resp.Diagnostics.AddError(
-			"Error converting type to package metadata in read",
-			"Could not convert: "+fmt.Sprintf("%v", diags),
-		)
-		return
-	}
-	data.Metadata = pkgMetadata
-
-	// Populate connect_strings from deployed package
-	connectStrings, err := getConnectStringsFromDeployedPackage(deployedPackage)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error converting connect strings",
-			"Could not convert connect strings: "+err.Error(),
-		)
-		return
-	}
-	data.ConnectStrings = connectStrings
-
-	// Bi-directional drift detection for optional_components (alpha):
-	// Use deployed package metadata to determine which deployed components are optional.
-	updatedOptionals, optDiags := refreshOptionalComponentsFromDeployedPackage(deployedPackage, data.OptionalComponents)
-	resp.Diagnostics.Append(optDiags...)
+	resp.Diagnostics.Append(populateStateFromDeployedPackage(&data, deployedPackage)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	data.OptionalComponents = updatedOptionals
 
 	resp.Diagnostics.Append(resp.State.Set(timeoutCtx, &data)...)
 }
@@ -740,7 +747,6 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 		logging.PackageFailed(operationCtx, "", err)
 	}()
 
-	// Retrieve values from plan
 	var plan PackageResourceModel
 	diags := req.Plan.Get(operationCtx, &plan)
 	resp.Diagnostics.Append(diags...)
@@ -803,7 +809,19 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	// Set state to fully populated data
+	refreshedPlan, found, refreshErr := r.refreshStateFromCluster(timeoutCtx, plan)
+	if refreshErr != nil {
+		resp.Diagnostics.AddError(
+			"Error updating package",
+			lifecycleErrorDetail(timeoutCtx, "update", refreshErr),
+		)
+		return
+	}
+	if found {
+		preservePlannedPackageAttributes(&refreshedPlan, &plan)
+		plan = refreshedPlan
+	}
+
 	diags = resp.State.Set(timeoutCtx, plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -1282,8 +1300,9 @@ func (r *PackageResource) getDeployedPackage(ctx context.Context, name string, n
 	return *pkg, true, nil
 }
 
+// deployAsNew deploys a package only when its name and namespace are not already present.
 func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
-	// Get the package name from the source package metadata
+	// Load the package to establish identity before checking for an existing deployment.
 	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
 	if err != nil {
 		return plan, err
@@ -1300,7 +1319,8 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	}
 
 	packageNamespace := plan.Namespace.ValueString()
-	packageName := pkgLayout.Pkg.Metadata.Name
+	r.populatePackageModelFromLayout(&plan, pkgLayout)
+	packageName := plan.Name.ValueString()
 
 	// Ensure a package with the same name and namespace is not already deployed
 	clusterTimeoutCtx, cancel := withClusterTimeout(ctx)
@@ -1308,20 +1328,16 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 
 	_, found, err := r.getDeployedPackage(clusterTimeoutCtx, packageName, packageNamespace)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return plan, err
-		}
-		tflog.Warn(ctx, "could not check for existing package, proceeding with deploy", map[string]interface{}{"error": err.Error()})
+		// Do not deploy when package existence cannot be determined.
+		return plan, fmt.Errorf("%w: %w", errPackageExistenceCheck, err)
 	}
 	if found {
-		return plan, fmt.Errorf("package with namespace '%s' and name '%s' already exists", plan.Namespace.ValueString(), packageName)
+		return plan, fmt.Errorf("%w: package with namespace '%s' and name '%s'", errDuplicatePackage, plan.Namespace.ValueString(), packageName)
 	}
-
-	return r.upsert(ctx, plan)
+	return r.upsertLoadedPackage(ctx, plan, pkgLayout)
 }
 
 func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel) (PackageResourceModel, error) {
-	// TODO(erickson): Need to revisit this logic. If deploy errors, can we recover?
 	// Generate list of components to remove before the update.
 	// Combines legacy component-block removals with optional_components removals.
 	// Removal happens before upsert because removing a required component removes the entire package.
@@ -1344,6 +1360,7 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 	return r.upsert(ctx, plan)
 }
 
+// upsert loads and cleans up the package layout before deploying it.
 func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
 	ctx = r.withOCISchemeNegotiator(ctx)
 	if plan.OptionalComponents.IsUnknown() {
@@ -1360,6 +1377,16 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
 		}
 	}()
+	return r.upsertLoadedPackage(ctx, plan, pkgLayout)
+}
+
+// upsertLoadedPackage deploys an already-loaded package layout. The caller owns
+// loading and cleanup of the package layout.
+func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) (PackageResourceModel, error) {
+	ctx = r.withOCISchemeNegotiator(ctx)
+	if plan.OptionalComponents.IsUnknown() {
+		return plan, fmt.Errorf("optional_components must be known before apply")
+	}
 	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
 		return plan, err
 	}
@@ -1431,7 +1458,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 	deployResult, err := r.packager.Deploy(ctx, pkgLayout, deployOpts)
 	if err != nil {
-		return plan, err
+		return plan, &deploymentAttemptedError{cause: err}
 	}
 
 	// Populate computed `set_variables` from variables returned by the
@@ -1452,7 +1479,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	var d diag.Diagnostics
 	plan.SetVariables, d = types.MapValue(types.StringType, varsMap)
 	if d.HasError() {
-		return plan, fmt.Errorf("failed to construct set_variables map: %v", d)
+		return plan, &deploymentAttemptedError{cause: fmt.Errorf("failed to construct set_variables map: %v", d)}
 	}
 
 	// Populate connect strings from deploy result
@@ -1462,19 +1489,11 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	}
 	logConnectStrings(ctx, connectStrings)
 
-	// Populate/set resource computed values so that they can be saved to state
-	plan.ID = types.StringValue(computePackageID(plan.Namespace.ValueString(), pkgLayout.Pkg.Metadata.Name))
-	plan.Name = types.StringValue(pkgLayout.Pkg.Metadata.Name)
-	plan.Version = types.StringValue(pkgLayout.Pkg.Metadata.Version)
-	plan.Kind = types.StringValue(string(pkgLayout.Pkg.Kind))
-	plan.Architecture = types.StringValue(getArchitecture(plan, *r.providerConfig))
-	plan.ConnectStrings = connectStrings
-
-	pkgMetaData, err := newPackageMetadata(pkgLayout)
-	if err != nil {
-		return plan, err
+	r.populatePackageModelFromLayout(&plan, pkgLayout)
+	if err := populatePackageMetadataFromLayout(&plan, pkgLayout); err != nil {
+		return plan, &deploymentAttemptedError{cause: err}
 	}
-	plan.Metadata = pkgMetaData
+	plan.ConnectStrings = connectStrings
 
 	// Record actually deployed optional components in state when optional_components is in use.
 	// Skipped for the component block path (null), which does not track optional_components in state.
@@ -1486,11 +1505,63 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 		}
 		plan.OptionalComponents, d = types.SetValue(types.StringType, optionalVals)
 		if d.HasError() {
-			return plan, fmt.Errorf("failed to set optional_components from deployed components: %v", d)
+			return plan, &deploymentAttemptedError{cause: fmt.Errorf("failed to set optional_components from deployed components: %v", d)}
 		}
 	}
 
-	return plan, err
+	return plan, nil
+}
+
+func (r *PackageResource) recoverCreateState(ctx context.Context, plan PackageResourceModel, resp *resource.CreateResponse) {
+	stateCtx, cancel := withStateRecoveryTimeout(ctx)
+	defer cancel()
+
+	recoveredPlan, found, err := r.refreshStateFromCluster(stateCtx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error getting failed package state",
+			lifecycleErrorDetail(stateCtx, "create", err),
+		)
+		return
+	}
+	if !found {
+		return
+	}
+
+	completeRecoveredState(&recoveredPlan)
+	resp.Diagnostics.Append(resp.State.Set(stateCtx, &recoveredPlan)...)
+}
+
+func preservePlannedPackageAttributes(refreshed, plan *PackageResourceModel) {
+	if !plan.Architecture.IsUnknown() {
+		refreshed.Architecture = plan.Architecture
+	}
+	if !plan.OptionalComponents.IsUnknown() {
+		refreshed.OptionalComponents = plan.OptionalComponents
+	}
+}
+
+// completeRecoveredState ensures computed-only attributes are known before
+// persisting state recovered after a failed deployment.
+func completeRecoveredState(data *PackageResourceModel) {
+	if data.SetVariables.IsUnknown() {
+		data.SetVariables = types.MapValueMust(types.StringType, map[string]attr.Value{})
+	}
+}
+
+func (r *PackageResource) refreshStateFromCluster(ctx context.Context, data PackageResourceModel) (PackageResourceModel, bool, error) {
+	deployedPackage, found, err := r.getDeployedPackage(ctx, data.Name.ValueString(), data.Namespace.ValueString())
+	if err != nil {
+		return data, false, err
+	}
+	if !found {
+		return data, false, nil
+	}
+
+	if diags := populateStateFromDeployedPackage(&data, deployedPackage); diags.HasError() {
+		return data, true, fmt.Errorf("failed to populate deployed package state: %v", diags)
+	}
+	return data, true, nil
 }
 
 // convertYAMLToJSONCompatible converts YAML types (map[any]any) to JSON-compatible types (map[string]any)
@@ -2148,6 +2219,11 @@ func withClusterTimeout(ctx context.Context) (context.Context, context.CancelFun
 	return context.WithTimeout(ctx, clusterTimeoutMinutes*time.Minute)
 }
 
+// withStateRecoveryTimeout gives failed deployments a fresh cluster lookup window.
+func withStateRecoveryTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, clusterTimeoutMinutes*time.Minute)
+}
+
 // zarfOperationTimeout derives the full time budget for a Zarf Deploy or Remove
 // call from the remaining context deadline.
 // Returns an error when the context is already done or has no usable budget.
@@ -2550,18 +2626,16 @@ func buildSetVariableMap(model PackageResourceModel) map[string]string {
 	return setVariables
 }
 
-func newPackageMetadata(pkgLayout *zarfLayout.PackageLayout) (types.Object, error) {
-	elementTypes := map[string]attr.Type{
-		"name":        types.StringType,
-		"description": types.StringType,
-		"version":     types.StringType,
-	}
+func newPackageMetadata(name, description, version, status string, generation int64, digest string) (types.Object, error) {
 	elements := map[string]attr.Value{
-		"name":        types.StringValue(pkgLayout.Pkg.Metadata.Name),
-		"description": types.StringValue(pkgLayout.Pkg.Metadata.Description),
-		"version":     types.StringValue(pkgLayout.Pkg.Metadata.Version),
+		"name":        types.StringValue(name),
+		"description": types.StringValue(description),
+		"version":     types.StringValue(version),
+		"status":      types.StringValue(status),
+		"generation":  types.Int64Value(generation),
+		"digest":      types.StringValue(digest),
 	}
-	meta, diags := types.ObjectValue(elementTypes, elements)
+	meta, diags := types.ObjectValue(packageMetadataAttrTypes, elements)
 
 	if diags.HasError() {
 		diagErrors := make([]error, 0, len(diags.Errors()))
@@ -2572,6 +2646,109 @@ func newPackageMetadata(pkgLayout *zarfLayout.PackageLayout) (types.Object, erro
 	}
 
 	return meta, nil
+}
+
+func populatePackageMetadataFromLayout(data *PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) error {
+	metadata, err := newPackageMetadata(
+		pkgLayout.Pkg.Metadata.Name,
+		pkgLayout.Pkg.Metadata.Description,
+		pkgLayout.Pkg.Metadata.Version,
+		string(zarfState.ComponentStatusSucceeded),
+		0,
+		pkgLayout.Digest(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create successful package metadata: %w", err)
+	}
+	data.Metadata = metadata
+	return nil
+}
+
+func (r *PackageResource) populatePackageModelFromLayout(data *PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) {
+	data.ID = types.StringValue(computePackageID(data.Namespace.ValueString(), pkgLayout.Pkg.Metadata.Name))
+	data.Name = types.StringValue(pkgLayout.Pkg.Metadata.Name)
+	data.Version = types.StringValue(pkgLayout.Pkg.Metadata.Version)
+	data.Kind = types.StringValue(string(pkgLayout.Pkg.Kind))
+	data.Architecture = types.StringValue(getArchitecture(*data, *r.providerConfig))
+}
+
+func deployedPackageStatus(pkg zarfState.DeployedPackage) string {
+	hasRecordedState := false
+	hasDeployingState := false
+	hasUnknownState := false
+	for _, component := range pkg.DeployedComponents {
+		hasRecordedState = true
+		switch component.Status {
+		case zarfState.ComponentStatusFailed:
+			return string(zarfState.ComponentStatusFailed)
+		case zarfState.ComponentStatusDeploying:
+			hasDeployingState = true
+		case zarfState.ComponentStatusSucceeded:
+		default:
+			hasUnknownState = true
+		}
+
+		for _, chart := range component.InstalledCharts {
+			hasRecordedState = true
+			switch chart.Status {
+			case zarfState.ChartStatusFailed:
+				return string(zarfState.ComponentStatusFailed)
+			case zarfState.ChartStatusSucceeded:
+			default:
+				hasUnknownState = true
+			}
+		}
+	}
+	if hasDeployingState {
+		return string(zarfState.ComponentStatusDeploying)
+	}
+	if hasUnknownState {
+		return "Unknown"
+	}
+	if hasRecordedState {
+		return string(zarfState.ComponentStatusSucceeded)
+	}
+	return "Unknown"
+}
+
+func populateStateFromDeployedPackage(data *PackageResourceModel, pkg zarfState.DeployedPackage) diag.Diagnostics {
+	data.Name = types.StringValue(pkg.Name)
+	data.Version = types.StringValue(pkg.Data.Metadata.Version)
+	data.Kind = types.StringValue(string(pkg.Data.Kind))
+	data.Architecture = types.StringValue(pkg.Data.Metadata.Architecture)
+	if pkg.NamespaceOverride != "" {
+		data.Namespace = types.StringValue(pkg.NamespaceOverride)
+	}
+
+	var diags diag.Diagnostics
+	metadata, err := newPackageMetadata(
+		pkg.Name,
+		pkg.Data.Metadata.Description,
+		pkg.Data.Metadata.Version,
+		deployedPackageStatus(pkg),
+		int64(pkg.Generation),
+		pkg.Digest,
+	)
+	if err != nil {
+		diags.AddError("Error converting type to package metadata", err.Error())
+		return diags
+	}
+	data.Metadata = metadata
+
+	connectStrings, err := getConnectStringsFromDeployedPackage(pkg)
+	if err != nil {
+		diags.AddError("Error converting connect strings", "Could not convert connect strings: "+err.Error())
+		return diags
+	}
+	data.ConnectStrings = connectStrings
+
+	updatedOptionals, optionalDiags := refreshOptionalComponentsFromDeployedPackage(pkg, data.OptionalComponents)
+	diags.Append(optionalDiags...)
+	if optionalDiags.HasError() {
+		return diags
+	}
+	data.OptionalComponents = updatedOptionals
+	return diags
 }
 
 func getConnectStringsFromDeployResult(deployResult zarfPackager.DeployResult) (types.Set, error) {

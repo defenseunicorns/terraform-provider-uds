@@ -1,0 +1,23 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+kind: ZarfPackageConfig
+metadata:
+  name: failed-package
+  version: 0.1.0
+  description: Acceptance test package for failed deployment recovery
+
+components:
+  - name: failed-package
+    required: true
+    charts:
+      - name: failed-package
+        releaseName: failed-package
+        localPath: chart
+        version: 0.1.0
+        namespace: failed-package
+        values:
+          - sourcePath: .failed.failDeployment
+            targetPath: .failDeployment
+          - sourcePath: .failed.diagnosticValue
+            targetPath: .diagnosticValue
