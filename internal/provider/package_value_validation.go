@@ -152,16 +152,13 @@ func terraformCollectionToPartialGoSlice(elements []attr.Value, valuePath string
 	return result, unknownPaths, nil
 }
 
-func validatePackageValuesAgainstSchema(ctx context.Context, values zarfValue.Values, schemaPath string) error {
-	return values.Validate(ctx, schemaPath, zarfValue.ValidateOptions{})
-}
-
-// validatePartialPackageValuesAgainstSchema validates a partially known values
-// document. It returns only errors that can be proven from known data; errors
-// touching an unknown subtree defer until apply. Aggregate errors can include
-// child errors without branch provenance, so an unknown-affected aggregate
-// defers its descendants as a group and may delay unrelated descendant errors.
-func validatePartialPackageValuesAgainstSchema(ctx context.Context, values zarfValue.Values, schemaPath string, unknownPaths []string) error {
+// validatePackageValuesAgainstSchema validates values against a package schema.
+// When unknownPaths is non-empty, it returns only errors that can be proven from
+// known data; errors touching an unknown subtree are deferred until apply.
+// Aggregate errors can include child errors without branch provenance, so an
+// unknown-affected aggregate defers its descendants as a group and may delay
+// unrelated descendant errors.
+func validatePackageValuesAgainstSchema(ctx context.Context, values zarfValue.Values, schemaPath string, unknownPaths []string) error {
 	err := values.Validate(ctx, schemaPath, zarfValue.ValidateOptions{})
 	if err == nil || len(unknownPaths) == 0 {
 		return err
@@ -330,7 +327,7 @@ func (r *PackageResource) validatePlannedPackageValuesAgainstSchema(ctx context.
 
 	schemaPath := filepath.Join(pkgLayout.DirPath(), layout.ValuesSchema)
 	unknownPaths := append(valuesUnknownPaths, sensitiveUnknownPaths...)
-	if err := validatePartialPackageValuesAgainstSchema(ctx, defaults, schemaPath, unknownPaths); err != nil {
+	if err := validatePackageValuesAgainstSchema(ctx, defaults, schemaPath, unknownPaths); err != nil {
 		return fmt.Errorf("package values do not match the package values schema: %w", err)
 	}
 	return nil

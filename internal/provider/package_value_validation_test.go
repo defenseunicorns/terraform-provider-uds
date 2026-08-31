@@ -99,31 +99,6 @@ func TestDynamicToPartialValuesHandlesUnknownShapes(t *testing.T) {
 	}
 }
 
-func TestValidatePackageValuesAgainstSchema(t *testing.T) {
-	schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
-	require.NoError(t, os.WriteFile(schemaPath, []byte(`{
-  "type": "object",
-  "properties": {
-    "global": {
-      "type": "object",
-      "properties": {
-        "domain": {"type": "string"}
-      }
-    }
-  },
-  "required": ["global"],
-  "additionalProperties": false
-}`), 0o600))
-
-	assert.NoError(t, validatePackageValuesAgainstSchema(context.Background(), zarfValue.Values{
-		"global": map[string]any{"domain": "unicorndemo.dev"},
-	}, schemaPath))
-	assert.Error(t, validatePackageValuesAgainstSchema(context.Background(), zarfValue.Values{
-		"global": map[string]any{"domain": 123},
-	}, schemaPath))
-	assert.Error(t, validatePackageValuesAgainstSchema(context.Background(), zarfValue.Values{}, schemaPath), "required values should be enforced when the effective document is known")
-}
-
 func TestValidatePartialPackageValuesAgainstSchemaRetainsKnownErrors(t *testing.T) {
 	schemaPath := filepath.Join(t.TempDir(), "values.schema.json")
 	require.NoError(t, os.WriteFile(schemaPath, []byte(`{
@@ -137,7 +112,7 @@ func TestValidatePartialPackageValuesAgainstSchemaRetainsKnownErrors(t *testing.
   }
 }`), 0o600))
 
-	err := validatePartialPackageValuesAgainstSchema(
+	err := validatePackageValuesAgainstSchema(
 		context.Background(),
 		zarfValue.Values{
 			"typed":    1,
@@ -170,7 +145,7 @@ func TestValidatePartialPackageValuesAgainstSchemaDefersUnknownTrees(t *testing.
   }
 }`), 0o600))
 
-		assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+		assert.NoError(t, validatePackageValuesAgainstSchema(
 			context.Background(),
 			zarfValue.Values{"items": []any{"known", nil}},
 			schemaPath,
@@ -188,7 +163,7 @@ func TestValidatePartialPackageValuesAgainstSchemaDefersUnknownTrees(t *testing.
   ]
 }`), 0o600))
 
-		assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+		assert.NoError(t, validatePackageValuesAgainstSchema(
 			context.Background(),
 			zarfValue.Values{"mode": nil},
 			schemaPath,
@@ -205,7 +180,7 @@ func TestValidatePartialPackageValuesAgainstSchemaDefersUnknownTrees(t *testing.
   ]
 }`), 0o600))
 
-		assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+		assert.NoError(t, validatePackageValuesAgainstSchema(
 			context.Background(),
 			zarfValue.Values{"mode": nil},
 			schemaPath,
@@ -221,7 +196,7 @@ func TestValidatePartialPackageValuesAgainstSchemaDefersUnknownTrees(t *testing.
   "then": {"required": ["settings"]}
 }`), 0o600))
 
-		assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+		assert.NoError(t, validatePackageValuesAgainstSchema(
 			context.Background(),
 			zarfValue.Values{"mode": nil},
 			schemaPath,
@@ -239,7 +214,7 @@ func TestValidatePartialPackageValuesAgainstSchemaDefersUnknownTrees(t *testing.
   ]
 }`), 0o600))
 
-		assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+		assert.NoError(t, validatePackageValuesAgainstSchema(
 			context.Background(),
 			zarfValue.Values{"mode": nil},
 			schemaPath,
@@ -256,7 +231,7 @@ func TestValidatePartialPackageValuesAgainstSchemaDefersUnknownTrees(t *testing.
   }
 }`), 0o600))
 
-		assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+		assert.NoError(t, validatePackageValuesAgainstSchema(
 			context.Background(),
 			zarfValue.Values{"items": []any{nil, nil}},
 			schemaPath,
@@ -273,7 +248,7 @@ func TestValidatePartialPackageValuesAgainstSchemaRetainsExplicitInvalidKeys(t *
   "additionalProperties": false
 }`), 0o600))
 
-	err := validatePartialPackageValuesAgainstSchema(
+	err := validatePackageValuesAgainstSchema(
 		context.Background(),
 		zarfValue.Values{"typo": nil},
 		schemaPath,
@@ -292,7 +267,7 @@ func TestValidatePartialPackageValuesAgainstSchemaPathRelationships(t *testing.T
   "required": ["requiredValue"]
 }`), 0o600))
 
-		err := validatePartialPackageValuesAgainstSchema(context.Background(), zarfValue.Values{"computed": nil}, schemaPath, []string{"computed"})
+		err := validatePackageValuesAgainstSchema(context.Background(), zarfValue.Values{"computed": nil}, schemaPath, []string{"computed"})
 		require.ErrorContains(t, err, "requiredValue")
 	})
 
@@ -303,7 +278,7 @@ func TestValidatePartialPackageValuesAgainstSchemaPathRelationships(t *testing.T
   "required": ["requiredValue"]
 }`), 0o600))
 
-		assert.NoError(t, validatePartialPackageValuesAgainstSchema(context.Background(), zarfValue.Values{}, schemaPath, []string{""}))
+		assert.NoError(t, validatePackageValuesAgainstSchema(context.Background(), zarfValue.Values{}, schemaPath, []string{""}))
 	})
 
 	t.Run("known child error remains inside an object with an unknown sibling", func(t *testing.T) {
@@ -321,7 +296,7 @@ func TestValidatePartialPackageValuesAgainstSchemaPathRelationships(t *testing.T
   }
 }`), 0o600))
 
-		err := validatePartialPackageValuesAgainstSchema(
+		err := validatePackageValuesAgainstSchema(
 			context.Background(),
 			zarfValue.Values{"config": map[string]any{"known": 1, "computed": nil}},
 			schemaPath,
@@ -337,7 +312,7 @@ func TestValidatePartialPackageValuesAgainstSchemaPathRelationships(t *testing.T
   "properties": {"computed": {"type": "string", "pattern": "^valid"}}
 }`), 0o600))
 
-		assert.NoError(t, validatePartialPackageValuesAgainstSchema(
+		assert.NoError(t, validatePackageValuesAgainstSchema(
 			context.Background(), zarfValue.Values{"computed": nil}, schemaPath, []string{"computed"},
 		))
 	})
@@ -349,7 +324,7 @@ func TestValidatePartialPackageValuesAgainstSchemaPathRelationships(t *testing.T
   "propertyNames": {"pattern": "^[a-z]+$"}
 }`), 0o600))
 
-		err := validatePartialPackageValuesAgainstSchema(context.Background(), zarfValue.Values{"INVALID": nil}, schemaPath, []string{"INVALID"})
+		err := validatePackageValuesAgainstSchema(context.Background(), zarfValue.Values{"INVALID": nil}, schemaPath, []string{"INVALID"})
 		require.ErrorContains(t, err, "INVALID")
 	})
 }
@@ -372,9 +347,10 @@ func TestMergePackageValuesWithDefaultsBeforeSchemaValidation(t *testing.T) {
 
 	defaults := zarfValue.Values{"service": map[string]any{"host": "localhost"}}
 	overrides := zarfValue.Values{"service": map[string]any{"port": 8080}}
+	unknownPaths := []string{}
 
-	assert.Error(t, validatePackageValuesAgainstSchema(context.Background(), overrides, schemaPath), "partial overrides should not be validated as the complete document")
-	assert.NoError(t, validatePackageValuesAgainstSchema(context.Background(), deepMergePackageValues(defaults, overrides), schemaPath))
+	assert.Error(t, validatePackageValuesAgainstSchema(context.Background(), overrides, schemaPath, unknownPaths), "partial overrides should not be validated as the complete document")
+	assert.NoError(t, validatePackageValuesAgainstSchema(context.Background(), deepMergePackageValues(defaults, overrides), schemaPath, unknownPaths))
 }
 
 func TestMergePartialPackageValuesPreservesKnownValuesWhenAnotherSourceIsUnknown(t *testing.T) {
