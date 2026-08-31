@@ -76,7 +76,7 @@ jobs:
     permissions:
       contents: write # Required by the reusable release workflow's GoReleaser job.
       packages: write # Required to publish the provider to GHCR.
-    uses: ./.github/workflows/release.yml
+    uses: $/.github/workflows/release.yml
     with:
       tag_name: ${{ needs.nightly.outputs.tag_name }}
       skip_github_release: true
