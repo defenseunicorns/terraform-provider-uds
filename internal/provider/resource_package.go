@@ -46,7 +46,6 @@ import (
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	zarfFilters "github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
-	zarfLayout "github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfSigning "github.com/zarf-dev/zarf/src/pkg/signing"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
 	zarfValue "github.com/zarf-dev/zarf/src/pkg/value"
@@ -89,7 +88,7 @@ const (
 	componentOverrideBlockDeprecationMessage = "Component overrides are deprecated and will no longer be supported in a future version. Use the top-level values or sensitive_values attributes to supply Helm chart values through Zarf package values."
 )
 
-type packageSignatureVerifier func(context.Context, *zarfLayout.PackageLayout, zarfSigning.VerifyBlobOptions) error
+type packageSignatureVerifier func(context.Context, *layout.PackageLayout, zarfSigning.VerifyBlobOptions) error
 
 // NewPackageResource creates a new instance of the package resource.
 func NewPackageResource(providerConfig *udsProviderConfig, packager udsPackager.Packager, packageComponentFilter udsPackager.PackageComponentFilter, cluster udsCluster.Cluster) resource.Resource {
@@ -117,7 +116,7 @@ func NewPackageResource(providerConfig *udsProviderConfig, packager udsPackager.
 	}
 }
 
-func defaultPackageSignatureVerifier(ctx context.Context, pkgLayout *zarfLayout.PackageLayout, opts zarfSigning.VerifyBlobOptions) error {
+func defaultPackageSignatureVerifier(ctx context.Context, pkgLayout *layout.PackageLayout, opts zarfSigning.VerifyBlobOptions) error {
 	return pkgLayout.VerifyPackageSignature(ctx, opts)
 }
 
@@ -1091,7 +1090,7 @@ func (r *PackageResource) getPackageSourceRemoteOptions(ctx context.Context, sou
 	return opts, nil
 }
 
-func (r *PackageResource) loadPackageLayoutFromSource(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
+func (r *PackageResource) loadPackageLayoutFromSource(ctx context.Context, model PackageResourceModel) (*layout.PackageLayout, error) {
 	ctx = r.withOCISchemeNegotiator(ctx)
 	packageSource, err := getPackageSource(model, *r.providerConfig)
 	if err != nil {
@@ -1119,7 +1118,7 @@ func (r *PackageResource) loadPackageLayoutFromSource(ctx context.Context, model
 	return pkgLayout, nil
 }
 
-func (r *PackageResource) verifyPackageSignature(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) error {
+func (r *PackageResource) verifyPackageSignature(ctx context.Context, model PackageResourceModel, pkgLayout *layout.PackageLayout) error {
 	enforceSignatureVerification := getEffectiveSignatureVerification(ctx, model)
 	if !enforceSignatureVerification {
 		return nil
@@ -1382,7 +1381,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 
 // upsertLoadedPackage deploys an already-loaded package layout. The caller owns
 // loading and cleanup of the package layout.
-func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) (PackageResourceModel, error) {
+func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageResourceModel, pkgLayout *layout.PackageLayout) (PackageResourceModel, error) {
 	ctx = r.withOCISchemeNegotiator(ctx)
 	if plan.OptionalComponents.IsUnknown() {
 		return plan, fmt.Errorf("optional_components must be known before apply")
@@ -2018,7 +2017,7 @@ func isUnknownSubtreeValue(value attr.Value) bool {
 	}
 }
 
-func getOptionalComponentsForDeploy(ctx context.Context, model PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) ([]string, error) {
+func getOptionalComponentsForDeploy(ctx context.Context, model PackageResourceModel, pkgLayout *layout.PackageLayout) ([]string, error) {
 	// Alpha: if optional_components is set, use it directly; otherwise fall back to component blocks.
 	// TODO: remove branch when component block is removed; always use optional_components.
 	if !model.OptionalComponents.IsNull() {
@@ -2648,7 +2647,7 @@ func newPackageMetadata(name, description, version, status string, generation in
 	return meta, nil
 }
 
-func populatePackageMetadataFromLayout(data *PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) error {
+func populatePackageMetadataFromLayout(data *PackageResourceModel, pkgLayout *layout.PackageLayout) error {
 	metadata, err := newPackageMetadata(
 		pkgLayout.PackageDefinition.AsV1alpha1().Metadata.Name,
 		pkgLayout.PackageDefinition.AsV1alpha1().Metadata.Description,
@@ -2664,7 +2663,7 @@ func populatePackageMetadataFromLayout(data *PackageResourceModel, pkgLayout *za
 	return nil
 }
 
-func (r *PackageResource) populatePackageModelFromLayout(data *PackageResourceModel, pkgLayout *zarfLayout.PackageLayout) {
+func (r *PackageResource) populatePackageModelFromLayout(data *PackageResourceModel, pkgLayout *layout.PackageLayout) {
 	pkg := pkgLayout.PackageDefinition.AsV1alpha1()
 	data.ID = types.StringValue(computePackageID(data.Namespace.ValueString(), pkg.Metadata.Name))
 	data.Name = types.StringValue(pkg.Metadata.Name)
@@ -2908,7 +2907,7 @@ func (v timeoutPositiveValidator) ValidateResource(ctx context.Context, req reso
 
 // loadPackageLayoutForInspection loads the package for metadata inspection only, without signature verification.
 // Use when only component metadata is needed (e.g., optional_components validation).
-func (r *PackageResource) loadPackageLayoutForInspection(ctx context.Context, model PackageResourceModel) (*zarfLayout.PackageLayout, error) {
+func (r *PackageResource) loadPackageLayoutForInspection(ctx context.Context, model PackageResourceModel) (*layout.PackageLayout, error) {
 	ctx = r.withOCISchemeNegotiator(ctx)
 	packageSource, err := getPackageSource(model, *r.providerConfig)
 	if err != nil {
