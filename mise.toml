@@ -4,10 +4,10 @@
 [tools]
 go = "1.27.0"
 hk = "1.56.1"
-golangci-lint = "2.13.1"
+golangci-lint = "2.13.2"
 "aqua:google/addlicense" = "1.2.0"
 opentofu = "1.12.6"
-terraform = "1.15.9"
+terraform = "1.16.0"
 k3d = "5.9.0"
 "aqua:defenseunicorns/uds-cli" = "0.36.0"
 
