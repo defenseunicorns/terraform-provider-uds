@@ -19,6 +19,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/zarf-dev/zarf v0.83.0
 	helm.sh/helm/v4 v4.2.4
+	k8s.io/api v0.36.4
 	k8s.io/apimachinery v0.36.4
 	k8s.io/client-go v0.36.4
 	oras.land/oras-go/v2 v2.6.2
@@ -622,7 +623,6 @@ require (
 	gorm.io/gorm v1.31.1 // indirect
 	helm.sh/helm/v3 v3.20.2 // indirect
 	howett.net/plist v1.0.1 // indirect
-	k8s.io/api v0.36.4 // indirect
 	k8s.io/apiextensions-apiserver v0.36.1 // indirect
 	k8s.io/apiserver v0.36.1 // indirect
 	k8s.io/cli-runtime v0.36.3 // indirect
