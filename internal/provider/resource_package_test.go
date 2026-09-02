@@ -36,6 +36,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	zarfAPI "github.com/zarf-dev/zarf/src/api"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zarfCluster "github.com/zarf-dev/zarf/src/pkg/cluster"
 	"github.com/zarf-dev/zarf/src/pkg/packager"
@@ -173,10 +174,10 @@ func newFakeCluster() *zarfCluster.Cluster {
 // newLifecycleDeployedPackage builds cluster state from pkgLayout with an amd64
 // architecture and the supplied deployed components.
 func newLifecycleDeployedPackage(pkgLayout *layout.PackageLayout, components ...zarfState.DeployedComponent) zarfState.DeployedPackage {
-	data := pkgLayout.Pkg
+	data := pkgLayout.AsV1alpha1()
 	data.Metadata.Architecture = "amd64"
 	return zarfState.DeployedPackage{
-		Name:               pkgLayout.Pkg.Metadata.Name,
+		Name:               data.Metadata.Name,
 		Data:               data,
 		DeployedComponents: components,
 	}
@@ -266,8 +267,8 @@ func (m *MockPackager) Deploy(ctx context.Context, pkgLayout *layout.PackageLayo
 	return args.Get(0).(packager.DeployResult), args.Error(1)
 }
 
-func (m *MockPackager) Remove(ctx context.Context, pkg v1alpha1.ZarfPackage, opts packager.RemoveOptions) error {
-	args := m.Called(ctx, pkg, opts)
+func (m *MockPackager) Remove(ctx context.Context, pkg zarfAPI.PackageDefinition, opts packager.RemoveOptions) error {
+	args := m.Called(ctx, legacyPackageDefinition(pkg), opts)
 	return args.Error(0)
 }
 
@@ -276,9 +277,27 @@ func (m *MockPackager) LoadPackage(ctx context.Context, source string, opts pack
 	return args.Get(0).(*layout.PackageLayout), args.Error(1)
 }
 
-func (m *MockPackager) GetPackageFromSourceOrCluster(ctx context.Context, cluster *zarfCluster.Cluster, src string, namespaceOverride string, opts zarfPackager.LoadOptions) (_ v1alpha1.ZarfPackage, err error) {
+func (m *MockPackager) GetPackageFromSourceOrCluster(ctx context.Context, cluster *zarfCluster.Cluster, src string, namespaceOverride string, opts zarfPackager.LoadOptions) (_ zarfAPI.PackageDefinition, err error) {
 	args := m.Called(ctx, cluster, src, namespaceOverride, opts)
-	return args.Get(0).(v1alpha1.ZarfPackage), args.Error(1)
+	if pkg, ok := args.Get(0).(zarfAPI.PackageDefinition); ok {
+		return pkg, args.Error(1)
+	}
+	return zarfAPI.NewPackageDefinitionFromV1alpha1(args.Get(0).(v1alpha1.ZarfPackage)), args.Error(1)
+}
+
+// legacyPackageDefinition preserves the v1alpha1 representation used by the
+// existing mock fixtures. PackageDefinition conversion fills API defaults that
+// were previously absent from those fixtures.
+func legacyPackageDefinition(definition zarfAPI.PackageDefinition) v1alpha1.ZarfPackage {
+	pkg := definition.AsV1alpha1()
+	if pkg.APIVersion == v1alpha1.APIVersion {
+		pkg.APIVersion = ""
+	}
+	if pkg.Kind == v1alpha1.ZarfPackageConfig {
+		pkg.Kind = ""
+	}
+	pkg.Build.SetOriginalAPIVersion("")
+	return pkg
 }
 
 type MockPackageComponentFilter struct {
@@ -679,7 +698,7 @@ func NewComponentModelsFromNames(componentNames []string) []ComponentModel {
 func newErrorLoadPackageResult(err error) MockLoadPackageResult {
 	return MockLoadPackageResult{
 		Layout: &layout.PackageLayout{
-			Pkg: v1alpha1.ZarfPackage{},
+			PackageDefinition: zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{}),
 		},
 		Error: err,
 	}
@@ -689,7 +708,7 @@ func newErrorLoadPackageResult(err error) MockLoadPackageResult {
 func newValidLoadPackageResult() MockLoadPackageResult {
 	return MockLoadPackageResult{
 		Layout: &layout.PackageLayout{
-			Pkg: v1alpha1.ZarfPackage{
+			PackageDefinition: zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{
 				Metadata: v1alpha1.ZarfMetadata{
 					Name:        "test-package",
 					Description: "Test package",
@@ -727,7 +746,7 @@ func newValidLoadPackageResult() MockLoadPackageResult {
 						Default:  false,
 					},
 				},
-			},
+			}),
 		},
 		Error: nil,
 	}
@@ -735,7 +754,7 @@ func newValidLoadPackageResult() MockLoadPackageResult {
 
 func TestPackageResource_Upsert_VariableModels(t *testing.T) {
 	packageLayout := layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{
+		PackageDefinition: zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{
 			Metadata: v1alpha1.ZarfMetadata{
 				Name:        "test-package",
 				Description: "Test package",
@@ -748,7 +767,7 @@ func TestPackageResource_Upsert_VariableModels(t *testing.T) {
 					Default:  false,
 				},
 			},
-		},
+		}),
 	}
 
 	tests := []struct {
@@ -986,7 +1005,7 @@ func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			packageLayout := layout.PackageLayout{
-				Pkg: v1alpha1.ZarfPackage{
+				PackageDefinition: zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{
 					Metadata: v1alpha1.ZarfMetadata{
 						Name:        "test-package",
 						Description: "Test package",
@@ -999,7 +1018,7 @@ func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 							Default:  false,
 						},
 					},
-				},
+				}),
 			}
 
 			mockPackager := &MockPackager{}
@@ -1032,14 +1051,14 @@ func TestPackageResource_Upsert_SetVariables(t *testing.T) {
 // including structured values which should be YAML-encoded in the exported map.
 func TestPackageResource_Upsert_DeployValues_NotPersisted(t *testing.T) {
 	packageLayout := layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{
+		PackageDefinition: zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{
 			Metadata: v1alpha1.ZarfMetadata{
 				Name:        "test-package",
 				Description: "Test package",
 				Version:     "0.0.1",
 			},
 			Components: []v1alpha1.ZarfComponent{{Name: "test-required-component-0", Required: helpers.BoolPtr(true)}},
-		},
+		}),
 	}
 
 	mockPackager := &MockPackager{}
@@ -1086,10 +1105,10 @@ func TestPackageResource_Upsert_DeployValues_NotPersisted(t *testing.T) {
 // Ensure input-provided vars / sensitive_vars are NOT persisted into computed maps
 func TestPackageResource_Upsert_InputVars_NotPersisted(t *testing.T) {
 	packageLayout := layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{
+		PackageDefinition: zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{
 			Metadata:   v1alpha1.ZarfMetadata{Name: "test-package"},
 			Components: []v1alpha1.ZarfComponent{{Name: "test-required-component-0", Required: helpers.BoolPtr(true)}},
-		},
+		}),
 	}
 
 	mockPackager := &MockPackager{}
@@ -1136,10 +1155,10 @@ func TestPackageResource_Upsert_InputVars_NotPersisted(t *testing.T) {
 // empty `set_variables` map (not null) so callers can safely index into it.
 func TestPackageResource_Upsert_SetVariables_EmptyAndNull(t *testing.T) {
 	packageLayout := layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{
+		PackageDefinition: zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{
 			Metadata:   v1alpha1.ZarfMetadata{Name: "test-package"},
 			Components: []v1alpha1.ZarfComponent{{Name: "test-required-component-0", Required: helpers.BoolPtr(true)}},
-		},
+		}),
 	}
 
 	mockPackager := &MockPackager{}
@@ -1412,7 +1431,7 @@ func TestPackageResource_CreatePreflightFailureDoesNotDeployOrPersistState(t *te
 
 func TestPackageResource_CreateSignatureFailureDoesNotAdoptExistingPackage(t *testing.T) {
 	packageLayout := newValidLoadPackageResult().Layout
-	packageLayout.Pkg.Build.Signed = helpers.BoolPtr(true)
+	packageLayout.PackageDefinition.SetBuildSigned(true)
 	existingPackage := newLifecycleDeployedPackage(packageLayout)
 	cluster := &zarfCluster.Cluster{
 		Clientset: fake.NewSimpleClientset(newPackageStateSecret(t, existingPackage)),
@@ -1469,9 +1488,9 @@ func TestPackageResource_CreateSuccessfulDeploymentWithoutStateSecretRetainsFall
 	require.False(t, resp.Diagnostics.HasError(), "create diagnostics: %v", resp.Diagnostics)
 	state := requirePackageState(t, resp.State)
 	metadata := state.Metadata.Attributes()
-	assert.Equal(t, packageLayout.Pkg.Metadata.Name, metadata["name"].(types.String).ValueString())
-	assert.Equal(t, packageLayout.Pkg.Metadata.Description, metadata["description"].(types.String).ValueString())
-	assert.Equal(t, packageLayout.Pkg.Metadata.Version, metadata["version"].(types.String).ValueString())
+	assert.Equal(t, packageLayout.AsV1alpha1().Metadata.Name, metadata["name"].(types.String).ValueString())
+	assert.Equal(t, packageLayout.AsV1alpha1().Metadata.Description, metadata["description"].(types.String).ValueString())
+	assert.Equal(t, packageLayout.AsV1alpha1().Metadata.Version, metadata["version"].(types.String).ValueString())
 	assertPackageMetadata(t, state.Metadata, "Succeeded", 0, packageLayout.Digest())
 }
 
@@ -2354,7 +2373,7 @@ func TestPackageResource_validateUniqueVarNames(t *testing.T) {
 
 func TestPackageResource_Upsert_NamespaceOverride(t *testing.T) {
 	packageLayout := layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{
+		PackageDefinition: zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{
 			Metadata: v1alpha1.ZarfMetadata{
 				Name:        "test-package",
 				Description: "Test package",
@@ -2367,7 +2386,7 @@ func TestPackageResource_Upsert_NamespaceOverride(t *testing.T) {
 					Default:  false,
 				},
 			},
-		},
+		}),
 	}
 
 	tests := []struct {
@@ -2490,7 +2509,7 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 				if tc.loadPackageError == nil {
 					result := newValidLoadPackageResult()
 					if tc.packageSigned {
-						result.Layout.Pkg.Build.Signed = helpers.BoolPtr(true)
+						result.Layout.PackageDefinition.SetBuildSigned(true)
 					}
 					mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(result.Layout, result.Error)
 				} else {
@@ -2728,7 +2747,7 @@ func TestPackageResource_VerifyPackageSignature_SkipsWhenVerificationDisabled(t 
 	}
 	model := NewTestPackageResourceModel(WithSignatureVerificationEnabled(false))
 	pkgLayout := &layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{Build: v1alpha1.ZarfBuildData{Signed: helpers.BoolPtr(true)}},
+		PackageDefinition: zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{Build: v1alpha1.ZarfBuildData{Signed: helpers.BoolPtr(true)}}),
 	}
 
 	err := packageResource.verifyPackageSignature(context.Background(), model, pkgLayout)
@@ -2749,7 +2768,7 @@ func TestPackageResource_VerifyPackageSignature_CallsVerifierWithPublicKey(t *te
 	}
 	model := NewTestPackageResourceModel(WithPublicKey("test-public-key"))
 	pkgLayout := &layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{Build: v1alpha1.ZarfBuildData{Signed: helpers.BoolPtr(true)}},
+		PackageDefinition: zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{Build: v1alpha1.ZarfBuildData{Signed: helpers.BoolPtr(true)}}),
 	}
 
 	err := packageResource.verifyPackageSignature(context.Background(), model, pkgLayout)
@@ -2770,7 +2789,7 @@ func TestPackageResource_VerifyPackageSignature_CallsVerifierWithKeylessOptions(
 	}
 	model := NewTestPackageResourceModel(WithKeylessVerification("test@example.com", "https://token.actions.githubusercontent.com"))
 	pkgLayout := &layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{Build: v1alpha1.ZarfBuildData{Signed: helpers.BoolPtr(true)}},
+		PackageDefinition: zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{Build: v1alpha1.ZarfBuildData{Signed: helpers.BoolPtr(true)}}),
 	}
 
 	err := packageResource.verifyPackageSignature(context.Background(), model, pkgLayout)
@@ -2785,7 +2804,7 @@ func TestPackageResource_Upsert_SkipsSignatureVerificationWhenDisabled(t *testin
 	mockPackager := &MockPackager{}
 	mockPackageComponentFilter := &MockPackageComponentFilter{}
 	validLoadPackageResult := newValidLoadPackageResult()
-	validLoadPackageResult.Layout.Pkg.Build.Signed = helpers.BoolPtr(true)
+	validLoadPackageResult.Layout.PackageDefinition.SetBuildSigned(true)
 	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
 		validLoadPackageResult.Layout,
 		validLoadPackageResult.Error,
@@ -2805,7 +2824,7 @@ func TestPackageResource_Upsert_SkipsSignatureVerificationWhenDisabled(t *testin
 func TestPackageResource_Upsert_DoesNotDeployWhenSignatureVerificationFails(t *testing.T) {
 	mockPackager := &MockPackager{}
 	validLoadPackageResult := newValidLoadPackageResult()
-	validLoadPackageResult.Layout.Pkg.Build.Signed = helpers.BoolPtr(true)
+	validLoadPackageResult.Layout.PackageDefinition.SetBuildSigned(true)
 	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
 		validLoadPackageResult.Layout,
 		validLoadPackageResult.Error,
@@ -2826,7 +2845,7 @@ func TestPackageResource_Upsert_DeploysWhenSignatureVerificationSucceeds(t *test
 	mockPackager := &MockPackager{}
 	mockPackageComponentFilter := &MockPackageComponentFilter{}
 	validLoadPackageResult := newValidLoadPackageResult()
-	validLoadPackageResult.Layout.Pkg.Build.Signed = helpers.BoolPtr(true)
+	validLoadPackageResult.Layout.PackageDefinition.SetBuildSigned(true)
 	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
 		validLoadPackageResult.Layout,
 		validLoadPackageResult.Error,
@@ -2928,7 +2947,7 @@ func TestPackageResource_Upsert_Architecture(t *testing.T) {
 
 func TestPackageResource_Upsert_ConnectStrings(t *testing.T) {
 	packageLayout := layout.PackageLayout{
-		Pkg: v1alpha1.ZarfPackage{
+		PackageDefinition: zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{
 			Metadata: v1alpha1.ZarfMetadata{
 				Name:        "test-package",
 				Description: "Test package",
@@ -2941,7 +2960,7 @@ func TestPackageResource_Upsert_ConnectStrings(t *testing.T) {
 					Default:  false,
 				},
 			},
-		},
+		}),
 	}
 
 	tests := []struct {
@@ -3063,13 +3082,13 @@ func TestPackageResource_Upsert_ConnectStrings(t *testing.T) {
 }
 
 func TestPackageResource_Upsert_LogEvents(t *testing.T) {
-	packageLayout := &layout.PackageLayout{Pkg: v1alpha1.ZarfPackage{
+	packageLayout := &layout.PackageLayout{PackageDefinition: zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{
 		Metadata: v1alpha1.ZarfMetadata{Name: "test-package", Version: "0.0.1"},
 		Components: []v1alpha1.ZarfComponent{
 			{Name: "required", Required: helpers.BoolPtr(true)},
 			{Name: "optional", Required: helpers.BoolPtr(false)},
 		},
-	}}
+	})}
 	packagerMock := &MockPackager{}
 	filterMock := &MockPackageComponentFilter{}
 	packagerMock.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil)
@@ -6716,7 +6735,7 @@ func TestPackageResource_RunPackagePlanChecks_ReturnsLoadErrWhenValuesRequirePac
 		))),
 	)
 	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(
-		&layout.PackageLayout{Pkg: v1alpha1.ZarfPackage{}},
+		&layout.PackageLayout{PackageDefinition: zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{})},
 		fmt.Errorf("package metadata unavailable"),
 	)
 	packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)

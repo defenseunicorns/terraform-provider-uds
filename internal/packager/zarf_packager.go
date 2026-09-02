@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/zarf-dev/zarf/src/api/v1alpha1"
+	zarfAPI "github.com/zarf-dev/zarf/src/api"
 	zConfig "github.com/zarf-dev/zarf/src/config"
 	"github.com/zarf-dev/zarf/src/pkg/cluster"
 	zPackager "github.com/zarf-dev/zarf/src/pkg/packager"
@@ -24,15 +24,15 @@ import (
 // Packager provides operations for managing Zarf packages.
 type Packager interface {
 	Deploy(ctx context.Context, pkgLayout *layout.PackageLayout, opts zPackager.DeployOptions) (zPackager.DeployResult, error)
-	Remove(ctx context.Context, pkg v1alpha1.ZarfPackage, opts zPackager.RemoveOptions) error
+	Remove(ctx context.Context, pkg zarfAPI.PackageDefinition, opts zPackager.RemoveOptions) error
 	LoadPackage(ctx context.Context, source string, opts zPackager.LoadOptions) (_ *layout.PackageLayout, err error)
-	GetPackageFromSourceOrCluster(ctx context.Context, cluster *cluster.Cluster, src string, namespaceOverride string, opts zPackager.LoadOptions) (_ v1alpha1.ZarfPackage, err error)
+	GetPackageFromSourceOrCluster(ctx context.Context, cluster *cluster.Cluster, src string, namespaceOverride string, opts zPackager.LoadOptions) (_ zarfAPI.PackageDefinition, err error)
 }
 
 type loadPackageFunc func(context.Context, string, zPackager.LoadOptions) (*layout.PackageLayout, error)
 type deployFunc func(context.Context, *layout.PackageLayout, zPackager.DeployOptions) (zPackager.DeployResult, error)
-type getPackageFunc func(context.Context, *cluster.Cluster, string, string, zPackager.LoadOptions) (v1alpha1.ZarfPackage, error)
-type removeFunc func(context.Context, v1alpha1.ZarfPackage, zPackager.RemoveOptions) error
+type getPackageFunc func(context.Context, *cluster.Cluster, string, string, zPackager.LoadOptions) (zarfAPI.PackageDefinition, error)
+type removeFunc func(context.Context, zarfAPI.PackageDefinition, zPackager.RemoveOptions) error
 
 type zarfPackager struct {
 	loadPackage   loadPackageFunc
@@ -63,7 +63,7 @@ func (p *zarfPackager) Deploy(ctx context.Context, pkgLayout *layout.PackageLayo
 	return result, nil
 }
 
-func (p *zarfPackager) Remove(ctx context.Context, pkg v1alpha1.ZarfPackage, opts zPackager.RemoveOptions) error {
+func (p *zarfPackager) Remove(ctx context.Context, pkg zarfAPI.PackageDefinition, opts zPackager.RemoveOptions) error {
 	p.ensureZarfConfigured()
 	zarfCtx := logging.WithZarfLogger(ctx)
 	err := p.removePackage(zarfCtx, pkg, opts)
@@ -83,7 +83,7 @@ func (p *zarfPackager) LoadPackage(ctx context.Context, source string, opts zPac
 	return packageLayout, nil
 }
 
-func (p *zarfPackager) GetPackageFromSourceOrCluster(ctx context.Context, cluster *cluster.Cluster, src string, namespaceOverride string, opts zPackager.LoadOptions) (_ v1alpha1.ZarfPackage, err error) {
+func (p *zarfPackager) GetPackageFromSourceOrCluster(ctx context.Context, cluster *cluster.Cluster, src string, namespaceOverride string, opts zPackager.LoadOptions) (_ zarfAPI.PackageDefinition, err error) {
 	p.ensureZarfConfigured()
 	zarfCtx := logging.WithZarfLogger(ctx)
 	pkg, err := p.getPackage(zarfCtx, cluster, src, namespaceOverride, opts)
@@ -140,11 +140,11 @@ func (z *zarfPackageComponentFilter) ForDeploy(optionalComponents []string) filt
 // requiredOnlyComponentFilter selects only required package components, excluding optional ones (including Zarf defaults).
 type requiredOnlyComponentFilter struct{}
 
-func (f *requiredOnlyComponentFilter) Apply(pkg v1alpha1.ZarfPackage) ([]v1alpha1.ZarfComponent, error) {
-	required := make([]v1alpha1.ZarfComponent, 0)
-	for _, c := range pkg.Components {
-		if c.IsRequired() {
-			required = append(required, c)
+func (f *requiredOnlyComponentFilter) Apply(pkg filters.PackageView) ([]int, error) {
+	required := make([]int, 0)
+	for i, c := range pkg.Components {
+		if !c.Optional {
+			required = append(required, i)
 		}
 	}
 	return required, nil
