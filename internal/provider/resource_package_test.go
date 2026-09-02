@@ -4034,6 +4034,64 @@ func TestModifyPlan_TimeoutOnlyChangePreservesComputedState(t *testing.T) {
 	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 
+func TestModifyPlan_RejectsPriorAliasWithoutClusterLookup(t *testing.T) {
+	packageLayout := newValidLoadPackageResult().Layout
+	packager := &MockPackager{}
+	packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Once()
+	cluster := &MockCluster{}
+	packageResource := NewPackageResource(
+		&udsProviderConfig{ValidatePackagesOnPlan: true},
+		packager,
+		nil,
+		cluster,
+	).(*PackageResource)
+	stateModel := NewTestPackageResourceModel(WithDeployedState())
+	stateModel.ID = types.StringValue("test-package-alias")
+	stateModel.Name = types.StringValue("test-package-alias")
+	planModel := stateModel
+	plan := buildTestPlan(t, packageResource, planModel)
+	resp := resource.ModifyPlanResponse{Plan: plan}
+
+	packageResource.ModifyPlan(context.Background(), resource.ModifyPlanRequest{
+		Config: buildTestConfig(t, packageResource, planModel),
+		Plan:   plan,
+		State:  buildTestState(t, packageResource, stateModel),
+	}, &resp)
+
+	require.True(t, resp.Diagnostics.HasError())
+	assert.Equal(t, "Cannot manage package with non-canonical deployment name", resp.Diagnostics.Errors()[0].Summary())
+	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "test-package-alias")
+	cluster.AssertNotCalled(t, "NewWithWait", mock.Anything)
+	packager.AssertExpectations(t)
+}
+
+func TestModifyPlan_DefersPriorAliasWhenPackageValidationIsDisabled(t *testing.T) {
+	packager := &MockPackager{}
+	cluster := &MockCluster{}
+	packageResource := NewPackageResource(
+		&udsProviderConfig{ValidatePackagesOnPlan: false},
+		packager,
+		nil,
+		cluster,
+	).(*PackageResource)
+	stateModel := NewTestPackageResourceModel(WithDeployedState())
+	stateModel.ID = types.StringValue("test-package-alias")
+	stateModel.Name = types.StringValue("test-package-alias")
+	planModel := stateModel
+	plan := buildTestPlan(t, packageResource, planModel)
+	resp := resource.ModifyPlanResponse{Plan: plan}
+
+	packageResource.ModifyPlan(context.Background(), resource.ModifyPlanRequest{
+		Config: buildTestConfig(t, packageResource, planModel),
+		Plan:   plan,
+		State:  buildTestState(t, packageResource, stateModel),
+	}, &resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "plan diagnostics: %v", resp.Diagnostics)
+	packager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+	cluster.AssertNotCalled(t, "NewWithWait", mock.Anything)
+}
+
 func TestModifyPlan_StateOnlyAndPackageChangeRunsPackageChecks(t *testing.T) {
 	mockPackager := &MockPackager{}
 	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).
