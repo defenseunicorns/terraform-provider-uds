@@ -59,6 +59,39 @@ var (
 	errPackageExistenceCheck = errors.New("failed to check for existing package")
 )
 
+// deployedPackageIdentity is authoritative only after the returned Zarf state
+// has been checked against the resource ID.
+type deployedPackageIdentity struct {
+	ID        string
+	Name      string
+	Namespace string
+	Package   zarfState.DeployedPackage
+}
+
+type remoteIdentityError struct{ reason string }
+
+func (e *remoteIdentityError) Error() string { return e.reason }
+
+type stateIdentityError struct{ reason string }
+
+func (e *stateIdentityError) Error() string { return e.reason }
+
+type canonicalNameMismatchError struct {
+	deployedName  string
+	canonicalName string
+	namespace     string
+}
+
+func (e *canonicalNameMismatchError) Error() string {
+	return fmt.Sprintf("deployed package name %q does not match canonical source package name %q", e.deployedName, e.canonicalName)
+}
+
+type canonicalSourceError struct{}
+
+func (e *canonicalSourceError) Error() string {
+	return "could not load source package metadata needed to verify its canonical name"
+}
+
 // deploymentAttemptedError marks failures after packager.Deploy was invoked
 // without changing the error text shown to users.
 type deploymentAttemptedError struct {
@@ -695,33 +728,24 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	timeoutCtx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 
-	packageNamespace, packageName, err := parsePackageID(data.ID.ValueString())
+	identity, found, err := r.lookupVerifiedDeployedPackage(timeoutCtx, data.ID.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError(
-			"Error parsing package ID",
-			"Failed to parse package ID: "+err.Error(),
-		)
-		return
-	}
-
-	deployedPackage, found, err := r.getDeployedPackage(timeoutCtx, packageName, packageNamespace)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error getting deployed package",
-			lifecycleErrorDetail(timeoutCtx, "read", err),
+			"Deployed package identity could not be verified",
+			identityErrorDetail(err),
 		)
 		return
 	}
 	if !found {
 		resp.Diagnostics.AddWarning(
 			"Deployed package not found",
-			"Could not find deployed package with namespace "+packageNamespace+" and name "+packageName+" - removing resource",
+			"Could not find the deployed package identified by state - removing resource",
 		)
 		resp.State.RemoveResource(timeoutCtx)
 		return
 	}
 
-	resp.Diagnostics.Append(populateStateFromDeployedPackage(&data, deployedPackage)...)
+	resp.Diagnostics.Append(populateStateFromDeployedPackage(&data, identity.Package)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -787,6 +811,20 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 
 	timeoutCtx, cancel := context.WithTimeout(operationCtx, updateTimeout)
 	defer cancel()
+
+	identity, found, err := r.lookupVerifiedDeployedPackage(timeoutCtx, oldPlan.ID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Deployed package identity could not be verified", identityErrorDetail(err))
+		return
+	}
+	if !found {
+		resp.Diagnostics.AddError("Deployed package not found", "The package recorded in state no longer exists. Update is blocked to avoid deploying a different package identity.")
+		return
+	}
+	if err := r.verifyCanonicalPackageName(timeoutCtx, plan, identity); err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("source"), canonicalIdentitySummary(err), canonicalIdentityDetail(err))
+		return
+	}
 
 	plan, err = r.deployAsNewOrUpdate(timeoutCtx, plan, oldPlan)
 	if !plan.Name.IsNull() && !plan.Name.IsUnknown() {
@@ -863,53 +901,23 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	timeoutCtx, cancel := context.WithTimeout(operationCtx, deleteTimeout)
 	defer cancel()
-	timeoutCtx = r.withOCISchemeNegotiator(timeoutCtx)
+	lookupCtx, lookupCancel := withClusterTimeout(timeoutCtx)
+	defer lookupCancel()
+	identity, found, err := r.lookupVerifiedDeployedPackage(lookupCtx, data.ID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Deployed package identity could not be verified", identityErrorDetail(err))
+		return
+	}
+	if !found {
+		operationCompleted = true
+		return
+	}
 
 	clusterCtx, clusterCancel := withClusterTimeout(timeoutCtx)
 	defer clusterCancel()
 	c, err := r.cluster.NewWithWait(clusterCtx)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Could not connect to cluster",
-			lifecycleErrorDetail(timeoutCtx, "delete", err),
-		)
-		return
-	}
-
-	tmpDir, err := os.MkdirTemp("", "uds-package-verify-*")
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Temp dir error",
-			"Could not create temp dir for package verification: "+err.Error(),
-		)
-		return
-	}
-	defer os.RemoveAll(tmpDir)
-
-	verifyBlobOpts, err := buildVerifyBlobOptions(timeoutCtx, data, tmpDir)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Verification config error",
-			"Could not build verification options: "+err.Error(),
-		)
-		return
-	}
-
-	packageName := data.Name.ValueString()
-	loadOpts := zarfPackager.LoadOptions{
-		Filter:               r.packageFilter.ForRemove([]string{}),
-		Architecture:         getArchitecture(data, *r.providerConfig),
-		VerifyBlobOptions:    verifyBlobOpts,
-		VerificationStrategy: layout.VerifyNever,
-		CachePath:            r.providerConfig.ZarfCachePath,
-	}
-
-	pkg, err := r.packager.GetPackageFromSourceOrCluster(timeoutCtx, c, packageName, data.Namespace.ValueString(), loadOpts)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error loading package",
-			lifecycleErrorDetail(timeoutCtx, "delete", err),
-		)
+		resp.Diagnostics.AddError("Could not connect to cluster", lifecycleErrorDetail(timeoutCtx, "delete", err))
 		return
 	}
 
@@ -922,11 +930,11 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 	removeOpt := zarfPackager.RemoveOptions{
-		NamespaceOverride: data.Namespace.ValueString(),
+		NamespaceOverride: identity.Namespace,
 		Cluster:           c,
 		Timeout:           zarfTimeout,
 	}
-	if err := r.packager.Remove(timeoutCtx, pkg, removeOpt); err != nil {
+	if err := r.packager.Remove(timeoutCtx, identity.Package.Data, removeOpt); err != nil {
 		resp.Diagnostics.AddError(
 			"Error removing package",
 			lifecycleErrorDetail(timeoutCtx, "delete", err),
@@ -990,13 +998,30 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	}
 
 	if r.providerConfig == nil || r.providerConfig.ValidatePackagesOnPlan {
+		var priorIdentity *deployedPackageIdentity
+		if !req.State.Raw.IsNull() {
+			var state PackageResourceModel
+			resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+			identity, complete, err := validatePriorStateIdentity(state)
+			if err != nil {
+				resp.Diagnostics.AddError("Prior package state is inconsistent", identityErrorDetail(err))
+				return
+			}
+			if complete {
+				priorIdentity = &identity
+			}
+		}
+
 		// Dynamic values can become wholly unknown in the plan when only some
 		// leaves depend on computed resources. Use configuration values for
 		// plan-time schema validation so known authored leaves are still checked.
 		valueValidationPlan := plan
 		valueValidationPlan.Values = config.Values
 		valueValidationPlan.SensitiveValues = config.SensitiveValues
-		checks := r.runPackagePlanChecks(ctx, valueValidationPlan)
+		checks := r.runPackagePlanChecks(ctx, valueValidationPlan, priorIdentity)
 		if checks.LoadErr != nil {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("source"),
@@ -1023,6 +1048,10 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		}
 		if checks.ValuesErr != nil {
 			resp.Diagnostics.AddError("Invalid package value", checks.ValuesErr.Error())
+			return
+		}
+		if checks.CanonicalNameErr != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("source"), canonicalIdentitySummary(checks.CanonicalNameErr), canonicalIdentityDetail(checks.CanonicalNameErr))
 			return
 		}
 	}
@@ -1299,6 +1328,73 @@ func (r *PackageResource) getDeployedPackage(ctx context.Context, name string, n
 	return *pkg, true, nil
 }
 
+func (r *PackageResource) lookupVerifiedDeployedPackage(ctx context.Context, id string) (deployedPackageIdentity, bool, error) {
+	namespace, name, err := parsePackageID(id)
+	if err != nil {
+		return deployedPackageIdentity{}, false, &remoteIdentityError{reason: "resource state contains an invalid package ID"}
+	}
+	pkg, found, err := r.getDeployedPackage(ctx, name, namespace)
+	if err != nil {
+		return deployedPackageIdentity{}, false, &remoteIdentityError{reason: "could not retrieve the deployed package from the cluster"}
+	}
+	if !found {
+		return deployedPackageIdentity{}, false, nil
+	}
+	if pkg.Name != name || pkg.NamespaceOverride != namespace || pkg.Data.Metadata.Name != pkg.Name {
+		return deployedPackageIdentity{}, false, &remoteIdentityError{reason: "the deployed package returned by the cluster does not match the identity recorded in state"}
+	}
+	return deployedPackageIdentity{ID: id, Name: name, Namespace: namespace, Package: pkg}, true, nil
+}
+
+func validatePriorStateIdentity(data PackageResourceModel) (deployedPackageIdentity, bool, error) {
+	if data.ID.IsNull() || data.ID.IsUnknown() || data.Name.IsNull() || data.Name.IsUnknown() || data.Namespace.IsUnknown() {
+		return deployedPackageIdentity{}, false, nil
+	}
+	namespace, name, err := parsePackageID(data.ID.ValueString())
+	if err != nil || data.Name.ValueString() != name || data.Namespace.ValueString() != namespace {
+		return deployedPackageIdentity{}, false, &stateIdentityError{reason: "the package ID, computed name, and namespace in prior state do not describe the same deployed package"}
+	}
+	return deployedPackageIdentity{ID: data.ID.ValueString(), Name: name, Namespace: namespace}, true, nil
+}
+
+func (r *PackageResource) verifyCanonicalPackageName(ctx context.Context, model PackageResourceModel, identity deployedPackageIdentity) error {
+	pkgLayout, err := r.loadPackageLayoutForInspection(ctx, model)
+	if pkgLayout != nil {
+		defer pkgLayout.Cleanup()
+	}
+	if err != nil {
+		return &canonicalSourceError{}
+	}
+	if pkgLayout.Pkg.Metadata.Name != identity.Name {
+		return &canonicalNameMismatchError{deployedName: identity.Name, canonicalName: pkgLayout.Pkg.Metadata.Name, namespace: identity.Namespace}
+	}
+	return nil
+}
+
+func identityErrorDetail(err error) string {
+	var stateErr *stateIdentityError
+	if errors.As(err, &stateErr) {
+		return stateErr.Error()
+	}
+	return "The deployed package identity could not be safely verified. No package mutation was performed."
+}
+
+func canonicalIdentitySummary(err error) string {
+	var mismatch *canonicalNameMismatchError
+	if errors.As(err, &mismatch) {
+		return "Cannot manage package with non-canonical deployment name"
+	}
+	return "Cannot verify package canonical name"
+}
+
+func canonicalIdentityDetail(err error) string {
+	var mismatch *canonicalNameMismatchError
+	if errors.As(err, &mismatch) {
+		return fmt.Sprintf("The deployed package is named %q in namespace %q, but the configured source has canonical name %q. Managing it could target a different Zarf package identity. Migrate the package externally, then import its canonical identity; to preserve this workload while migrating, remove only its Terraform state entry with `tofu state rm`.", mismatch.deployedName, mismatch.namespace, mismatch.canonicalName)
+	}
+	return "The configured source package could not be inspected to establish its canonical name. No package mutation was performed."
+}
+
 // deployAsNew deploys a package only when its name and namespace are not already present.
 func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
 	// Load the package to establish identity before checking for an existing deployment.
@@ -1549,7 +1645,11 @@ func completeRecoveredState(data *PackageResourceModel) {
 }
 
 func (r *PackageResource) refreshStateFromCluster(ctx context.Context, data PackageResourceModel) (PackageResourceModel, bool, error) {
-	deployedPackage, found, err := r.getDeployedPackage(ctx, data.Name.ValueString(), data.Namespace.ValueString())
+	id := data.ID.ValueString()
+	if data.ID.IsNull() || data.ID.IsUnknown() {
+		id = computePackageID(data.Namespace.ValueString(), data.Name.ValueString())
+	}
+	identity, found, err := r.lookupVerifiedDeployedPackage(ctx, id)
 	if err != nil {
 		return data, false, err
 	}
@@ -1557,7 +1657,7 @@ func (r *PackageResource) refreshStateFromCluster(ctx context.Context, data Pack
 		return data, false, nil
 	}
 
-	if diags := populateStateFromDeployedPackage(&data, deployedPackage); diags.HasError() {
+	if diags := populateStateFromDeployedPackage(&data, identity.Package); diags.HasError() {
 		return data, true, fmt.Errorf("failed to populate deployed package state: %v", diags)
 	}
 	return data, true, nil
@@ -2937,13 +3037,14 @@ type packagePlanCheckResult struct {
 	SigErr           error
 	OptComponentsErr error
 	ValuesErr        error
+	CanonicalNameErr error
 }
 
 // runPackagePlanChecks loads the package once and runs package-dependent plan
 // checks. Known values in schema-backed packages are validated against merged
 // package defaults.
 // Skipped when source is unknown, packager/providerConfig are nil, or no checks are needed.
-func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel) packagePlanCheckResult {
+func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel, priorIdentities ...*deployedPackageIdentity) packagePlanCheckResult {
 	if plan.Source.IsUnknown() || plan.Source.IsNull() {
 		return packagePlanCheckResult{}
 	}
@@ -2961,8 +3062,12 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 		plan.OptionalComponents.ElementsAs(ctx, &requestedOptionals, false)
 	}
 	canValidateSchema := hasConfiguredPackageValues(plan)
+	var priorIdentity *deployedPackageIdentity
+	if len(priorIdentities) > 0 {
+		priorIdentity = priorIdentities[0]
+	}
 
-	if !needsSigVerification && !canValidateOptionalComponents && !canValidateSchema {
+	if !needsSigVerification && !canValidateOptionalComponents && !canValidateSchema && priorIdentity == nil {
 		return packagePlanCheckResult{}
 	}
 
@@ -2971,6 +3076,9 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 		defer pkgLayout.Cleanup()
 	}
 	if err != nil {
+		if priorIdentity != nil {
+			return packagePlanCheckResult{CanonicalNameErr: &canonicalSourceError{}}
+		}
 		return packagePlanCheckResult{LoadErr: err}
 	}
 
@@ -2990,6 +3098,13 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 		if err := r.validatePlannedPackageValuesAgainstSchema(ctx, plan, pkgLayout); err != nil {
 			return packagePlanCheckResult{ValuesErr: err}
 		}
+	}
+	if priorIdentity != nil && pkgLayout.Pkg.Metadata.Name != priorIdentity.Name {
+		return packagePlanCheckResult{CanonicalNameErr: &canonicalNameMismatchError{
+			deployedName:  priorIdentity.Name,
+			canonicalName: pkgLayout.Pkg.Metadata.Name,
+			namespace:     priorIdentity.Namespace,
+		}}
 	}
 
 	return packagePlanCheckResult{}

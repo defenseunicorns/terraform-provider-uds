@@ -292,7 +292,19 @@ Read-Only:
 
 Import is supported using the following syntax:
 
-> Import records the package ID in state. The first apply after import redeploys the package from the declared resource configuration. Zarf does not currently expose enough of the deployed configuration, including applied values, for the provider to determine whether that configuration has drifted.
+> Import records the deployed Zarf package identity in state. Use either `name` or `namespace:name`. The following refresh verifies that the returned deployed name, namespace override, and package metadata agree with that identity; import and refresh do not rename, deploy, remove, or otherwise mutate the package.
+
+Only packages whose deployed name matches the configured source package's canonical `metadata.name` are eligible for source-derived provider management. A standalone import can temporarily record a differently named deployment because no configured source is available for comparison. When a later configured plan or apply rejects that provisional state, preserve the workload by removing only the Terraform state entry:
+
+```shell
+tofu state rm uds_package.example
+```
+
+Do not use `tofu destroy`, `zarf package remove`, or `helm uninstall` as a substitute for state removal unless the intent is to remove the workload. Aliased deployments are unsupported because later Zarf operations could target a different package identity, and destructive cleanup or unvalidated takeover can affect shared Helm releases or Kubernetes resources.
+
+Migrate aliases externally before importing their canonical identity. Migration requires package-specific investigation of rendered resource and release identities, package actions and hooks, namespace behavior, backups of relevant state, and verification of application health before canonical import. Detailed tested migration procedures are follow-on work; this provider does not prescribe or automate a migration.
+
+Delete is intentionally different: it freshly verifies and removes the exact identity recorded in state without loading the configured source. A package already absent from the cluster is treated as successfully deleted.
 
 In Terraform v1.5.0 and later, the [`import` block](https://developer.hashicorp.com/terraform/language/import) can be used with the `id` attribute, for example:
 

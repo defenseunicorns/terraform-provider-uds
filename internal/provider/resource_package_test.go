@@ -1271,7 +1271,7 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 			expectState:       true,
 			digest:            "sha256:recovered",
 			generation:        5,
-			expectedErrors:    []string{"context deadline exceeded"},
+			expectedErrors:    []string{"could not retrieve the deployed package from the cluster"},
 		},
 		{
 			name:           "deployment failure without package state",
@@ -1282,7 +1282,7 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 			name:           "deployment failure with recovery query error",
 			deployError:    errors.New("deployment failed"),
 			recoveryError:  errors.New("state query failed"),
-			expectedErrors: []string{"deployment failed", "state query failed"},
+			expectedErrors: []string{"deployment failed", "could not retrieve the deployed package from the cluster"},
 		},
 	}
 
@@ -1380,7 +1380,7 @@ func TestPackageResource_CreateSuccessfulDeploymentRefreshesState(t *testing.T) 
 	mockCluster := &MockCluster{}
 	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{Clientset: clientset}, nil).Twice()
 	mockPackager := &MockPackager{}
-	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Once()
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Twice()
 	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Run(func(_ mock.Arguments) {
 		_, err := clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(
 			context.Background(),
@@ -1494,15 +1494,11 @@ func TestPackageResource_CreateSuccessfulDeploymentWithoutStateSecretRetainsFall
 	assertPackageMetadata(t, state.Metadata, "Succeeded", 0, packageLayout.Digest())
 }
 
-func TestPackageResource_UpdateSuccessfulDeploymentWithoutStateSecretRetainsFallbackMetadata(t *testing.T) {
-	packageLayout := newValidLoadPackageResult().Layout
+func TestPackageResource_UpdateWithoutStateSecretIsBlocked(t *testing.T) {
 	mockCluster := &MockCluster{}
 	mockCluster.On("NewWithWait", mock.Anything).Return(newFakeCluster(), nil).Once()
 	mockPackager := &MockPackager{}
-	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Once()
-	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil).Once()
 	mockPackageComponentFilter := &MockPackageComponentFilter{}
-	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything).Once()
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
 	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
@@ -1511,9 +1507,10 @@ func TestPackageResource_UpdateSuccessfulDeploymentWithoutStateSecretRetainsFall
 
 	resp := runUpdateLifecycleTest(t, packageResource, planModel, stateModel)
 
-	require.False(t, resp.Diagnostics.HasError(), "update diagnostics: %v", resp.Diagnostics)
-	updated := requirePackageState(t, resp.State)
-	assertPackageMetadata(t, updated.Metadata, "Succeeded", 0, packageLayout.Digest())
+	require.True(t, resp.Diagnostics.HasError())
+	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "no longer exists")
+	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestPackageResource_CreateDuplicatePackageDoesNotAdoptState(t *testing.T) {
@@ -1525,7 +1522,7 @@ func TestPackageResource_CreateDuplicatePackageDoesNotAdoptState(t *testing.T) {
 	mockCluster := &MockCluster{}
 	mockCluster.On("NewWithWait", mock.Anything).Return(cluster, nil).Once()
 	mockPackager := &MockPackager{}
-	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Once()
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Twice()
 	mockPackageComponentFilter := &MockPackageComponentFilter{}
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
@@ -3801,11 +3798,12 @@ func TestPackageResource_UpdateSuccessfulDeploymentRefreshesState(t *testing.T) 
 	deployedPackage.Digest = "sha256:updated"
 	deployedPackage.Generation = 10
 	deployedPackage.NamespaceOverride = "updated"
-	clientset := fake.NewSimpleClientset()
+	existingPackage := newLifecycleDeployedPackage(packageLayout)
+	clientset := fake.NewSimpleClientset(newPackageStateSecret(t, existingPackage))
 	mockCluster := &MockCluster{}
-	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{Clientset: clientset}, nil).Once()
+	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{Clientset: clientset}, nil).Twice()
 	mockPackager := &MockPackager{}
-	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Once()
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Twice()
 	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Run(func(_ mock.Arguments) {
 		_, err := clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(
 			context.Background(),
@@ -3822,6 +3820,8 @@ func TestPackageResource_UpdateSuccessfulDeploymentRefreshesState(t *testing.T) 
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
 	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
+	stateModel.ID = types.StringValue(packageLayout.Pkg.Metadata.Name)
+	stateModel.Name = types.StringValue(packageLayout.Pkg.Metadata.Name)
 	planModel := stateModel
 	WithNamespace("updated")(&planModel)
 	// Conflict with the cluster values above to prove known planned values win.
@@ -3839,15 +3839,19 @@ func TestPackageResource_UpdateSuccessfulDeploymentRefreshesState(t *testing.T) 
 
 func TestPackageResource_UpdateFailedDeploymentDoesNotReplaceStateOrRemove(t *testing.T) {
 	packageLayout := newValidLoadPackageResult().Layout
+	existingPackage := newLifecycleDeployedPackage(packageLayout)
 	mockCluster := &MockCluster{}
+	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{Clientset: fake.NewSimpleClientset(newPackageStateSecret(t, existingPackage))}, nil).Once()
 	mockPackager := &MockPackager{}
-	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Once()
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(packageLayout, nil).Twice()
 	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, errors.New("update deployment failed"))
 	mockPackageComponentFilter := &MockPackageComponentFilter{}
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
 	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
+	stateModel.ID = types.StringValue(packageLayout.Pkg.Metadata.Name)
+	stateModel.Name = types.StringValue(packageLayout.Pkg.Metadata.Name)
 	planModel := stateModel
 	WithNamespace("updated")(&planModel)
 
@@ -3935,7 +3939,7 @@ func TestModifyPlan_StateOnlyAndPackageChangeRunsPackageChecks(t *testing.T) {
 	}, &resp)
 
 	require.True(t, resp.Diagnostics.HasError())
-	assert.Contains(t, resp.Diagnostics.Errors()[0].Summary(), "Failed to load package")
+	assert.Contains(t, resp.Diagnostics.Errors()[0].Summary(), "Cannot verify package canonical name")
 	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 
@@ -7880,16 +7884,13 @@ func TestDelete_LoadsNamespacedPackageFromClusterAndDoesNotSetRemoteOptions(t *t
 	mockPackager := &MockPackager{}
 	mockFilter := &MockPackageComponentFilter{}
 
-	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, nil)
-	mockFilter.On("ForRemove", []string{}).Return(mock.Anything)
-	mockPackager.On("GetPackageFromSourceOrCluster",
-		mock.Anything, mock.Anything, "test-pkg", "package-namespace", mock.Anything).
-		Run(func(args mock.Arguments) {
-			loadOpts := args.Get(4).(zarfPackager.LoadOptions)
-			assert.False(t, loadOpts.PlainHTTP)
-			assert.False(t, loadOpts.InsecureSkipTLSVerify)
-		}).
-		Return(v1alpha1.ZarfPackage{}, nil)
+	deployedPackage := zarfState.DeployedPackage{
+		Name:              "test-pkg",
+		NamespaceOverride: "package-namespace",
+		Data:              v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{Name: "test-pkg"}},
+	}
+	cluster := &zarfCluster.Cluster{Clientset: fake.NewSimpleClientset(newPackageStateSecret(t, deployedPackage))}
+	mockCluster.On("NewWithWait", mock.Anything).Return(cluster, nil).Twice()
 	mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).
 		Run(func(args mock.Arguments) {
 			removeOpts := args.Get(2).(zarfPackager.RemoveOptions)
@@ -7918,6 +7919,7 @@ func TestDelete_LoadsNamespacedPackageFromClusterAndDoesNotSetRemoteOptions(t *t
 	assertLogEntry(t, entries, "package completed", nil)
 	assertNoLogEntry(t, entries, "package failed")
 	mockPackager.AssertExpectations(t)
+	mockFilter.AssertNotCalled(t, "ForRemove", mock.Anything)
 }
 
 // TestDelete_ZarfHandoffUsesRemainingBudget verifies that RemoveOptions.Timeout is
@@ -7927,11 +7929,9 @@ func TestDelete_ZarfHandoffUsesRemainingBudget(t *testing.T) {
 	mockPackager := &MockPackager{}
 	mockFilter := &MockPackageComponentFilter{}
 
-	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, nil)
-	mockFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
-	mockPackager.On("GetPackageFromSourceOrCluster",
-		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-		Return(v1alpha1.ZarfPackage{}, nil)
+	deployedPackage := zarfState.DeployedPackage{Name: "test-pkg", Data: v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{Name: "test-pkg"}}}
+	cluster := &zarfCluster.Cluster{Clientset: fake.NewSimpleClientset(newPackageStateSecret(t, deployedPackage))}
+	mockCluster.On("NewWithWait", mock.Anything).Return(cluster, nil).Twice()
 	mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
 	r := NewPackageResource(nil, mockPackager, mockFilter, mockCluster).(*PackageResource)
@@ -7954,6 +7954,7 @@ func TestDelete_ZarfHandoffUsesRemainingBudget(t *testing.T) {
 				"Zarf timeout must be close to the full remaining lifecycle budget")
 		}
 	}
+	mockFilter.AssertNotCalled(t, "ForRemove", mock.Anything)
 }
 
 func TestDelete_ExhaustedBudgetSkipsPackageRemoval(t *testing.T) {
@@ -7961,12 +7962,9 @@ func TestDelete_ExhaustedBudgetSkipsPackageRemoval(t *testing.T) {
 	mockPackager := &MockPackager{}
 	mockFilter := &MockPackageComponentFilter{}
 
-	mockCluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, nil)
-	mockFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
-	mockPackager.On("GetPackageFromSourceOrCluster",
-		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+	mockCluster.On("NewWithWait", mock.Anything).
 		Run(func(args mock.Arguments) { <-args.Get(0).(context.Context).Done() }).
-		Return(v1alpha1.ZarfPackage{}, nil)
+		Return(&zarfCluster.Cluster{Clientset: fake.NewSimpleClientset()}, nil)
 
 	r := NewPackageResource(nil, mockPackager, mockFilter, mockCluster).(*PackageResource)
 	model := NewTestPackageResourceModel(WithTimeout("10ms"), WithDeployedState())
@@ -7977,14 +7975,12 @@ func TestDelete_ExhaustedBudgetSkipsPackageRemoval(t *testing.T) {
 	var resp resource.DeleteResponse
 	r.Delete(ctx, resource.DeleteRequest{State: state}, &resp)
 
-	require.True(t, resp.Diagnostics.HasError())
-	assert.Equal(t, "Package removal could not start", resp.Diagnostics[0].Summary())
+	require.False(t, resp.Diagnostics.HasError())
 	mockPackager.AssertNotCalled(t, "Remove")
 	entries, err := tflogtest.MultilineJSONDecode(&output)
 	require.NoError(t, err)
-	assertLogEntry(t, entries, "package failed", nil)
-	assertLogEntryFieldNotEmpty(t, entries, "package failed", "error")
-	assertNoLogEntry(t, entries, "package completed")
+	assertLogEntry(t, entries, "package completed", nil)
+	assertNoLogEntry(t, entries, "package failed")
 }
 
 // TestRead_DirectDeadlinePropagatedToCluster verifies that Read passes its full readTimeout
