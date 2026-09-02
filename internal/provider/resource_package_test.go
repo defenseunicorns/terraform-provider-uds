@@ -3630,6 +3630,33 @@ func TestCanonicalMismatchDiagnosticIsActionable(t *testing.T) {
 	assert.NotContains(t, detail, "configure the name")
 }
 
+func TestPackageResource_ImportStatePreservesSupportedIDsWithoutMutation(t *testing.T) {
+	for _, id := range []string{"test-pkg", "team-a:test-pkg"} {
+		t.Run(id, func(t *testing.T) {
+			cluster := &MockCluster{}
+			packager := &MockPackager{}
+			packageResource := NewPackageResource(nil, packager, nil, cluster).(*PackageResource)
+			var schemaResp resource.SchemaResponse
+			packageResource.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+			resp := resource.ImportStateResponse{State: tfsdk.State{
+				Schema: schemaResp.Schema,
+				Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(context.Background()), nil),
+			}}
+
+			packageResource.ImportState(context.Background(), resource.ImportStateRequest{ID: id}, &resp)
+
+			require.False(t, resp.Diagnostics.HasError(), "import diagnostics: %v", resp.Diagnostics)
+			var imported PackageResourceModel
+			require.False(t, resp.State.Get(context.Background(), &imported).HasError())
+			assert.Equal(t, id, imported.ID.ValueString())
+			cluster.AssertNotCalled(t, "NewWithWait", mock.Anything)
+			packager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+			packager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+			packager.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
+		})
+	}
+}
+
 func TestGetOptionalComponentsToRemove(t *testing.T) {
 	tests := []struct {
 		name                  string
