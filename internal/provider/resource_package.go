@@ -1306,7 +1306,7 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	if err != nil {
 		return plan, err
 	}
-	plan.Name = types.StringValue(pkgLayout.PackageDefinition.AsV1alpha1().Metadata.Name)
+	plan.Name = types.StringValue(pkgLayout.AsV1alpha1().Metadata.Name)
 	ctx = logging.WithPackageContext(ctx, "", plan.Name.ValueString(), plan.Namespace.ValueString())
 	defer func() {
 		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
@@ -1369,7 +1369,7 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if err != nil {
 		return plan, err
 	}
-	plan.Name = types.StringValue(pkgLayout.PackageDefinition.AsV1alpha1().Metadata.Name)
+	plan.Name = types.StringValue(pkgLayout.AsV1alpha1().Metadata.Name)
 	ctx = logging.WithPackageContext(ctx, "", plan.Name.ValueString(), plan.Namespace.ValueString())
 	defer func() {
 		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
@@ -1438,7 +1438,7 @@ func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageR
 		ForceConflicts: r.providerConfig.ForceHelmSSAConflicts,
 	}
 
-	originalPkgComponents := pkgLayout.PackageDefinition.AsV1alpha1().Components
+	originalPkgComponents := pkgLayout.AsV1alpha1().Components
 	filter := r.packageFilter.ForDeploy(optionalComponents)
 	pkgLayout.PackageDefinition, err = zarfFilters.Apply(pkgLayout.PackageDefinition, filter)
 	if err != nil {
@@ -1452,7 +1452,7 @@ func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageR
 	deployOpts.Timeout = zarfTimeout
 
 	logging.PackageStarted(ctx, getArchitecture(plan, *r.providerConfig), optionalComponentsForLogging(ctx, plan))
-	for _, component := range pkgLayout.PackageDefinition.AsV1alpha1().Components {
+	for _, component := range pkgLayout.AsV1alpha1().Components {
 		logging.ComponentSelected(ctx, component.Name)
 	}
 	deployResult, err := r.packager.Deploy(ctx, pkgLayout, deployOpts)
@@ -2021,10 +2021,10 @@ func getOptionalComponentsForDeploy(ctx context.Context, model PackageResourceMo
 	// Alpha: if optional_components is set, use it directly; otherwise fall back to component blocks.
 	// TODO: remove branch when component block is removed; always use optional_components.
 	if !model.OptionalComponents.IsNull() {
-		return getOptionalComponentsFromAttribute(ctx, model.OptionalComponents, pkgLayout.PackageDefinition.AsV1alpha1().Components)
+		return getOptionalComponentsFromAttribute(ctx, model.OptionalComponents, pkgLayout.AsV1alpha1().Components)
 	}
 
-	return getComponentBlockOptionalComponentsForDeploy(ctx, model.Components, pkgLayout.PackageDefinition.AsV1alpha1().Components)
+	return getComponentBlockOptionalComponentsForDeploy(ctx, model.Components, pkgLayout.AsV1alpha1().Components)
 }
 
 func getOptionalComponentsFromAttribute(ctx context.Context, optionalComponentsSet types.Set, pkgComponents []v1alpha1.ZarfComponent) ([]string, error) {
@@ -2649,9 +2649,9 @@ func newPackageMetadata(name, description, version, status string, generation in
 
 func populatePackageMetadataFromLayout(data *PackageResourceModel, pkgLayout *layout.PackageLayout) error {
 	metadata, err := newPackageMetadata(
-		pkgLayout.PackageDefinition.AsV1alpha1().Metadata.Name,
-		pkgLayout.PackageDefinition.AsV1alpha1().Metadata.Description,
-		pkgLayout.PackageDefinition.AsV1alpha1().Metadata.Version,
+		pkgLayout.AsV1alpha1().Metadata.Name,
+		pkgLayout.AsV1alpha1().Metadata.Description,
+		pkgLayout.AsV1alpha1().Metadata.Version,
 		string(zarfState.ComponentStatusSucceeded),
 		0,
 		pkgLayout.Digest(),
@@ -2664,7 +2664,7 @@ func populatePackageMetadataFromLayout(data *PackageResourceModel, pkgLayout *la
 }
 
 func (r *PackageResource) populatePackageModelFromLayout(data *PackageResourceModel, pkgLayout *layout.PackageLayout) {
-	pkg := pkgLayout.PackageDefinition.AsV1alpha1()
+	pkg := pkgLayout.AsV1alpha1()
 	data.ID = types.StringValue(computePackageID(data.Namespace.ValueString(), pkg.Metadata.Name))
 	data.Name = types.StringValue(pkg.Metadata.Name)
 	data.Version = types.StringValue(pkg.Metadata.Version)
@@ -2981,7 +2981,7 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 	}
 
 	if canValidateOptionalComponents {
-		if err := validateOptionalComponentsAgainstPackage(requestedOptionals, pkgLayout.PackageDefinition.AsV1alpha1().Components); err != nil {
+		if err := validateOptionalComponentsAgainstPackage(requestedOptionals, pkgLayout.AsV1alpha1().Components); err != nil {
 			return packagePlanCheckResult{OptComponentsErr: err}
 		}
 	}
