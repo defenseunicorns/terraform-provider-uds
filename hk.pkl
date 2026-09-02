@@ -30,6 +30,11 @@ local linters = new Mapping<String, Step> {
         check = "golangci-lint run ./..."
         glob = List("**/*.go", "go.mod", "go.sum")
     }
+    ["go-mod-tidy"] {
+        check = "go mod tidy -diff"
+        fix = "go mod tidy"
+        glob = List("**/*.go", "go.mod", "go.sum")
+    }
     ["license-check"] {
         check = "uds run lint:license"
         fix = "uds run lint:fix-license"
