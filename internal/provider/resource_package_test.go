@@ -3820,8 +3820,8 @@ func TestPackageResource_UpdateSuccessfulDeploymentRefreshesState(t *testing.T) 
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
 	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
-	stateModel.ID = types.StringValue(packageLayout.Pkg.Metadata.Name)
-	stateModel.Name = types.StringValue(packageLayout.Pkg.Metadata.Name)
+	stateModel.ID = types.StringValue(packageLayout.AsV1alpha1().Metadata.Name)
+	stateModel.Name = types.StringValue(packageLayout.AsV1alpha1().Metadata.Name)
 	planModel := stateModel
 	WithNamespace("updated")(&planModel)
 	// Conflict with the cluster values above to prove known planned values win.
@@ -3850,8 +3850,8 @@ func TestPackageResource_UpdateFailedDeploymentDoesNotReplaceStateOrRemove(t *te
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
 	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
-	stateModel.ID = types.StringValue(packageLayout.Pkg.Metadata.Name)
-	stateModel.Name = types.StringValue(packageLayout.Pkg.Metadata.Name)
+	stateModel.ID = types.StringValue(packageLayout.AsV1alpha1().Metadata.Name)
+	stateModel.Name = types.StringValue(packageLayout.AsV1alpha1().Metadata.Name)
 	planModel := stateModel
 	WithNamespace("updated")(&planModel)
 

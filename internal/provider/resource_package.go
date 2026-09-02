@@ -41,6 +41,7 @@ import (
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 
+	zarfAPI "github.com/zarf-dev/zarf/src/api"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	"github.com/zarf-dev/zarf/src/pkg/ocischeme"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
@@ -934,7 +935,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		Cluster:           c,
 		Timeout:           zarfTimeout,
 	}
-	if err := r.packager.Remove(timeoutCtx, identity.Package.Data, removeOpt); err != nil {
+	if err := r.packager.Remove(timeoutCtx, zarfAPI.NewPackageDefinitionFromV1alpha1(identity.Package.Data), removeOpt); err != nil {
 		resp.Diagnostics.AddError(
 			"Error removing package",
 			lifecycleErrorDetail(timeoutCtx, "delete", err),
@@ -1365,8 +1366,9 @@ func (r *PackageResource) verifyCanonicalPackageName(ctx context.Context, model 
 	if err != nil {
 		return &canonicalSourceError{}
 	}
-	if pkgLayout.Pkg.Metadata.Name != identity.Name {
-		return &canonicalNameMismatchError{deployedName: identity.Name, canonicalName: pkgLayout.Pkg.Metadata.Name, namespace: identity.Namespace}
+	canonicalName := pkgLayout.AsV1alpha1().Metadata.Name
+	if canonicalName != identity.Name {
+		return &canonicalNameMismatchError{deployedName: identity.Name, canonicalName: canonicalName, namespace: identity.Namespace}
 	}
 	return nil
 }
@@ -3099,10 +3101,10 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 			return packagePlanCheckResult{ValuesErr: err}
 		}
 	}
-	if priorIdentity != nil && pkgLayout.Pkg.Metadata.Name != priorIdentity.Name {
+	if priorIdentity != nil && pkgLayout.AsV1alpha1().Metadata.Name != priorIdentity.Name {
 		return packagePlanCheckResult{CanonicalNameErr: &canonicalNameMismatchError{
 			deployedName:  priorIdentity.Name,
-			canonicalName: pkgLayout.Pkg.Metadata.Name,
+			canonicalName: pkgLayout.AsV1alpha1().Metadata.Name,
 			namespace:     priorIdentity.Namespace,
 		}}
 	}
