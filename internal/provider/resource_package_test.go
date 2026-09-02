@@ -3476,6 +3476,92 @@ func TestComputePackageID(t *testing.T) {
 	}
 }
 
+func TestValidatePriorStateIdentity(t *testing.T) {
+	consistent := NewTestPackageResourceModel(WithDeployedState(), WithNamespace("team-a"))
+	consistent.ID = types.StringValue("team-a:test-pkg")
+
+	tests := []struct {
+		name     string
+		model    PackageResourceModel
+		complete bool
+		wantErr  bool
+	}{
+		{name: "consistent namespace qualified identity", model: consistent, complete: true},
+		{name: "stale computed name", model: func() PackageResourceModel { m := consistent; m.Name = types.StringValue("old-name"); return m }(), wantErr: true},
+		{name: "stale namespace", model: func() PackageResourceModel { m := consistent; m.Namespace = types.StringValue("other"); return m }(), wantErr: true},
+		{name: "incomplete imported state defers validation", model: func() PackageResourceModel { m := consistent; m.Name = types.StringNull(); return m }()},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			identity, complete, err := validatePriorStateIdentity(tc.model)
+			assert.Equal(t, tc.complete, complete)
+			assert.Equal(t, tc.wantErr, err != nil)
+			if tc.complete {
+				assert.Equal(t, "team-a:test-pkg", identity.ID)
+				assert.Equal(t, "team-a", identity.Namespace)
+				assert.Equal(t, "test-pkg", identity.Name)
+			}
+			if tc.wantErr {
+				var stateErr *stateIdentityError
+				assert.ErrorAs(t, err, &stateErr)
+			}
+		})
+	}
+}
+
+func TestLookupVerifiedDeployedPackage(t *testing.T) {
+	canonical := zarfState.DeployedPackage{
+		Name:              "test-pkg",
+		NamespaceOverride: "team-a",
+		Data:              v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{Name: "test-pkg"}},
+	}
+
+	tests := []struct {
+		name    string
+		id      string
+		pkg     zarfState.DeployedPackage
+		present bool
+		wantErr bool
+	}{
+		{name: "canonical identity", id: "team-a:test-pkg", pkg: canonical, present: true},
+		{name: "returned name mismatch", id: "team-a:test-pkg", pkg: func() zarfState.DeployedPackage { p := canonical; p.Name = "other"; return p }(), present: true, wantErr: true},
+		{name: "returned namespace mismatch", id: "team-a:test-pkg", pkg: func() zarfState.DeployedPackage { p := canonical; p.NamespaceOverride = "other"; return p }(), present: true, wantErr: true},
+		{name: "returned metadata mismatch", id: "team-a:test-pkg", pkg: func() zarfState.DeployedPackage { p := canonical; p.Data.Metadata.Name = "other"; return p }(), present: true, wantErr: true},
+		{name: "not found", id: "team-a:test-pkg"},
+		{name: "malformed ID", id: "a:b:c", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clientset := fake.NewSimpleClientset()
+			if tc.present {
+				secret := newPackageStateSecret(t, tc.pkg)
+				// Zarf locates state by the requested identity's Secret name; corrupt
+				// the serialized payload without changing that lookup key.
+				secret.Name = canonical.GetSecretName()
+				_, err := clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(context.Background(), secret, metav1.CreateOptions{})
+				require.NoError(t, err)
+			}
+			cluster := &MockCluster{}
+			cluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{Clientset: clientset}, nil).Once()
+			resource := NewPackageResource(nil, nil, nil, cluster).(*PackageResource)
+
+			identity, found, err := resource.lookupVerifiedDeployedPackage(context.Background(), tc.id)
+			assert.Equal(t, tc.present && !tc.wantErr, found)
+			assert.Equal(t, tc.wantErr, err != nil)
+			if found {
+				assert.Equal(t, tc.id, identity.ID)
+				assert.Equal(t, "test-pkg", identity.Name)
+			}
+			if tc.wantErr {
+				var remoteErr *remoteIdentityError
+				assert.ErrorAs(t, err, &remoteErr)
+			}
+		})
+	}
+}
+
 func TestGetOptionalComponentsToRemove(t *testing.T) {
 	tests := []struct {
 		name                  string
