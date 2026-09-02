@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.5.2](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.5.1...v0.5.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* preserve state after failed package deployments ([#325](https://github.com/defenseunicorns/terraform-provider-uds/issues/325)) ([b849d59](https://github.com/defenseunicorns/terraform-provider-uds/commit/b849d59548b33ae78734b1933a3bc0245aaddc42))
+
+
+### Miscellaneous
+
+* add go mod tidy check to hk hooks ([#335](https://github.com/defenseunicorns/terraform-provider-uds/issues/335)) ([2adf722](https://github.com/defenseunicorns/terraform-provider-uds/commit/2adf7229608ef008e5dc5db629cfff5d68803c3d))
+* add TF_CLI_CONFIG_FILE to mise environment vars ([#316](https://github.com/defenseunicorns/terraform-provider-uds/issues/316)) ([76dd4a0](https://github.com/defenseunicorns/terraform-provider-uds/commit/76dd4a05a551333412cb476117acef9468274a29))
+* **deps:** update application-deps ([bc2e5c6](https://github.com/defenseunicorns/terraform-provider-uds/commit/bc2e5c628ff453ba9527b0d392d3e149fadd0003))
+* **deps:** update application-deps ([be4706d](https://github.com/defenseunicorns/terraform-provider-uds/commit/be4706d63c21918bc03d90660731ab48744c6bdc))
+* **deps:** update support-deps ([#322](https://github.com/defenseunicorns/terraform-provider-uds/issues/322)) ([a82aac1](https://github.com/defenseunicorns/terraform-provider-uds/commit/a82aac1c8d6b20920cdcb7a837d9e54d5a4718e6))
+* **deps:** update support-deps ([#327](https://github.com/defenseunicorns/terraform-provider-uds/issues/327)) ([d35d26e](https://github.com/defenseunicorns/terraform-provider-uds/commit/d35d26e3e260ce8dfef22b015fa19f630ec885c0))
+* **deps:** update zarf to v0.84.0 ([23ebbde](https://github.com/defenseunicorns/terraform-provider-uds/commit/23ebbde64449b3a90d31676c94bb419aad04dd3c))
+* go mod tidy designates direct require ([#334](https://github.com/defenseunicorns/terraform-provider-uds/issues/334)) ([5cf3f54](https://github.com/defenseunicorns/terraform-provider-uds/commit/5cf3f5432a7021f20deb11401d70ec5d776b698b))
+* harden release workflows ([#330](https://github.com/defenseunicorns/terraform-provider-uds/issues/330)) ([a56afbf](https://github.com/defenseunicorns/terraform-provider-uds/commit/a56afbfa03cc9f5c339325970e1e5c8d25bf0773))
+* remove dead values validation function ([#328](https://github.com/defenseunicorns/terraform-provider-uds/issues/328)) ([607fe2e](https://github.com/defenseunicorns/terraform-provider-uds/commit/607fe2e7dc3dda6cc2b13108903899594b6454f9))
+* use chore for all renovate commits ([#337](https://github.com/defenseunicorns/terraform-provider-uds/issues/337)) ([c4b7bfa](https://github.com/defenseunicorns/terraform-provider-uds/commit/c4b7bfa7e3a5f86331c7ed9b0906eeb1b79ce0ec))
+
 ## [0.5.1](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.5.0...v0.5.1) (2026-08-10)
 
 
