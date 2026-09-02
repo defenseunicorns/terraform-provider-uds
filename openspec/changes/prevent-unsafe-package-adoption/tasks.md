@@ -1,6 +1,6 @@
 ## 1. Identity Validation Foundation
 
-- [ ] 1.1 Add a deployed-package identity representation and typed errors that distinguish absence, remote identity corruption, prior-state inconsistency, and canonical-name mismatch; verify focused unit tests assert each error classification and diagnostic context.
+- [x] 1.1 Add a deployed-package identity representation and typed errors that distinguish absence, remote identity corruption, prior-state inconsistency, and canonical-name mismatch; verify focused unit tests assert each error classification and diagnostic context.
 - [ ] 1.2 Implement remote identity lookup that parses `name` and `namespace:name`, retrieves the exact Zarf package, and verifies returned name, namespace override, and `Data.Metadata.Name`; verify unit tests cover canonical identity, each mismatch dimension, malformed IDs, not-found responses, and cluster errors.
 - [ ] 1.3 Implement prior-state identity validation for known ID, computed name, and namespace values without cluster access; verify unit tests cover consistent state, stale name, stale namespace, null or incomplete imported state, and namespace-qualified IDs without constructing impossible unknown persisted state.
 - [ ] 1.4 Implement canonical source-name comparison using metadata-only package loading and allowlisted diagnostic context; verify unit tests cover matching names, aliases, source/load failures, architecture and transport failures, package-layout cleanup, and sentinel secrets absent from surfaced diagnostics.

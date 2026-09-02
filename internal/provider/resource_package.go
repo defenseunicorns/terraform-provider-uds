@@ -73,6 +73,12 @@ type remoteIdentityError struct{ reason string }
 
 func (e *remoteIdentityError) Error() string { return e.reason }
 
+// packageAbsentError marks a confirmed remote absence separately from a lookup
+// failure so lifecycle callers can preserve their distinct state semantics.
+type packageAbsentError struct{}
+
+func (e *packageAbsentError) Error() string { return "deployed package was not found" }
+
 type stateIdentityError struct{ reason string }
 
 func (e *stateIdentityError) Error() string { return e.reason }
@@ -729,15 +735,9 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 	timeoutCtx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 
-	identity, found, err := r.lookupVerifiedDeployedPackage(timeoutCtx, data.ID.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Deployed package identity could not be verified",
-			identityErrorDetail(err),
-		)
-		return
-	}
-	if !found {
+	identity, err := r.lookupVerifiedDeployedPackage(timeoutCtx, data.ID.ValueString())
+	var absentErr *packageAbsentError
+	if errors.As(err, &absentErr) {
 		resp.Diagnostics.AddWarning(
 			"Deployed package not found",
 			"Could not find the deployed package identified by state - removing resource",
@@ -745,7 +745,13 @@ func (r *PackageResource) Read(ctx context.Context, req resource.ReadRequest, re
 		resp.State.RemoveResource(timeoutCtx)
 		return
 	}
-
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Deployed package identity could not be verified",
+			identityErrorDetail(err),
+		)
+		return
+	}
 	resp.Diagnostics.Append(populateStateFromDeployedPackage(&data, identity.Package)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -813,13 +819,14 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	timeoutCtx, cancel := context.WithTimeout(operationCtx, updateTimeout)
 	defer cancel()
 
-	identity, found, err := r.lookupVerifiedDeployedPackage(timeoutCtx, oldPlan.ID.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Deployed package identity could not be verified", identityErrorDetail(err))
+	identity, err := r.lookupVerifiedDeployedPackage(timeoutCtx, oldPlan.ID.ValueString())
+	var absentErr *packageAbsentError
+	if errors.As(err, &absentErr) {
+		resp.Diagnostics.AddError("Deployed package not found", "The package recorded in state no longer exists. Update is blocked to avoid deploying a different package identity.")
 		return
 	}
-	if !found {
-		resp.Diagnostics.AddError("Deployed package not found", "The package recorded in state no longer exists. Update is blocked to avoid deploying a different package identity.")
+	if err != nil {
+		resp.Diagnostics.AddError("Deployed package identity could not be verified", identityErrorDetail(err))
 		return
 	}
 	if err := r.verifyCanonicalPackageName(timeoutCtx, plan, identity); err != nil {
@@ -904,16 +911,16 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 	defer cancel()
 	lookupCtx, lookupCancel := withClusterTimeout(timeoutCtx)
 	defer lookupCancel()
-	identity, found, err := r.lookupVerifiedDeployedPackage(lookupCtx, data.ID.ValueString())
+	identity, err := r.lookupVerifiedDeployedPackage(lookupCtx, data.ID.ValueString())
+	var absentErr *packageAbsentError
+	if errors.As(err, &absentErr) {
+		operationCompleted = true
+		return
+	}
 	if err != nil {
 		resp.Diagnostics.AddError("Deployed package identity could not be verified", identityErrorDetail(err))
 		return
 	}
-	if !found {
-		operationCompleted = true
-		return
-	}
-
 	clusterCtx, clusterCancel := withClusterTimeout(timeoutCtx)
 	defer clusterCancel()
 	c, err := r.cluster.NewWithWait(clusterCtx)
@@ -1329,22 +1336,22 @@ func (r *PackageResource) getDeployedPackage(ctx context.Context, name string, n
 	return *pkg, true, nil
 }
 
-func (r *PackageResource) lookupVerifiedDeployedPackage(ctx context.Context, id string) (deployedPackageIdentity, bool, error) {
+func (r *PackageResource) lookupVerifiedDeployedPackage(ctx context.Context, id string) (deployedPackageIdentity, error) {
 	namespace, name, err := parsePackageID(id)
 	if err != nil {
-		return deployedPackageIdentity{}, false, &remoteIdentityError{reason: "resource state contains an invalid package ID"}
+		return deployedPackageIdentity{}, &remoteIdentityError{reason: "resource state contains an invalid package ID"}
 	}
 	pkg, found, err := r.getDeployedPackage(ctx, name, namespace)
 	if err != nil {
-		return deployedPackageIdentity{}, false, &remoteIdentityError{reason: "could not retrieve the deployed package from the cluster"}
+		return deployedPackageIdentity{}, &remoteIdentityError{reason: "could not retrieve the deployed package from the cluster"}
 	}
 	if !found {
-		return deployedPackageIdentity{}, false, nil
+		return deployedPackageIdentity{}, &packageAbsentError{}
 	}
 	if pkg.Name != name || pkg.NamespaceOverride != namespace || pkg.Data.Metadata.Name != pkg.Name {
-		return deployedPackageIdentity{}, false, &remoteIdentityError{reason: "the deployed package returned by the cluster does not match the identity recorded in state"}
+		return deployedPackageIdentity{}, &remoteIdentityError{reason: "the deployed package returned by the cluster does not match the identity recorded in state"}
 	}
-	return deployedPackageIdentity{ID: id, Name: name, Namespace: namespace, Package: pkg}, true, nil
+	return deployedPackageIdentity{ID: id, Name: name, Namespace: namespace, Package: pkg}, nil
 }
 
 func validatePriorStateIdentity(data PackageResourceModel) (deployedPackageIdentity, bool, error) {
@@ -1651,12 +1658,13 @@ func (r *PackageResource) refreshStateFromCluster(ctx context.Context, data Pack
 	if data.ID.IsNull() || data.ID.IsUnknown() {
 		id = computePackageID(data.Namespace.ValueString(), data.Name.ValueString())
 	}
-	identity, found, err := r.lookupVerifiedDeployedPackage(ctx, id)
+	identity, err := r.lookupVerifiedDeployedPackage(ctx, id)
+	var absentErr *packageAbsentError
+	if errors.As(err, &absentErr) {
+		return data, false, nil
+	}
 	if err != nil {
 		return data, false, err
-	}
-	if !found {
-		return data, false, nil
 	}
 
 	if diags := populateStateFromDeployedPackage(&data, identity.Package); diags.HasError() {

@@ -3584,16 +3584,19 @@ func TestLookupVerifiedDeployedPackage(t *testing.T) {
 			cluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{Clientset: clientset}, nil).Once()
 			resource := NewPackageResource(nil, nil, nil, cluster).(*PackageResource)
 
-			identity, found, err := resource.lookupVerifiedDeployedPackage(context.Background(), tc.id)
-			assert.Equal(t, tc.present && !tc.wantErr, found)
-			assert.Equal(t, tc.wantErr, err != nil)
-			if found {
+			identity, err := resource.lookupVerifiedDeployedPackage(context.Background(), tc.id)
+			assert.Equal(t, tc.wantErr || !tc.present, err != nil)
+			if err == nil {
 				assert.Equal(t, tc.id, identity.ID)
 				assert.Equal(t, "test-pkg", identity.Name)
 			}
 			if tc.wantErr {
 				var remoteErr *remoteIdentityError
 				assert.ErrorAs(t, err, &remoteErr)
+			}
+			if !tc.present && !tc.wantErr {
+				var absentErr *packageAbsentError
+				assert.ErrorAs(t, err, &absentErr)
 			}
 		})
 	}
