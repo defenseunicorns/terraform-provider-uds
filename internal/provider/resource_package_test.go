@@ -174,7 +174,7 @@ func newFakeCluster() *zarfCluster.Cluster {
 // newLifecycleDeployedPackage builds cluster state from pkgLayout with an amd64
 // architecture and the supplied deployed components.
 func newLifecycleDeployedPackage(pkgLayout *layout.PackageLayout, components ...zarfState.DeployedComponent) zarfState.DeployedPackage {
-	data := pkgLayout.PackageDefinition.AsV1alpha1()
+	data := pkgLayout.AsV1alpha1()
 	data.Metadata.Architecture = "amd64"
 	return zarfState.DeployedPackage{
 		Name:               data.Metadata.Name,
@@ -1488,9 +1488,9 @@ func TestPackageResource_CreateSuccessfulDeploymentWithoutStateSecretRetainsFall
 	require.False(t, resp.Diagnostics.HasError(), "create diagnostics: %v", resp.Diagnostics)
 	state := requirePackageState(t, resp.State)
 	metadata := state.Metadata.Attributes()
-	assert.Equal(t, packageLayout.PackageDefinition.AsV1alpha1().Metadata.Name, metadata["name"].(types.String).ValueString())
-	assert.Equal(t, packageLayout.PackageDefinition.AsV1alpha1().Metadata.Description, metadata["description"].(types.String).ValueString())
-	assert.Equal(t, packageLayout.PackageDefinition.AsV1alpha1().Metadata.Version, metadata["version"].(types.String).ValueString())
+	assert.Equal(t, packageLayout.AsV1alpha1().Metadata.Name, metadata["name"].(types.String).ValueString())
+	assert.Equal(t, packageLayout.AsV1alpha1().Metadata.Description, metadata["description"].(types.String).ValueString())
+	assert.Equal(t, packageLayout.AsV1alpha1().Metadata.Version, metadata["version"].(types.String).ValueString())
 	assertPackageMetadata(t, state.Metadata, "Succeeded", 0, packageLayout.Digest())
 }
 
