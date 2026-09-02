@@ -3599,6 +3599,37 @@ func TestLookupVerifiedDeployedPackage(t *testing.T) {
 	}
 }
 
+func TestCanonicalIdentityDiagnosticsDoNotExposeDependencyErrors(t *testing.T) {
+	const sentinelSecret = "source-token-do-not-disclose"
+	packager := &MockPackager{}
+	packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).
+		Return((*layout.PackageLayout)(nil), errors.New(sentinelSecret)).Once()
+	resource := NewPackageResource(nil, packager, nil, nil).(*PackageResource)
+	identity := deployedPackageIdentity{Name: "deployed-name", Namespace: "team-a"}
+
+	err := resource.verifyCanonicalPackageName(context.Background(), NewTestPackageResourceModel(), identity)
+
+	var sourceErr *canonicalSourceError
+	require.ErrorAs(t, err, &sourceErr)
+	detail := canonicalIdentityDetail(err)
+	assert.Contains(t, detail, "No package mutation was performed")
+	assert.NotContains(t, detail, sentinelSecret)
+	packager.AssertExpectations(t)
+}
+
+func TestCanonicalMismatchDiagnosticIsActionable(t *testing.T) {
+	err := &canonicalNameMismatchError{deployedName: "deployed-name", canonicalName: "canonical-name", namespace: "team-a"}
+
+	detail := canonicalIdentityDetail(err)
+
+	assert.Equal(t, "Cannot manage package with non-canonical deployment name", canonicalIdentitySummary(err))
+	assert.Contains(t, detail, "deployed-name")
+	assert.Contains(t, detail, "canonical-name")
+	assert.Contains(t, detail, "team-a")
+	assert.Contains(t, detail, "tofu state rm")
+	assert.NotContains(t, detail, "configure the name")
+}
+
 func TestGetOptionalComponentsToRemove(t *testing.T) {
 	tests := []struct {
 		name                  string
