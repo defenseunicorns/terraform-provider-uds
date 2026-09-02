@@ -3526,6 +3526,7 @@ func TestValidatePriorStateIdentity(t *testing.T) {
 		{name: "consistent namespace qualified identity", model: consistent, complete: true},
 		{name: "stale computed name", model: func() PackageResourceModel { m := consistent; m.Name = types.StringValue("old-name"); return m }(), wantErr: true},
 		{name: "stale namespace", model: func() PackageResourceModel { m := consistent; m.Namespace = types.StringValue("other"); return m }(), wantErr: true},
+		{name: "null import ID defers validation", model: func() PackageResourceModel { m := consistent; m.ID = types.StringNull(); return m }()},
 		{name: "incomplete imported state defers validation", model: func() PackageResourceModel { m := consistent; m.Name = types.StringNull(); return m }()},
 	}
 
@@ -3555,11 +3556,12 @@ func TestLookupVerifiedDeployedPackage(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		id      string
-		pkg     zarfState.DeployedPackage
-		present bool
-		wantErr bool
+		name       string
+		id         string
+		pkg        zarfState.DeployedPackage
+		present    bool
+		clusterErr error
+		wantErr    bool
 	}{
 		{name: "canonical identity", id: "team-a:test-pkg", pkg: canonical, present: true},
 		{name: "returned name mismatch", id: "team-a:test-pkg", pkg: func() zarfState.DeployedPackage { p := canonical; p.Name = "other"; return p }(), present: true, wantErr: true},
@@ -3567,6 +3569,7 @@ func TestLookupVerifiedDeployedPackage(t *testing.T) {
 		{name: "returned metadata mismatch", id: "team-a:test-pkg", pkg: func() zarfState.DeployedPackage { p := canonical; p.Data.Metadata.Name = "other"; return p }(), present: true, wantErr: true},
 		{name: "not found", id: "team-a:test-pkg"},
 		{name: "malformed ID", id: "a:b:c", wantErr: true},
+		{name: "cluster error", id: "team-a:test-pkg", clusterErr: errors.New("sentinel-cluster-error"), wantErr: true},
 	}
 
 	for _, tc := range tests {
@@ -3581,7 +3584,11 @@ func TestLookupVerifiedDeployedPackage(t *testing.T) {
 				require.NoError(t, err)
 			}
 			cluster := &MockCluster{}
-			cluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{Clientset: clientset}, nil).Once()
+			if tc.clusterErr != nil {
+				cluster.On("NewWithWait", mock.Anything).Return((*zarfCluster.Cluster)(nil), tc.clusterErr).Once()
+			} else {
+				cluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{Clientset: clientset}, nil).Once()
+			}
 			resource := NewPackageResource(nil, nil, nil, cluster).(*PackageResource)
 
 			identity, err := resource.lookupVerifiedDeployedPackage(context.Background(), tc.id)
