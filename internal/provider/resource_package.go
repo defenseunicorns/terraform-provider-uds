@@ -834,7 +834,7 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	plan, err = r.deployAsNewOrUpdate(timeoutCtx, plan, oldPlan)
+	plan, err = r.deployAsNewOrUpdate(timeoutCtx, plan, oldPlan, identity)
 	if !plan.Name.IsNull() && !plan.Name.IsUnknown() {
 		operationCtx = logging.WithPackageContext(operationCtx, "update", plan.Name.ValueString(), plan.Namespace.ValueString())
 	}
@@ -1441,7 +1441,14 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	return r.upsertLoadedPackage(ctx, plan, pkgLayout)
 }
 
-func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel) (PackageResourceModel, error) {
+func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel, identity deployedPackageIdentity) (PackageResourceModel, error) {
+	namespace, name, err := parsePackageID(identity.ID)
+	if err != nil || identity.Name != name || identity.Namespace != namespace ||
+		identity.Package.Name != identity.Name || identity.Package.NamespaceOverride != identity.Namespace ||
+		identity.Package.Data.Metadata.Name != identity.Name {
+		return plan, &remoteIdentityError{reason: "verified deployed package identity is missing or inconsistent at the update mutation boundary"}
+	}
+
 	// Generate list of components to remove before the update.
 	// Combines legacy component-block removals with optional_components removals.
 	// Removal happens before upsert because removing a required component removes the entire package.
