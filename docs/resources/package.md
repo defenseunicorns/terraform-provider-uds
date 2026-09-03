@@ -10,7 +10,7 @@ description: |-
 
 Deploys and manages a UDS package.
 
-~> **Warning:** This provider is an alpha release. Its interfaces and behavior may change between releases, including breaking changes.
+~> This provider is an alpha release. Its interfaces and behavior may change between releases, including breaking changes.
 
 ## Example Usage
 

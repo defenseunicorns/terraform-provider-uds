@@ -9,7 +9,7 @@ description: |-
 
 Manage [UDS](https://docs.defenseunicorns.com/) resources with OpenTofu.
 
-~> **Warning:** This provider is an alpha release. Its interfaces and behavior may change between releases, including breaking changes.
+~> This provider is an alpha release. Its interfaces and behavior may change between releases, including breaking changes.
 
 ## Example Usage
 
