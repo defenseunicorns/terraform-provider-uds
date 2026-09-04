@@ -20,7 +20,7 @@ The provider MUST treat the resource ID as a lookup key and MUST verify that the
 - **THEN** the provider removes the resource from state according to existing missing-resource behavior
 
 ### Requirement: Canonical identity required for source-derived management
-Before any update operation can remove components or deploy package content, the provider MUST verify that the existing deployed package name equals the configured source package's canonical `metadata.name`. A mismatch MUST block component removal, deployment, state ID rewriting, and provider-managed migration or cleanup.
+Before any update operation can remove components or deploy package content, the provider MUST verify that the existing deployed package name equals the configured source package's canonical `metadata.name`. When source package data is reloaded during an update, the provider MUST repeat this comparison against the package instance used for each removal or deployment before invoking that mutation. A mismatch MUST block component removal, deployment, state ID rewriting, and provider-managed migration or cleanup.
 
 #### Scenario: Canonical existing package is updated
 - **WHEN** the freshly verified deployed name equals the configured source package's canonical name
@@ -33,6 +33,10 @@ Before any update operation can remove components or deploy package content, the
 #### Scenario: Source identity cannot be established
 - **WHEN** source, architecture, transport, or package metadata needed to determine the canonical name is unavailable during a remote-mutating update
 - **THEN** the provider returns a blocking diagnostic before any package mutation
+
+#### Scenario: Source name changes between update loads
+- **WHEN** a source package loaded for component removal or deployment has a canonical name different from the freshly verified deployed identity, even though an earlier source inspection matched
+- **THEN** the provider blocks that mutation without invoking Remove or Deploy and does not rewrite resource identity
 
 #### Scenario: Prior state becomes stale before update
 - **WHEN** prior state identifies an existing package but the fresh pre-mutation lookup cannot find it, including when it was removed after refresh or refresh was skipped

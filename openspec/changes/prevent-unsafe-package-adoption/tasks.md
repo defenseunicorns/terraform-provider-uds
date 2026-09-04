@@ -22,6 +22,7 @@
 - [x] 4.1 Freshly verify remote identity and canonical source name under the update timeout after state-only detection and before `deployAsNewOrUpdate`; verify tests assert aliases, missing packages, inconsistent metadata, and source failures cannot call component filtering, Remove, or Deploy and leave response state untouched so prior state is retained.
 - [x] 4.2 Pass the verified existing identity into the update mutation boundary and reject missing or mismatched identity before component-removal calculation or upsert; verify focused tests prove both legacy and optional-component removal paths remain unreachable on validation failure.
 - [x] 4.3 Preserve canonical Create and Update behavior, computed state identity, shared timeout budgets, and state-only timeout updates; verify existing lifecycle tests plus new canonical and timeout-only regression tests pass without extra cluster or source calls.
+- [x] 4.4 Revalidate the canonical name of every source package instance used by component removal or deployment against the verified existing identity; verify a name change between loads cannot call Remove or Deploy or rewrite state identity.
 
 ## 5. Exact Delete
 

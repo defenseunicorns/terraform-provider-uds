@@ -21,6 +21,7 @@ Standalone import cannot compare against source because the framework supplies o
 **Non-Goals:**
 
 - Refactor the full deploy pipeline or eliminate the second source load during update.
+- Pin one immutable source digest or guarantee same-name package-content consistency across multiple update loads.
 - Add a configurable package name, alias persistence, Zarf takeover, or a migration action.
 - Infer whether two package identities share Helm or Kubernetes resources.
 - Define general replacement semantics when a package artifact changes canonical `metadata.name`.
@@ -63,9 +64,9 @@ Loading source independently just for name validation was rejected because it du
 
 ### Put the authoritative guard after the state-only branch and before all mutations
 
-`Update` will retain the existing early `isStateOnlyUpdate` return. Every other update will, under the shared update timeout, freshly verify the existing package using prior-state ID and then compare it with metadata loaded from configured source before calculating or executing component removal or deployment.
+`Update` will retain the existing early `isStateOnlyUpdate` return. Every other update will, under the shared update timeout, freshly verify the existing package using prior-state ID and then compare it with metadata loaded from configured source before calculating or executing component removal or deployment. If component removal or deployment reloads source package data, the canonical name from each mutation-bearing package definition or layout will be compared with the same verified deployed identity immediately after loading and before that package can reach `Remove` or `Deploy`.
 
-The verified identity will be passed into the update path, and the update path will reject a missing or inconsistent identity before `removeComponents` or `upsert`. This makes the mutation boundary explicit and prevents a later refactor from accidentally moving component removal ahead of validation. The initial implementation may load source metadata once for the guard and again for deployment to avoid broadening ownership and cleanup of package layouts across the update pipeline.
+The verified identity will be passed into the update path, and the update path will reject a missing or inconsistent identity before `removeComponents` or `upsert`. It will also pass the verified deployed name to those source-derived mutation paths so every later load can repeat the canonical comparison before removal, assignment to computed identity, or deployment. This makes the mutation boundary explicit and prevents a later refactor from accidentally moving component removal ahead of validation. The initial implementation may retain separate metadata, removal, and deployment loads to avoid broadening ownership and cleanup of package layouts across the update pipeline.
 
 Relying only on `ModifyPlan` was rejected because plan validation can be disabled, deferred by unknowns, bypassed with stale state, or separated in time from apply. Mutating the loaded source package name to preserve aliases was rejected because it adopts UDS CLI alias semantics and does not guarantee independent Helm or Kubernetes resources.
 
@@ -98,7 +99,9 @@ Guidance will remain deliberately high-level: users must investigate package-spe
 - [Plan-time source access can fail before apply] -> Respect `validate_packages_on_plan`; when enabled, use the existing metadata-only load and provide a source-scoped diagnostic, while Delete and state-only updates remain independent.
 - [Standalone import can leave provisional Terraform state] -> Keep import read-only, block later mutation, and document `tofu state rm` before external migration.
 - [A package can change between refresh and apply] -> Repeat remote and canonical verification immediately before any remote-mutating update or delete.
-- [Metadata may be loaded twice during update] -> Accept temporary duplicate I/O to keep the guard small and auditable; both loads share the lifecycle timeout and can be consolidated later without changing behavior.
+- [A source package name can change between update loads] -> Revalidate the canonical name from each package instance used for removal or deployment and block that mutation when it differs from the verified deployed name.
+- [Same-name package content can change between update loads] -> Keep immutable digest pinning and source snapshot consistency outside this adoption-safety change; consolidate or pin update loads in follow-on work.
+- [Package metadata may be loaded multiple times during update] -> Accept temporary duplicate I/O to keep the guard small and auditable; all loads share the lifecycle timeout and can be consolidated in follow-on work.
 - [Stricter validation breaks management of existing aliases] -> Treat this as an intentional safety break, provide actionable diagnostics and migration guidance, and keep exact Delete available.
 - [External takeover can still damage shared resources] -> Do not automate or prescribe it in this change; state the principal hazards and require package-specific investigation, backups, and verification.
 - [String matching for Zarf not-found errors is fragile] -> Preserve existing absence detection initially and cover it with tests; improve upstream error typing separately if available.

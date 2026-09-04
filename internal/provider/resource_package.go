@@ -840,7 +840,10 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	}
 	if err != nil {
 		var optErr *optionalComponentsValidationError
-		if errors.As(err, &optErr) {
+		var canonicalErr *canonicalNameMismatchError
+		if errors.As(err, &canonicalErr) {
+			resp.Diagnostics.AddAttributeError(path.Root("source"), canonicalIdentitySummary(err), canonicalIdentityDetail(err))
+		} else if errors.As(err, &optErr) {
 			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", optErr.Error())
 		} else {
 			resp.Diagnostics.AddError(
@@ -1220,7 +1223,7 @@ func getEffectiveSignatureVerification(ctx context.Context, model PackageResourc
 	return sig.Verify.ValueBool()
 }
 
-func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string) error {
+func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string, identity deployedPackageIdentity) error {
 	if len(componentsToRemove) == 0 {
 		return nil
 	}
@@ -1256,6 +1259,9 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	if err != nil {
 		return fmt.Errorf("could not load package: %w", err)
 	}
+	if err := verifyCanonicalName(pkg.AsV1alpha1().Metadata.Name, identity); err != nil {
+		return err
+	}
 
 	// Check if any of the components provided are 'required' and remove them from the list of components we are removing
 	// NOTE: Just because a component block is removed from the resource spec doesn't mean it wasn't deployed. Zarf components that are marked as 'required' should not be removed
@@ -1287,6 +1293,9 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 		pkg, err = r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
 		if err != nil {
 			return fmt.Errorf("could not load package: %w", err)
+		}
+		if err := verifyCanonicalName(pkg.AsV1alpha1().Metadata.Name, identity); err != nil {
+			return err
 		}
 	}
 	for _, component := range newComponentsToRemove {
@@ -1373,7 +1382,10 @@ func (r *PackageResource) verifyCanonicalPackageName(ctx context.Context, model 
 	if err != nil {
 		return &canonicalSourceError{}
 	}
-	canonicalName := pkgLayout.AsV1alpha1().Metadata.Name
+	return verifyCanonicalName(pkgLayout.AsV1alpha1().Metadata.Name, identity)
+}
+
+func verifyCanonicalName(canonicalName string, identity deployedPackageIdentity) error {
 	if canonicalName != identity.Name {
 		return &canonicalNameMismatchError{deployedName: identity.Name, canonicalName: canonicalName, namespace: identity.Namespace}
 	}
@@ -1463,16 +1475,24 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 		}
 	}
 	if len(componentsToRemove) > 0 {
-		if err := r.removeComponents(ctx, plan, componentsToRemove); err != nil {
+		if err := r.removeComponents(ctx, plan, componentsToRemove, identity); err != nil {
 			return plan, err
 		}
 	}
 
-	return r.upsert(ctx, plan)
+	return r.upsertExisting(ctx, plan, identity)
 }
 
 // upsert loads and cleans up the package layout before deploying it.
 func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
+	return r.upsertWithIdentity(ctx, plan, nil)
+}
+
+func (r *PackageResource) upsertExisting(ctx context.Context, plan PackageResourceModel, identity deployedPackageIdentity) (PackageResourceModel, error) {
+	return r.upsertWithIdentity(ctx, plan, &identity)
+}
+
+func (r *PackageResource) upsertWithIdentity(ctx context.Context, plan PackageResourceModel, identity *deployedPackageIdentity) (PackageResourceModel, error) {
 	ctx = r.withOCISchemeNegotiator(ctx)
 	if plan.OptionalComponents.IsUnknown() {
 		return plan, fmt.Errorf("optional_components must be known before apply")
@@ -1481,13 +1501,19 @@ func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel)
 	if err != nil {
 		return plan, err
 	}
-	plan.Name = types.StringValue(pkgLayout.AsV1alpha1().Metadata.Name)
-	ctx = logging.WithPackageContext(ctx, "", plan.Name.ValueString(), plan.Namespace.ValueString())
 	defer func() {
 		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
 		}
 	}()
+	canonicalName := pkgLayout.AsV1alpha1().Metadata.Name
+	if identity != nil {
+		if err := verifyCanonicalName(canonicalName, *identity); err != nil {
+			return plan, err
+		}
+	}
+	plan.Name = types.StringValue(canonicalName)
+	ctx = logging.WithPackageContext(ctx, "", plan.Name.ValueString(), plan.Namespace.ValueString())
 	return r.upsertLoadedPackage(ctx, plan, pkgLayout)
 }
 
