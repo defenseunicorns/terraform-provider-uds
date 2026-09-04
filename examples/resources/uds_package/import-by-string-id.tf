@@ -17,7 +17,7 @@ import {
 }
 
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.84.0"
+  source = "oci://ghcr.io/zarf-dev/packages/init:v0.85.0"
 }
 
 # With a namespace override, the import ID is the namespace and package name:
