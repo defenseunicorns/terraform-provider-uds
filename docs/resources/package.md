@@ -146,13 +146,13 @@ resource "uds_package" "init_with_git_server" {
 All OCI tags are treated as mutable. During planning, the provider resolves the tag with the same registry credentials and transport settings used for package loading. A changed manifest digest produces an in-place redeployment even when the source string and package version have not changed. Apply loads the immutable digest selected by the plan and rejects a package whose content changed after planning.
 
 ```terraform
-resource "uds_package" "fleet" {
-  source = "oci://ghcr.io/defenseunicorns/uds-fleet-command/dev:dev"
+resource "uds_package" "dos_games" {
+  source = "oci://ghcr.io/zarf-dev/packages/dos-games:1.3.0"
 }
 
-output "fleet_source_digest" {
+output "dos_games_source_digest" {
   description = "Immutable package digest resolved from the mutable OCI tag."
-  value       = uds_package.fleet.source_digest
+  value       = uds_package.dos_games.source_digest
 }
 ```
 
