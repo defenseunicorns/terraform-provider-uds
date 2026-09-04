@@ -8,22 +8,32 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"text/template"
 
+	gcrRegistry "github.com/google/go-containerregistry/pkg/registry"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
+	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
+	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
+	zarfTypes "github.com/zarf-dev/zarf/src/types"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	"oras.land/oras-go/v2/registry"
 )
 
 const (
@@ -59,6 +69,7 @@ func buildZarfValuesFixture(t *testing.T) string {
 		"--features", "values=true",
 		"--output", outputDir,
 		"--skip-sbom",
+		"--no-progress",
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -91,6 +102,7 @@ func buildZarfLifecycleFixture(t *testing.T) string {
 		"--confirm",
 		"--output", outputDir,
 		"--skip-sbom",
+		"--no-progress",
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -123,6 +135,7 @@ func buildFailedPackageFixture(t *testing.T) string {
 		"--confirm",
 		"--output", outputDir,
 		"--skip-sbom",
+		"--no-progress",
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -134,6 +147,209 @@ func buildFailedPackageFixture(t *testing.T) string {
 		t.Fatalf("expected failed package at %s: %v\n%s", packagePath, err, output)
 	}
 	return packagePath
+}
+
+func buildMutableDigestFixture(t *testing.T, variant string) string {
+	t.Helper()
+
+	fixtureDir, err := filepath.Abs("fixtures/mutable_digest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageDir := filepath.Join(t.TempDir(), "mutable-digest")
+	if err := os.CopyFS(packageDir, os.DirFS(fixtureDir)); err != nil {
+		t.Fatalf("failed to copy mutable digest fixture: %v", err)
+	}
+	manifestPath := filepath.Join(packageDir, "manifests", "configmap.yaml")
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest = bytes.ReplaceAll(manifest, []byte("MUTABLE_VARIANT"), []byte(variant))
+	if err := os.WriteFile(manifestPath, manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outputDir := t.TempDir()
+	cmd := exec.Command(
+		"uds",
+		"zarf",
+		"package",
+		"create",
+		packageDir,
+		"--architecture", runtime.GOARCH,
+		"--confirm",
+		"--output", outputDir,
+		"--skip-sbom",
+		"--no-progress",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to build mutable digest package %q: %v\n%s", variant, err, output)
+	}
+
+	packagePath := filepath.Join(outputDir, fmt.Sprintf("zarf-package-mutable-digest-%s-0.1.0.tar.zst", runtime.GOARCH))
+	if _, err := os.Stat(packagePath); err != nil {
+		t.Fatalf("expected mutable digest package at %s: %v\n%s", packagePath, err, output)
+	}
+	return packagePath
+}
+
+func publishMutableDigestFixture(t *testing.T, packagePath, registryURL string) string {
+	t.Helper()
+	ctx := context.Background()
+	pkgLayout, err := zarfPackager.LoadPackage(ctx, packagePath, zarfPackager.LoadOptions{
+		Architecture:         runtime.GOARCH,
+		Filter:               filters.Empty(),
+		VerificationStrategy: layout.VerifyNever,
+	})
+	if err != nil {
+		t.Fatalf("failed to load mutable digest package: %v", err)
+	}
+	defer func() {
+		if err := pkgLayout.Cleanup(); err != nil {
+			t.Errorf("failed to clean up mutable digest package: %v", err)
+		}
+	}()
+
+	destination, err := registry.ParseReference(strings.TrimPrefix(registryURL, "http://") + "/packages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = zarfPackager.PublishPackage(ctx, pkgLayout, destination, zarfPackager.PublishPackageOptions{
+		Tag:           "dev",
+		RemoteOptions: zarfTypes.RemoteOptions{PlainHTTP: true},
+	})
+	if err != nil {
+		t.Fatalf("failed to publish mutable digest package: %v", err)
+	}
+	return pkgLayout.Digest()
+}
+
+func mutableDigestPackageConfig(registryURL string) string {
+	registryHost := strings.TrimPrefix(registryURL, "http://")
+	return fmt.Sprintf(`
+provider "uds" {
+  insecure_force_http = true
+}
+
+resource "uds_package" "init" {
+  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
+  architecture = "%s"
+  signature_verification = {
+    keyless = {
+      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
+    }
+  }
+}
+
+resource "uds_package" "mutable_digest" {
+  depends_on   = [uds_package.init]
+  source       = "oci://%s/packages/mutable-digest:dev"
+  architecture = "%s"
+
+  signature_verification = {
+    verify = false
+  }
+}
+`, initPackageVersion, runtime.GOARCH, registryHost, runtime.GOARCH)
+}
+
+func checkMutableDigestPackage(expectedDigest *string, expectedVariant string) resource.TestCheckFunc {
+	return func(state *terraform.State) error {
+		digest := *expectedDigest
+		resourceState := state.RootModule().Resources["uds_package.mutable_digest"]
+		if resourceState == nil || resourceState.Primary == nil {
+			return fmt.Errorf("expected mutable digest package state")
+		}
+		if actual := resourceState.Primary.Attributes["source_digest"]; actual != digest {
+			return fmt.Errorf("expected source_digest %q, got %q", digest, actual)
+		}
+		if actual := resourceState.Primary.Attributes["metadata.digest"]; actual != digest {
+			return fmt.Errorf("expected metadata.digest %q, got %q", digest, actual)
+		}
+
+		clientset, err := acceptanceKubernetesClient()
+		if err != nil {
+			return err
+		}
+		deployedPackageRef := zarfState.DeployedPackage{Name: "mutable-digest"}
+		secret, err := clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Get(context.Background(), deployedPackageRef.GetSecretName(), metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to get mutable digest package state secret: %w", err)
+		}
+		var deployedPackage zarfState.DeployedPackage
+		if err := json.Unmarshal(secret.Data["data"], &deployedPackage); err != nil {
+			return fmt.Errorf("failed to decode mutable digest package state: %w", err)
+		}
+		if deployedPackage.Digest != digest {
+			return fmt.Errorf("expected deployed digest %q, got %q", digest, deployedPackage.Digest)
+		}
+		configMap, err := clientset.CoreV1().ConfigMaps("default").Get(context.Background(), "mutable-digest", metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to get mutable digest fixture ConfigMap: %w", err)
+		}
+		if actual := configMap.Data["variant"]; actual != expectedVariant {
+			return fmt.Errorf("expected deployed variant %q, got %q", expectedVariant, actual)
+		}
+		return nil
+	}
+}
+
+func TestAccPackageResourceMutableOCITagDigest(t *testing.T) {
+	if os.Getenv(resource.EnvTfAcc) == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC=1")
+	}
+
+	registryServer := httptest.NewServer(gcrRegistry.New(gcrRegistry.Logger(log.New(io.Discard, "", 0))))
+	defer registryServer.Close()
+	packageA := buildMutableDigestFixture(t, "package-a")
+	packageB := buildMutableDigestFixture(t, "package-b")
+	digestA := publishMutableDigestFixture(t, packageA, registryServer.URL)
+	digestB := ""
+	config := mutableDigestPackageConfig(registryServer.URL)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("uds_package.mutable_digest", "metadata.version", "0.1.0"),
+					checkMutableDigestPackage(&digestA, "package-a"),
+				),
+			},
+			{
+				Config:             config,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: false,
+			},
+			{
+				PreConfig: func() {
+					digestB = publishMutableDigestFixture(t, packageB, registryServer.URL)
+					if digestB == digestA {
+						t.Fatalf("expected changed package content to produce a new digest, got %s", digestB)
+					}
+				},
+				Config:             config,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("uds_package.mutable_digest", "metadata.version", "0.1.0"),
+					checkMutableDigestPackage(&digestB, "package-b"),
+				),
+			},
+			{
+				Config:             config,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: false,
+			},
+		},
+	})
 }
 
 var testAccPackageResourceConfig = fmt.Sprintf(`
@@ -228,13 +444,12 @@ func TestAccPackageResourcePlanValidation(t *testing.T) {
 					`Additional property definitely_unexposed_by_nginx_values_test is not\s+allowed`,
 				),
 			},
-			// Disabling package validation on plan skips package-dependent checks.
-			// This unavailable source would otherwise fail package loading, signature
-			// verification and optional_components validation.
+			// Disabling package validation on plan skips package-dependent schema and
+			// component checks, but digest resolution remains lifecycle-critical.
 			{
-				Config:             testAccPackageResourcePlanValidationDisabledConfig,
-				PlanOnly:           true,
-				ExpectNonEmptyPlan: true,
+				Config:      testAccPackageResourcePlanValidationDisabledConfig,
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile(`Failed to resolve package source digest`),
 			},
 		},
 	})

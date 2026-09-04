@@ -48,6 +48,7 @@ import (
 	zarfValue "github.com/zarf-dev/zarf/src/pkg/value"
 	"github.com/zarf-dev/zarf/src/pkg/variables"
 	zarfZoci "github.com/zarf-dev/zarf/src/pkg/zoci"
+	zarfTypes "github.com/zarf-dev/zarf/src/types"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -161,6 +162,143 @@ func TestPackageResource_GetPackageSourceRemoteOptions(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, opts.PlainHTTP)
 	})
+}
+
+func TestPackageResource_ResolvePackageSourceDigest(t *testing.T) {
+	tests := []struct {
+		name           string
+		model          PackageResourceModel
+		providerConfig udsProviderConfig
+		wantSource     string
+		wantArch       string
+		wantRemote     zarfTypes.RemoteOptions
+		wantDigest     string
+	}{
+		{
+			name:       "tagged OCI source uses architecture and registry transport options",
+			model:      NewTestPackageResourceModel(WithArchitecture("arm64")),
+			wantSource: "oci://ghcr.io/defenseunicorns/packages/test:latest",
+			wantArch:   "arm64",
+			wantRemote: zarfTypes.RemoteOptions{InsecureSkipTLSVerify: true},
+			wantDigest: "sha256:oci",
+			providerConfig: udsProviderConfig{
+				InsecureSkipTLSVerification: true,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			mockPackager.On("PackageDigest", mock.Anything, tc.wantSource, mock.MatchedBy(func(opts zarfPackager.PackageDigestOptions) bool {
+				return opts.Architecture == tc.wantArch && opts.RemoteOptions == tc.wantRemote
+			})).Return(tc.wantDigest, nil).Once()
+			r := NewPackageResource(&tc.providerConfig, mockPackager, nil, nil).(*PackageResource)
+
+			digest, err := r.resolvePackageSourceDigest(context.Background(), tc.model)
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantDigest, digest.ValueString())
+			mockPackager.AssertExpectations(t)
+		})
+	}
+}
+
+func TestPackageResource_ResolvePackageSourceDigestUsesLocalPathOverride(t *testing.T) {
+	tempDir := t.TempDir()
+	model := NewTestPackageResourceModel()
+	overridePath := filepath.Join(tempDir, getPackageOverrideName(model))
+	require.NoError(t, os.WriteFile(overridePath, []byte("package"), 0o600))
+	mockPackager := &MockPackager{}
+	mockPackager.On("PackageDigest", mock.Anything, overridePath, mock.MatchedBy(func(opts zarfPackager.PackageDigestOptions) bool {
+		return opts.Architecture == runtime.GOARCH
+	})).Return("sha256:local", nil).Once()
+	r := NewPackageResource(&udsProviderConfig{LocalPathOverride: tempDir}, mockPackager, nil, nil).(*PackageResource)
+
+	digest, err := r.resolvePackageSourceDigest(context.Background(), model)
+
+	require.NoError(t, err)
+	assert.Equal(t, "sha256:local", digest.ValueString())
+	mockPackager.AssertExpectations(t)
+}
+
+func TestPackageResource_ResolvePackageSourceDigestDefersUnknownInputs(t *testing.T) {
+	tests := []struct {
+		name  string
+		model PackageResourceModel
+	}{
+		{
+			name: "unknown source",
+			model: NewTestPackageResourceModel(func(model *PackageResourceModel) {
+				model.Source = types.StringUnknown()
+			}),
+		},
+		{
+			name: "unknown architecture",
+			model: NewTestPackageResourceModel(func(model *PackageResourceModel) {
+				model.Architecture = types.StringUnknown()
+			}),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			r := NewPackageResource(&udsProviderConfig{}, mockPackager, nil, nil).(*PackageResource)
+
+			digest, err := r.resolvePackageSourceDigest(context.Background(), tc.model)
+
+			require.NoError(t, err)
+			assert.True(t, digest.IsUnknown())
+			mockPackager.AssertNotCalled(t, "PackageDigest", mock.Anything, mock.Anything, mock.Anything)
+		})
+	}
+}
+
+func TestPinOCISourceToDigest(t *testing.T) {
+	const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tests := []struct {
+		name   string
+		source string
+		value  types.String
+		want   string
+	}{
+		{
+			name:   "mutable tag becomes immutable digest",
+			source: "oci://registry.example.com/team/package:dev",
+			value:  types.StringValue(digest),
+			want:   "oci://registry.example.com/team/package@" + digest,
+		},
+		{
+			name:   "digest reference remains stable",
+			source: "oci://registry.example.com/team/package@" + digest,
+			value:  types.StringValue(digest),
+			want:   "oci://registry.example.com/team/package@" + digest,
+		},
+		{
+			name:   "local source is unchanged",
+			source: "./zarf-package-test.tar.zst",
+			value:  types.StringValue(digest),
+			want:   "./zarf-package-test.tar.zst",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := pinOCISourceToDigest(tc.source, tc.value)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestVerifyLoadedSourceDigest(t *testing.T) {
+	pkgLayout := newValidLoadPackageResult().Layout
+	pkgLayout.SetRegistryDigest("sha256:actual")
+	require.NoError(t, verifyLoadedSourceDigest(types.StringValue("sha256:actual"), pkgLayout))
+	err := verifyLoadedSourceDigest(types.StringValue("sha256:planned"), pkgLayout)
+	require.ErrorContains(t, err, "package source changed after planning")
+	require.ErrorContains(t, err, "create a new plan")
 }
 
 type MockCluster struct {
@@ -277,6 +415,11 @@ func (m *MockPackager) LoadPackage(ctx context.Context, source string, opts pack
 	return args.Get(0).(*layout.PackageLayout), args.Error(1)
 }
 
+func (m *MockPackager) PackageDigest(ctx context.Context, source string, opts packager.PackageDigestOptions) (string, error) {
+	args := m.Called(ctx, source, opts)
+	return args.String(0), args.Error(1)
+}
+
 func (m *MockPackager) GetPackageFromSourceOrCluster(ctx context.Context, cluster *zarfCluster.Cluster, src string, namespaceOverride string, opts zarfPackager.LoadOptions) (_ zarfAPI.PackageDefinition, err error) {
 	args := m.Called(ctx, cluster, src, namespaceOverride, opts)
 	if pkg, ok := args.Get(0).(zarfAPI.PackageDefinition); ok {
@@ -339,6 +482,12 @@ func WithSource(source string) PackageResourceModelDataOption {
 func WithArchitecture(arch string) PackageResourceModelDataOption {
 	return func(model *PackageResourceModel) {
 		model.Architecture = types.StringValue(arch)
+	}
+}
+
+func WithSourceDigest(digest string) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.SourceDigest = types.StringValue(digest)
 	}
 }
 
@@ -546,6 +695,7 @@ func WithSensitiveValues(values types.Dynamic) PackageResourceModelDataOption {
 func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) PackageResourceModel {
 	model := PackageResourceModel{
 		Source:                types.StringValue("oci://ghcr.io/defenseunicorns/packages/test:latest"),
+		SourceDigest:          types.StringNull(),
 		Architecture:          types.StringValue(runtime.GOARCH),
 		SignatureVerification: types.ObjectNull(signatureVerificationAttrTypes),
 		Timeouts:              nullTimeoutsValue(),
@@ -1362,6 +1512,7 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 			state := requirePackageState(t, resp.State)
 			assert.Equal(t, computePackageID("", "test-package"), state.ID.ValueString())
 			assert.Equal(t, "amd64", state.Architecture.ValueString())
+			assert.Equal(t, tc.digest, state.SourceDigest.ValueString())
 			assertPackageMetadata(t, state.Metadata, "Failed", int64(tc.generation), tc.digest)
 			assert.Equal(t, types.MapValueMust(types.StringType, map[string]attr.Value{}), state.SetVariables)
 		})
@@ -1408,6 +1559,7 @@ func TestPackageResource_CreateSuccessfulDeploymentRefreshesState(t *testing.T) 
 	state := requirePackageState(t, resp.State)
 	assert.Equal(t, "arm64", state.Architecture.ValueString())
 	assert.Equal(t, []string{"test-optional-default-component-0"}, mustStringSetElements(t, state.OptionalComponents))
+	assert.Equal(t, "sha256:created", state.SourceDigest.ValueString())
 	assertPackageMetadata(t, state.Metadata, "Succeeded", 8, "sha256:created")
 }
 
@@ -2228,6 +2380,50 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPackageResource_LoadPackageLayoutPinsOCIToPlannedDigest(t *testing.T) {
+	const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const mutableSource = "oci://registry.example.com/team/package:dev"
+	const immutableSource = "oci://registry.example.com/team/package@" + digest
+	pkgLayout := newValidLoadPackageResult().Layout
+	pkgLayout.SetRegistryDigest(digest)
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, immutableSource, mock.MatchedBy(func(opts zarfPackager.LoadOptions) bool {
+		return opts.Architecture == runtime.GOARCH
+	})).Return(pkgLayout, nil).Once()
+	r := NewPackageResource(&udsProviderConfig{}, mockPackager, nil, nil).(*PackageResource)
+
+	loaded, err := r.loadPackageLayoutFromSource(context.Background(), NewTestPackageResourceModel(
+		WithSource(mutableSource),
+		WithSourceDigest(digest),
+	))
+
+	require.NoError(t, err)
+	assert.Same(t, pkgLayout, loaded)
+	mockPackager.AssertExpectations(t)
+}
+
+func TestPackageResource_UpsertRejectsSourceChangedAfterPlanBeforeDeploy(t *testing.T) {
+	const plannedDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const loadedDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	tempDir := t.TempDir()
+	packagePath := filepath.Join(tempDir, "zarf-package-test.tar.zst")
+	require.NoError(t, os.WriteFile(packagePath, []byte("changed package"), 0o600))
+	pkgLayout := newValidLoadPackageResult().Layout
+	pkgLayout.SetRegistryDigest(loadedDigest)
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, packagePath, mock.Anything).Return(pkgLayout, nil).Once()
+	r := NewPackageResource(&udsProviderConfig{}, mockPackager, nil, nil).(*PackageResource)
+
+	_, err := r.upsert(context.Background(), NewTestPackageResourceModel(
+		WithSource(packagePath),
+		WithSourceDigest(plannedDigest),
+	))
+
+	require.ErrorContains(t, err, "package source changed after planning")
+	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+	mockPackager.AssertExpectations(t)
 }
 
 func TestPackageResource_validateUniqueVarNames(t *testing.T) {
@@ -3834,6 +4030,7 @@ func TestPackageResource_UpdateSuccessfulDeploymentRefreshesState(t *testing.T) 
 	updated := requirePackageState(t, resp.State)
 	assert.Equal(t, "arm64", updated.Architecture.ValueString())
 	assert.Equal(t, []string{"test-optional-default-component-0"}, mustStringSetElements(t, updated.OptionalComponents))
+	assert.Equal(t, "sha256:updated", updated.SourceDigest.ValueString())
 	assertPackageMetadata(t, updated.Metadata, "Succeeded", 10, "sha256:updated")
 }
 
@@ -3861,8 +4058,7 @@ func TestPackageResource_UpdateFailedDeploymentDoesNotReplaceStateOrRemove(t *te
 
 func TestModifyPlan_TimeoutOnlyChangePreservesComputedState(t *testing.T) {
 	mockPackager := &MockPackager{}
-	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).
-		Return((*layout.PackageLayout)(nil), errors.New("package source unavailable"))
+	mockPackager.On("PackageDigest", mock.Anything, mock.Anything, mock.Anything).Return("sha256:unchanged", nil).Once()
 	r := NewPackageResource(
 		&udsProviderConfig{ValidatePackagesOnPlan: true},
 		mockPackager,
@@ -3872,6 +4068,7 @@ func TestModifyPlan_TimeoutOnlyChangePreservesComputedState(t *testing.T) {
 	stateModel := NewTestPackageResourceModel(
 		WithTimeout("30m"),
 		WithDeployedState(),
+		WithSourceDigest("sha256:unchanged"),
 		WithOptionalComponents([]string{}),
 	)
 	planModel := stateModel
@@ -3883,6 +4080,7 @@ func TestModifyPlan_TimeoutOnlyChangePreservesComputedState(t *testing.T) {
 	planModel.Metadata = types.ObjectUnknown(packageMetadataAttrTypes)
 	planModel.ConnectStrings = types.SetUnknown(types.ObjectType{AttrTypes: connectStringAttrTypes})
 	planModel.SetVariables = types.MapUnknown(types.StringType)
+	planModel.SourceDigest = types.StringUnknown()
 
 	plan := buildTestPlan(t, r, planModel)
 	resp := resource.ModifyPlanResponse{Plan: plan}
@@ -3905,10 +4103,165 @@ func TestModifyPlan_TimeoutOnlyChangePreservesComputedState(t *testing.T) {
 	assert.Equal(t, stateModel.ConnectStrings, updatedPlan.ConnectStrings)
 	assert.Equal(t, stateModel.SetVariables, updatedPlan.SetVariables)
 	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+	mockPackager.AssertExpectations(t)
+}
+
+func TestModifyPlan_SourceDigestLifecycle(t *testing.T) {
+	const digestA = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const digestB = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	tests := []struct {
+		name                string
+		source              string
+		stateDigest         types.String
+		resolvedDigest      string
+		timeout             string
+		wantDiff            bool
+		wantStateOnlyUpdate bool
+		wantComputedUnknown bool
+	}{
+		{
+			name:                "unchanged tagged OCI digest produces no update",
+			source:              "oci://registry.example.com/team/package:dev",
+			stateDigest:         types.StringValue(digestA),
+			resolvedDigest:      digestA,
+			timeout:             "30m",
+			wantDiff:            false,
+			wantStateOnlyUpdate: false,
+		},
+		{
+			name:                "changed tagged OCI digest produces update with same package version",
+			source:              "oci://registry.example.com/team/package:dev",
+			stateDigest:         types.StringValue(digestA),
+			resolvedDigest:      digestB,
+			timeout:             "30m",
+			wantDiff:            true,
+			wantStateOnlyUpdate: false,
+			wantComputedUnknown: true,
+		},
+		{
+			name:                "digest pinned OCI source remains stable",
+			source:              "oci://registry.example.com/team/package@" + digestA,
+			stateDigest:         types.StringValue(digestA),
+			resolvedDigest:      digestA,
+			timeout:             "30m",
+			wantDiff:            false,
+			wantStateOnlyUpdate: false,
+		},
+		{
+			name:                "timeout only change does not redeploy",
+			source:              "oci://registry.example.com/team/package:dev",
+			stateDigest:         types.StringValue(digestA),
+			resolvedDigest:      digestA,
+			timeout:             "45m",
+			wantDiff:            true,
+			wantStateOnlyUpdate: true,
+		},
+		{
+			name:                "digest change is not discarded alongside timeout change",
+			source:              "oci://registry.example.com/team/package:dev",
+			stateDigest:         types.StringValue(digestA),
+			resolvedDigest:      digestB,
+			timeout:             "45m",
+			wantDiff:            true,
+			wantStateOnlyUpdate: false,
+			wantComputedUnknown: true,
+		},
+		{
+			name:                "legacy state without source digest visibly converges",
+			source:              "oci://registry.example.com/team/package:dev",
+			stateDigest:         types.StringNull(),
+			resolvedDigest:      digestA,
+			timeout:             "30m",
+			wantDiff:            true,
+			wantStateOnlyUpdate: false,
+			wantComputedUnknown: true,
+		},
+		{
+			name:                "external digest drift is repaired",
+			source:              "oci://registry.example.com/team/package:dev",
+			stateDigest:         types.StringValue(digestB),
+			resolvedDigest:      digestA,
+			timeout:             "30m",
+			wantDiff:            true,
+			wantStateOnlyUpdate: false,
+			wantComputedUnknown: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockPackager := &MockPackager{}
+			mockPackager.On("PackageDigest", mock.Anything, tc.source, mock.Anything).Return(tc.resolvedDigest, nil).Once()
+			r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: false}, mockPackager, nil, nil).(*PackageResource)
+
+			stateModel := NewTestPackageResourceModel(
+				WithSource(tc.source),
+				WithTimeout("30m"),
+				WithDeployedState(),
+				WithOptionalComponents([]string{}),
+			)
+			stateModel.SourceDigest = tc.stateDigest
+			planModel := stateModel
+			WithTimeout(tc.timeout)(&planModel)
+			planModel.SourceDigest = types.StringUnknown()
+			configModel := stateModel
+			WithTimeout(tc.timeout)(&configModel)
+			configModel.SourceDigest = types.StringNull()
+
+			state := buildTestState(t, r, stateModel)
+			resp := resource.ModifyPlanResponse{Plan: buildTestPlan(t, r, planModel)}
+			r.ModifyPlan(context.Background(), resource.ModifyPlanRequest{
+				Config: buildTestConfig(t, r, configModel),
+				Plan:   resp.Plan,
+				State:  state,
+			}, &resp)
+
+			require.False(t, resp.Diagnostics.HasError(), "ModifyPlan diagnostics: %v", resp.Diagnostics)
+			var got PackageResourceModel
+			resp.Diagnostics.Append(resp.Plan.Get(context.Background(), &got)...)
+			require.False(t, resp.Diagnostics.HasError(), "plan decode diagnostics: %v", resp.Diagnostics)
+			assert.Equal(t, tc.source, got.Source.ValueString(), "configured source must remain authored")
+			assert.Equal(t, tc.resolvedDigest, got.SourceDigest.ValueString())
+			assert.Equal(t, tc.wantComputedUnknown, got.Metadata.IsUnknown())
+			diffs, err := resp.Plan.Raw.Diff(state.Raw)
+			require.NoError(t, err)
+			diffPaths := make([]string, 0, len(diffs))
+			for _, diff := range diffs {
+				diffPaths = append(diffPaths, fmt.Sprint(diff.Path))
+			}
+			assert.Equal(t, tc.wantDiff, len(diffs) > 0, "diffs: %v", diffPaths)
+			stateOnly, err := isStateOnlyUpdate(resp.Plan, state)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantStateOnlyUpdate, stateOnly)
+			mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+			mockPackager.AssertExpectations(t)
+		})
+	}
+}
+
+func TestModifyPlan_SourceDigestResolutionFailureIsAttributedToSource(t *testing.T) {
+	mockPackager := &MockPackager{}
+	mockPackager.On("PackageDigest", mock.Anything, mock.Anything, mock.Anything).Return("", errors.New("registry unavailable")).Once()
+	r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: false}, mockPackager, nil, nil).(*PackageResource)
+	model := newCreateLifecycleModel()
+	plan := buildTestPlan(t, r, model)
+	resp := resource.ModifyPlanResponse{Plan: plan}
+
+	r.ModifyPlan(context.Background(), resource.ModifyPlanRequest{
+		Config: buildTestConfig(t, r, model),
+		Plan:   plan,
+	}, &resp)
+
+	require.True(t, resp.Diagnostics.HasError())
+	assert.Equal(t, "Failed to resolve package source digest", resp.Diagnostics.Errors()[0].Summary())
+	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "registry unavailable")
+	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+	mockPackager.AssertExpectations(t)
 }
 
 func TestModifyPlan_StateOnlyAndPackageChangeRunsPackageChecks(t *testing.T) {
 	mockPackager := &MockPackager{}
+	mockPackager.On("PackageDigest", mock.Anything, mock.Anything, mock.Anything).Return("sha256:resolved", nil).Once()
 	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).
 		Return((*layout.PackageLayout)(nil), errors.New("package source unavailable"))
 	r := NewPackageResource(
@@ -4077,6 +4430,7 @@ func TestDeployAsNewOrUpdate_RemovalFailureSkipsUpsert(t *testing.T) {
 	mockCluster.On("NewWithWait", mock.Anything).Return(&cluster, nil)
 
 	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(newValidLoadPackageResult().Layout, nil).Once()
 	mockPackager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(zarfPkg, nil)
 	mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).Return(fmt.Errorf("remove failed"))
 
@@ -4094,7 +4448,7 @@ func TestDeployAsNewOrUpdate_RemovalFailureSkipsUpsert(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "remove failed")
 	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
-	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
+	mockPackager.AssertNumberOfCalls(t, "LoadPackage", 1)
 }
 
 // Helper function to convert a slice of HelmChartPathValueModel to types.Set
@@ -6513,9 +6867,11 @@ func TestValidateConfiguredPackageValueConflicts(t *testing.T) {
 }
 
 func TestModifyPlan_ConfigValuesFailKnownConflictsWhenPlanValuesAreUnknown(t *testing.T) {
+	mockPackager := &MockPackager{}
+	mockPackager.On("PackageDigest", mock.Anything, mock.Anything, mock.Anything).Return("sha256:resolved", nil).Once()
 	r := NewPackageResource(
 		&udsProviderConfig{ValidatePackagesOnPlan: true},
-		&MockPackager{},
+		mockPackager,
 		nil,
 		nil,
 	).(*PackageResource)
@@ -6691,6 +7047,7 @@ components:
 	setUnknownComputedPackageState(&planModel)
 
 	mockPackager := &MockPackager{}
+	mockPackager.On("PackageDigest", mock.Anything, mock.Anything, mock.Anything).Return("sha256:resolved", nil).Once()
 	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil)
 	r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 	plan := buildTestPlan(t, r, planModel)
@@ -7560,6 +7917,7 @@ func TestPopulateStateFromDeployedPackage(t *testing.T) {
 	assert.Equal(t, "ZarfPackageConfig", data.Kind.ValueString())
 	assert.Equal(t, "arm64", data.Architecture.ValueString())
 	assert.Equal(t, "custom-namespace", data.Namespace.ValueString())
+	assert.Equal(t, "sha256:abc123", data.SourceDigest.ValueString())
 	assert.Equal(t, []string{"required"}, mustStringSetElements(t, data.OptionalComponents))
 
 	metadata := data.Metadata.Attributes()
@@ -7579,6 +7937,22 @@ func TestPopulateStateFromDeployedPackage(t *testing.T) {
 	require.Len(t, connectStrings, 1)
 	assert.Equal(t, "service", connectStrings[0].Name.ValueString())
 	assert.Equal(t, "service description", connectStrings[0].Description.ValueString())
+}
+
+func TestPopulateStateFromDeployedPackageMissingDigestClearsLegacySourceDigest(t *testing.T) {
+	data := NewTestPackageResourceModel(WithSourceDigest("sha256:planned"))
+	pkg := zarfState.DeployedPackage{
+		Name: "legacy-package",
+		Data: v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{
+			Name:         "legacy-package",
+			Architecture: runtime.GOARCH,
+		}},
+	}
+
+	diags := populateStateFromDeployedPackage(&data, pkg)
+
+	require.False(t, diags.HasError(), "%v", diags)
+	assert.True(t, data.SourceDigest.IsNull())
 }
 
 func TestPackageResource_Schema_Timeouts(t *testing.T) {

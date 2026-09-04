@@ -34,7 +34,21 @@ The [Zarf values example](https://github.com/defenseunicorns/terraform-provider-
 Use `optional_components` to select optional components declared by the package. Component names are validated against the package metadata.
 
 {{ tffile "examples/resources/uds_package/resource-optional-components.tf" }}
+
+### Mutable OCI Tags
+
+All OCI tags are treated as mutable. During planning, the provider resolves the tag with the same registry credentials and transport settings used for package loading. A changed manifest digest produces an in-place redeployment even when the source string and package version have not changed. Apply loads the immutable digest selected by the plan and rejects a package whose content changed after planning.
+
+{{ tffile "examples/resources/uds_package/resource-mutable-source.tf" }}
 {{- end }}
+
+## Source Digest Lifecycle
+
+`source_digest` is the resolved identity of the desired package source during planning and the package actually deployed after apply or refresh. `metadata.digest` is the digest recorded in the deployed Zarf package state in the cluster. The values agree after a successful, refreshed deployment, but they have distinct lifecycle roles so the configured `source` remains exactly as authored.
+
+Planning resolves every OCI reference, including a digest-pinned reference, by contacting its registry. Tagged OCI resolution reads manifest metadata rather than downloading the complete package and uses the same registry authentication, plain-HTTP negotiation, and TLS settings as package loading. Setting `validate_packages_on_plan = false` disables package validation downloads but does not disable digest resolution.
+
+Local tarball and split-package sources are hashed during planning with Zarf's package digest implementation. They can be planned offline, but the referenced files must be available and unchanged through apply. OCI planning requires registry access; if the registry is unavailable, planning fails on `source` instead of retaining a stale digest. A new plan is required if any source changes between plan and apply.
 
 {{ .SchemaMarkdown | trimspace }}
 {{- if or .HasImport .HasImportIDConfig .HasImportIdentityConfig }}

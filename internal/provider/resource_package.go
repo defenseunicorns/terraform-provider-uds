@@ -124,6 +124,7 @@ func defaultPackageSignatureVerifier(ctx context.Context, pkgLayout *layout.Pack
 type PackageResourceModel struct {
 	ID                    types.String   `tfsdk:"id"`
 	Source                types.String   `tfsdk:"source"`
+	SourceDigest          types.String   `tfsdk:"source_digest"`
 	Architecture          types.String   `tfsdk:"architecture"`
 	Timeouts              timeouts.Value `tfsdk:"timeouts"`
 	SignatureVerification types.Object   `tfsdk:"signature_verification"`
@@ -261,6 +262,10 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				Validators: []validator.String{
 					udsValidator.PackageSourceValidator(),
 				},
+			},
+			"source_digest": schema.StringAttribute{
+				MarkdownDescription: "Resolved digest of the desired package source during planning and the package actually deployed after apply or refresh. A digest change triggers an in-place redeployment without changing `source`.",
+				Computed:            true,
 			},
 			"architecture": schema.StringAttribute{
 				MarkdownDescription: "System architecture of the target cluster. Defaults to the provider default architecture.",
@@ -967,6 +972,16 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	}
 
 	plan = normalizeOptionalComponentsPlan(config, plan)
+	resolvedDigest, err := r.resolvePackageSourceDigest(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("source"),
+			"Failed to resolve package source digest",
+			err.Error(),
+		)
+		return
+	}
+	plan.SourceDigest = resolvedDigest
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -1035,6 +1050,9 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		if resp.Diagnostics.HasError() {
 			return
 		}
+		if !plan.SourceDigest.IsUnknown() && !plan.SourceDigest.Equal(state.SourceDigest) {
+			markDeploymentComputedAttributesUnknown(&plan)
+		}
 		if !plan.OptionalComponents.Equal(state.OptionalComponents) ||
 			!plan.Components.Equal(state.Components) {
 			plan.ConnectStrings = types.SetUnknown(types.ObjectType{AttrTypes: connectStringAttrTypes})
@@ -1043,6 +1061,16 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	}
 
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+}
+
+func markDeploymentComputedAttributesUnknown(plan *PackageResourceModel) {
+	plan.ID = types.StringUnknown()
+	plan.Name = types.StringUnknown()
+	plan.Kind = types.StringUnknown()
+	plan.Version = types.StringUnknown()
+	plan.Metadata = types.ObjectUnknown(packageMetadataAttrTypes)
+	plan.ConnectStrings = types.SetUnknown(types.ObjectType{AttrTypes: connectStringAttrTypes})
+	plan.SetVariables = types.MapUnknown(types.StringType)
 }
 
 // ImportState imports the resource state from an external system.
@@ -1096,6 +1124,10 @@ func (r *PackageResource) loadPackageLayoutFromSource(ctx context.Context, model
 	if err != nil {
 		return nil, err
 	}
+	packageSource, err = pinOCISourceToDigest(packageSource, model.SourceDigest)
+	if err != nil {
+		return nil, err
+	}
 	remoteOptions, err := r.getPackageSourceRemoteOptions(ctx, packageSource)
 	if err != nil {
 		return nil, err
@@ -1114,8 +1146,72 @@ func (r *PackageResource) loadPackageLayoutFromSource(ctx context.Context, model
 	if err != nil {
 		return nil, err
 	}
+	if err := verifyLoadedSourceDigest(model.SourceDigest, pkgLayout); err != nil {
+		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
+			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
+		}
+		return nil, err
+	}
 
 	return pkgLayout, nil
+}
+
+func (r *PackageResource) resolvePackageSourceDigest(ctx context.Context, model PackageResourceModel) (types.String, error) {
+	if model.Source.IsNull() || model.Source.IsUnknown() || model.Architecture.IsNull() || model.Architecture.IsUnknown() {
+		return types.StringUnknown(), nil
+	}
+	if r.packager == nil || r.providerConfig == nil {
+		return types.StringUnknown(), nil
+	}
+
+	packageSource, err := getPackageSource(model, *r.providerConfig)
+	if err != nil {
+		return types.StringUnknown(), fmt.Errorf("could not determine effective package source: %w", err)
+	}
+	remoteOptions, err := r.getPackageSourceRemoteOptions(ctx, packageSource)
+	if err != nil {
+		return types.StringUnknown(), err
+	}
+	digest, err := r.packager.PackageDigest(ctx, packageSource, zarfPackager.PackageDigestOptions{
+		Architecture:  model.Architecture.ValueString(),
+		RemoteOptions: remoteOptions,
+	})
+	if err != nil {
+		return types.StringUnknown(), fmt.Errorf("could not resolve digest for package source %q: %w", packageSource, err)
+	}
+	if digest == "" {
+		return types.StringUnknown(), fmt.Errorf("package source %q resolved to an empty digest", packageSource)
+	}
+	return types.StringValue(digest), nil
+}
+
+func pinOCISourceToDigest(source string, sourceDigest types.String) (string, error) {
+	if !strings.HasPrefix(source, "oci://") || sourceDigest.IsNull() || sourceDigest.IsUnknown() {
+		return source, nil
+	}
+
+	ref, err := registry.ParseReference(strings.TrimPrefix(source, "oci://"))
+	if err != nil {
+		return "", fmt.Errorf("unable to parse package source %q: %w", source, err)
+	}
+	ref.Reference = sourceDigest.ValueString()
+	if err := ref.ValidateReferenceAsDigest(); err != nil {
+		return "", fmt.Errorf("invalid planned source digest %q: %w", sourceDigest.ValueString(), err)
+	}
+	return "oci://" + ref.String(), nil
+}
+
+func verifyLoadedSourceDigest(sourceDigest types.String, pkgLayout *layout.PackageLayout) error {
+	if sourceDigest.IsNull() || sourceDigest.IsUnknown() {
+		return nil
+	}
+	if pkgLayout == nil {
+		return errors.New("loaded package layout is nil")
+	}
+	if actual := pkgLayout.Digest(); actual != sourceDigest.ValueString() {
+		return fmt.Errorf("package source changed after planning: planned digest %q, loaded digest %q; create a new plan before applying", sourceDigest.ValueString(), actual)
+	}
+	return nil
 }
 
 func (r *PackageResource) verifyPackageSignature(ctx context.Context, model PackageResourceModel, pkgLayout *layout.PackageLayout) error {
@@ -1206,6 +1302,10 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 		return fmt.Errorf("could not get package source: %w", err)
 	}
 	remoteOptions, err := r.getPackageSourceRemoteOptions(ctx, packageSource)
+	if err != nil {
+		return err
+	}
+	packageSource, err = pinOCISourceToDigest(packageSource, plan.SourceDigest)
 	if err != nil {
 		return err
 	}
@@ -1337,6 +1437,18 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 }
 
 func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel) (PackageResourceModel, error) {
+	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
+	if err != nil {
+		return plan, err
+	}
+	plan.Name = types.StringValue(pkgLayout.AsV1alpha1().Metadata.Name)
+	ctx = logging.WithPackageContext(ctx, "", plan.Name.ValueString(), plan.Namespace.ValueString())
+	defer func() {
+		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
+			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
+		}
+	}()
+
 	// Generate list of components to remove before the update.
 	// Combines legacy component-block removals with optional_components removals.
 	// Removal happens before upsert because removing a required component removes the entire package.
@@ -1356,7 +1468,7 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 		}
 	}
 
-	return r.upsert(ctx, plan)
+	return r.upsertLoadedPackage(ctx, plan, pkgLayout)
 }
 
 // upsert loads and cleans up the package layout before deploying it.
@@ -2169,6 +2281,9 @@ func isStateOnlyUpdate(plan tfsdk.Plan, state tfsdk.State) (bool, error) {
 			return false, fmt.Errorf("unexpected update path: %s", diff.Path)
 		}
 		attributeName := string(name)
+		if attributeName == "source_digest" {
+			return false, nil
+		}
 		if _, ok := stateOnlyAttributes[attributeName]; ok {
 			foundStateOnlyChange = true
 			continue
@@ -2670,6 +2785,9 @@ func (r *PackageResource) populatePackageModelFromLayout(data *PackageResourceMo
 	data.Version = types.StringValue(pkg.Metadata.Version)
 	data.Kind = types.StringValue(string(pkg.Kind))
 	data.Architecture = types.StringValue(getArchitecture(*data, *r.providerConfig))
+	if pkgLayout.Digest() != "" {
+		data.SourceDigest = types.StringValue(pkgLayout.Digest())
+	}
 }
 
 func deployedPackageStatus(pkg zarfState.DeployedPackage) string {
@@ -2718,6 +2836,11 @@ func populateStateFromDeployedPackage(data *PackageResourceModel, pkg zarfState.
 	data.Architecture = types.StringValue(pkg.Data.Metadata.Architecture)
 	if pkg.NamespaceOverride != "" {
 		data.Namespace = types.StringValue(pkg.NamespaceOverride)
+	}
+	if pkg.Digest == "" {
+		data.SourceDigest = types.StringNull()
+	} else {
+		data.SourceDigest = types.StringValue(pkg.Digest)
 	}
 
 	var diags diag.Diagnostics
