@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
 [tools]
-go = "1.27.0"
+go = "1.27.1"
 hk = "1.57.0"
 golangci-lint = "2.13.2"
 "aqua:google/addlicense" = "1.2.0"

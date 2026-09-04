@@ -19,9 +19,9 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/zarf-dev/zarf v0.85.0
 	helm.sh/helm/v4 v4.2.4
-	k8s.io/api v0.36.4
-	k8s.io/apimachinery v0.36.4
-	k8s.io/client-go v0.36.4
+	k8s.io/api v0.37.0
+	k8s.io/apimachinery v0.37.0
+	k8s.io/client-go v0.37.0
 	oras.land/oras-go/v2 v2.6.2
 )
 
@@ -628,7 +628,7 @@ require (
 	k8s.io/component-base v0.36.4 // indirect
 	k8s.io/component-helpers v0.36.4 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
-	k8s.io/kube-openapi v0.0.0-20260603220949-865597e52e25 // indirect
+	k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad // indirect
 	k8s.io/kubectl v0.36.4 // indirect
 	k8s.io/metrics v0.36.4 // indirect
 	k8s.io/streaming v0.37.0 // indirect
