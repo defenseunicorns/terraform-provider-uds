@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
 resource "uds_package" "init_with_git_server" {
-  source              = "oci://ghcr.io/zarf-dev/packages/init:v0.84.0"
+  source              = "oci://ghcr.io/zarf-dev/packages/init:v0.85.0"
   optional_components = ["git-server"]
 
   signature_verification = {
