@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.3](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.5.2...v0.5.3) (2026-09-04)
+
+
+### Miscellaneous
+
+* **deps:** update support-deps ([#336](https://github.com/defenseunicorns/terraform-provider-uds/issues/336)) ([c159a9f](https://github.com/defenseunicorns/terraform-provider-uds/commit/c159a9f325a4cda32cb07f3f0ff4ba5d7a18c92e))
+* **deps:** update zarf to v0.85.0 ([#340](https://github.com/defenseunicorns/terraform-provider-uds/issues/340)) ([d7b1363](https://github.com/defenseunicorns/terraform-provider-uds/commit/d7b1363df82d6fe74183823a5d1c65ca482fe477))
+
 ## [0.5.2](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.5.1...v0.5.2) (2026-09-02)
 
 
