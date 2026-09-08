@@ -1397,6 +1397,13 @@ func identityErrorDetail(err error) string {
 	if errors.As(err, &stateErr) {
 		return stateErr.Error()
 	}
+	var remoteErr *remoteIdentityError
+	if errors.As(err, &remoteErr) {
+		return fmt.Sprintf(
+			"The deployed package identity could not be safely verified: %s. No package mutation was performed.",
+			remoteErr.Error(),
+		)
+	}
 	return "The deployed package identity could not be safely verified. No package mutation was performed."
 }
 

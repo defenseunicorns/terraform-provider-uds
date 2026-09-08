@@ -3799,7 +3799,11 @@ func TestLookupVerifiedDeployedPackage(t *testing.T) {
 			}
 			if tc.wantErr {
 				var remoteErr *remoteIdentityError
-				assert.ErrorAs(t, err, &remoteErr)
+				require.ErrorAs(t, err, &remoteErr)
+				detail := identityErrorDetail(err)
+				assert.Contains(t, detail, remoteErr.Error())
+				assert.Contains(t, detail, "No package mutation was performed")
+				assert.NotContains(t, detail, "sentinel-cluster-error")
 			}
 			if !tc.present && !tc.wantErr {
 				var absentErr *packageAbsentError
