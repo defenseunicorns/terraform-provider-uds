@@ -292,19 +292,21 @@ Read-Only:
 
 Import is supported using the following syntax:
 
-> Import records the deployed Zarf package identity in state. Use either `name` or `namespace:name`. The following refresh verifies that the returned deployed name, namespace override, and package metadata agree with that identity; import and refresh do not rename, deploy, remove, or otherwise mutate the package.
+Import a deployed Zarf package using either `name` or `namespace:name`. Import and refresh do not rename, deploy, or remove the package.
 
-Only packages whose deployed name matches the configured source package's canonical `metadata.name` are eligible for source-derived provider management. A standalone import can temporarily record a differently named deployment because no configured source is available for comparison. When a later configured plan or apply rejects that provisional state, preserve the workload by removing only the Terraform state entry:
+The deployed name must match the `metadata.name` in the package configured by `source` before the provider can manage it. UDS CLI bundle deployments can create an alias when a package entry's `name` differs from the Zarf package's `metadata.name`. The provider does not support managing these aliased deployments.
+
+A standalone CLI import may initially accept an alias because it has no resource configuration or `source` to compare. If a later plan or apply reports `Cannot manage package with non-canonical deployment name`, leave the workload running and remove only its Terraform state entry:
 
 ```shell
 tofu state rm uds_package.example
 ```
 
-Do not use `tofu destroy`, `zarf package remove`, or `helm uninstall` as a substitute for state removal unless the intent is to remove the workload. Aliased deployments are unsupported because later Zarf operations could target a different package identity, and destructive cleanup or unvalidated takeover can affect shared Helm releases or Kubernetes resources.
+!> Do not use `tofu destroy`, `zarf package remove`, or `helm uninstall` instead of `tofu state rm` unless you intend to remove the workload. These commands can remove shared Helm releases or Kubernetes resources.
 
-Migrate aliases externally before importing their canonical identity. Migration requires package-specific investigation of rendered resource and release identities, package actions and hooks, namespace behavior, backups of relevant state, and verification of application health before canonical import. Detailed tested migration procedures are follow-on work; this provider does not prescribe or automate a migration.
+To manage an aliased deployment with this provider, first migrate it outside Terraform so its deployed name matches the source package's `metadata.name`. Review the package's resources, Helm releases, actions, hooks, and namespace behavior; back up relevant state; and verify application health before importing the canonical identity. The provider does not automate this migration.
 
-Delete is intentionally different: it freshly verifies and removes the exact identity recorded in state without loading the configured source. A package already absent from the cluster is treated as successfully deleted.
+After a successful import, the first apply may redeploy the package because Zarf's deployed state does not contain every configured input needed to produce a no-op plan. Deleting the Terraform resource verifies and removes the exact package identity recorded in state. If that package is already absent from the cluster, deletion succeeds without further action.
 
 In Terraform v1.5.0 and later, the [`import` block](https://developer.hashicorp.com/terraform/language/import) can be used with the `id` attribute, for example:
 
