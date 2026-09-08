@@ -444,12 +444,12 @@ func TestAccPackageResourcePlanValidation(t *testing.T) {
 					`Additional property definitely_unexposed_by_nginx_values_test is not\s+allowed`,
 				),
 			},
-			// Disabling package validation on plan skips package-dependent schema and
-			// component checks, but digest resolution remains lifecycle-critical.
+			// Disabling package validation on plan skips package-dependent checks,
+			// including digest resolution for an unavailable source.
 			{
-				Config:      testAccPackageResourcePlanValidationDisabledConfig,
-				PlanOnly:    true,
-				ExpectError: regexp.MustCompile(`Failed to resolve package source digest`),
+				Config:             testAccPackageResourcePlanValidationDisabledConfig,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
 			},
 		},
 	})

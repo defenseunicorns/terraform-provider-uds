@@ -2325,7 +2325,25 @@ func TestPackageResource_LoadPackageLayoutPinsOCIToPlannedDigest(t *testing.T) {
 	mockPackager.On("LoadPackage", mock.Anything, immutableSource, mock.MatchedBy(func(opts zarfPackager.LoadOptions) bool {
 		return opts.Architecture == runtime.GOARCH
 	})).Return(pkgLayout, nil).Once()
-	r := NewPackageResource(&udsProviderConfig{}, mockPackager, nil, nil).(*PackageResource)
+	r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+
+	loaded, err := r.loadPackageLayoutFromSource(context.Background(), NewTestPackageResourceModel(
+		WithSource(mutableSource),
+		WithSourceDigest(testDigestA),
+	))
+
+	require.NoError(t, err)
+	assert.Same(t, pkgLayout, loaded)
+	mockPackager.AssertExpectations(t)
+}
+
+func TestPackageResource_LoadPackageLayoutDefersDigestWhenPlanValidationDisabled(t *testing.T) {
+	const mutableSource = "oci://registry.example.com/team/package:dev"
+	pkgLayout := newValidLoadPackageResult().Layout
+	pkgLayout.SetRegistryDigest(testDigestB)
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mutableSource, mock.Anything).Return(pkgLayout, nil).Once()
+	r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: false}, mockPackager, nil, nil).(*PackageResource)
 
 	loaded, err := r.loadPackageLayoutFromSource(context.Background(), NewTestPackageResourceModel(
 		WithSource(mutableSource),
@@ -2345,7 +2363,7 @@ func TestPackageResource_UpsertRejectsSourceChangedAfterPlanBeforeDeploy(t *test
 	pkgLayout.SetRegistryDigest(testDigestB)
 	mockPackager := &MockPackager{}
 	mockPackager.On("LoadPackage", mock.Anything, packagePath, mock.Anything).Return(pkgLayout, nil).Once()
-	r := NewPackageResource(&udsProviderConfig{}, mockPackager, nil, nil).(*PackageResource)
+	r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 
 	_, err := r.upsert(context.Background(), NewTestPackageResourceModel(
 		WithSource(packagePath),
@@ -4099,7 +4117,10 @@ func TestModifyPlan_SourceDigestLifecycle(t *testing.T) {
 			}
 			mockPackager := &MockPackager{}
 			mockPackager.On("PackageDigest", mock.Anything, source, mock.Anything).Return(tc.resolvedDigest, nil).Once()
-			r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: false}, mockPackager, nil, nil).(*PackageResource)
+			if !tc.stateOnly {
+				mockPackager.On("LoadPackage", mock.Anything, source, mock.Anything).Return(newValidLoadPackageResult().Layout, nil).Once()
+			}
+			r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 
 			stateModel := NewTestPackageResourceModel(
 				WithSource(source),
@@ -4137,7 +4158,6 @@ func TestModifyPlan_SourceDigestLifecycle(t *testing.T) {
 			stateOnly, err := isStateOnlyUpdate(resp.Plan, state)
 			require.NoError(t, err)
 			assert.Equal(t, tc.stateOnly, stateOnly)
-			mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 			mockPackager.AssertExpectations(t)
 		})
 	}
@@ -4146,7 +4166,7 @@ func TestModifyPlan_SourceDigestLifecycle(t *testing.T) {
 func TestModifyPlan_SourceDigestResolutionFailureIsAttributedToSource(t *testing.T) {
 	mockPackager := &MockPackager{}
 	mockPackager.On("PackageDigest", mock.Anything, mock.Anything, mock.Anything).Return("", errors.New("registry unavailable")).Once()
-	r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: false}, mockPackager, nil, nil).(*PackageResource)
+	r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
 	model := newCreateLifecycleModel()
 	plan := buildTestPlan(t, r, model)
 	resp := resource.ModifyPlanResponse{Plan: plan}
@@ -4161,6 +4181,23 @@ func TestModifyPlan_SourceDigestResolutionFailureIsAttributedToSource(t *testing
 	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "registry unavailable")
 	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 	mockPackager.AssertExpectations(t)
+}
+
+func TestModifyPlan_PackageValidationDisabledSkipsDigestResolution(t *testing.T) {
+	mockPackager := &MockPackager{}
+	r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: false}, mockPackager, nil, nil).(*PackageResource)
+	model := newCreateLifecycleModel()
+	plan := buildTestPlan(t, r, model)
+	resp := resource.ModifyPlanResponse{Plan: plan}
+
+	r.ModifyPlan(context.Background(), resource.ModifyPlanRequest{
+		Config: buildTestConfig(t, r, model),
+		Plan:   plan,
+	}, &resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "%v", resp.Diagnostics)
+	mockPackager.AssertNotCalled(t, "PackageDigest", mock.Anything, mock.Anything, mock.Anything)
+	mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestModifyPlan_StateOnlyAndPackageChangeRunsPackageChecks(t *testing.T) {

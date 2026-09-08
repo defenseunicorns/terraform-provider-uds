@@ -972,16 +972,19 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	}
 
 	plan = normalizeOptionalComponentsPlan(config, plan)
-	resolvedDigest, err := r.resolvePackageSourceDigest(ctx, plan)
-	if err != nil {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("source"),
-			"Failed to resolve package source digest",
-			err.Error(),
-		)
-		return
+	validatePackageOnPlan := r.providerConfig == nil || r.providerConfig.ValidatePackagesOnPlan
+	if validatePackageOnPlan {
+		resolvedDigest, err := r.resolvePackageSourceDigest(ctx, plan)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("source"),
+				"Failed to resolve package source digest",
+				err.Error(),
+			)
+			return
+		}
+		plan.SourceDigest = resolvedDigest
 	}
-	plan.SourceDigest = resolvedDigest
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -1004,7 +1007,7 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		return
 	}
 
-	if r.providerConfig == nil || r.providerConfig.ValidatePackagesOnPlan {
+	if validatePackageOnPlan {
 		// Dynamic values can become wholly unknown in the plan when only some
 		// leaves depend on computed resources. Use configuration values for
 		// plan-time schema validation so known authored leaves are still checked.
@@ -1124,7 +1127,8 @@ func (r *PackageResource) loadPackageLayoutFromSource(ctx context.Context, model
 	if err != nil {
 		return nil, err
 	}
-	packageSource, err = pinOCISourceToDigest(packageSource, model.SourceDigest)
+	plannedDigest := r.plannedSourceDigest(model.SourceDigest)
+	packageSource, err = pinOCISourceToDigest(packageSource, plannedDigest)
 	if err != nil {
 		return nil, err
 	}
@@ -1146,7 +1150,7 @@ func (r *PackageResource) loadPackageLayoutFromSource(ctx context.Context, model
 	if err != nil {
 		return nil, err
 	}
-	if err := verifyLoadedSourceDigest(model.SourceDigest, pkgLayout); err != nil {
+	if err := verifyLoadedSourceDigest(plannedDigest, pkgLayout); err != nil {
 		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
 		}
@@ -1154,6 +1158,13 @@ func (r *PackageResource) loadPackageLayoutFromSource(ctx context.Context, model
 	}
 
 	return pkgLayout, nil
+}
+
+func (r *PackageResource) plannedSourceDigest(sourceDigest types.String) types.String {
+	if r.providerConfig != nil && !r.providerConfig.ValidatePackagesOnPlan {
+		return types.StringUnknown()
+	}
+	return sourceDigest
 }
 
 func (r *PackageResource) resolvePackageSourceDigest(ctx context.Context, model PackageResourceModel) (types.String, error) {
@@ -1305,7 +1316,7 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	if err != nil {
 		return err
 	}
-	packageSource, err = pinOCISourceToDigest(packageSource, plan.SourceDigest)
+	packageSource, err = pinOCISourceToDigest(packageSource, r.plannedSourceDigest(plan.SourceDigest))
 	if err != nil {
 		return err
 	}
