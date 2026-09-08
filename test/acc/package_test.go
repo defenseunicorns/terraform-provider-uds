@@ -137,7 +137,7 @@ func buildFailedPackageFixture(t *testing.T) string {
 	return packagePath
 }
 
-func buildPackageAdoptionFixture(t *testing.T) (string, string) {
+func buildPackageAdoptionFixtures(t *testing.T) (string, string) {
 	t.Helper()
 
 	fixtureDir, err := filepath.Abs("fixtures/package_adoption")
@@ -162,9 +162,9 @@ func buildPackageAdoptionFixture(t *testing.T) (string, string) {
 		t.Fatalf("expected package adoption fixture at %s: %v", packagePath, err)
 	}
 
-	// Local bundle entries are resolved by their bundle name. Stage the
-	// canonical package under the alias filename so UDS CLI applies its normal
-	// package-name override while the package metadata remains canonical.
+	// Build one canonical Zarf package, then copy those exact archive bytes to
+	// the filename UDS expects for the aliased bundle entry. UDS CLI applies the
+	// bundle entry name override when it deploys the resulting bundle.
 	bundleDir := t.TempDir()
 	stagedPackageDir := filepath.Join(bundleDir, "package")
 	if err := os.MkdirAll(stagedPackageDir, 0o755); err != nil {
@@ -202,11 +202,11 @@ func buildPackageAdoptionFixture(t *testing.T) (string, string) {
 	return packagePath, bundlePath
 }
 
-func deployPackageAdoptionAlias(t *testing.T, bundlePath string) {
+func deployBundleWithAliasedPackage(t *testing.T, bundlePath string) {
 	t.Helper()
 	cmd := exec.Command("uds", "deploy", bundlePath, "--confirm")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("failed to deploy package adoption alias: %v\n%s", err, output)
+		t.Fatalf("failed to deploy bundle with aliased package: %v\n%s", err, output)
 	}
 }
 
@@ -334,10 +334,10 @@ func TestAccPackageResourceAdoptionSafety(t *testing.T) {
 	t.Cleanup(func() { cleanupPackageAdoptionNamespace(t) })
 
 	t.Run("provisional alias import is read only and removable from state", func(t *testing.T) {
-		packagePath, bundlePath := buildPackageAdoptionFixture(t)
+		packagePath, bundlePath := buildPackageAdoptionFixtures(t)
 		alias := zarfState.DeployedPackage{Name: "adoption-alias", NamespaceOverride: "adoption-test"}
 		canonical := zarfState.DeployedPackage{Name: "adoption-canonical", NamespaceOverride: "adoption-test"}
-		deployPackageAdoptionAlias(t, bundlePath)
+		deployBundleWithAliasedPackage(t, bundlePath)
 		t.Cleanup(func() { cleanupPackageAdoptionIdentity(t, alias) })
 		if err := checkPackageAdoptionIdentities([]zarfState.DeployedPackage{alias}, []zarfState.DeployedPackage{canonical})(nil); err != nil {
 			t.Fatal(err)
@@ -377,7 +377,7 @@ func TestAccPackageResourceAdoptionSafety(t *testing.T) {
 	})
 
 	t.Run("canonical import and redeployment retain one identity", func(t *testing.T) {
-		packagePath, _ := buildPackageAdoptionFixture(t)
+		packagePath, _ := buildPackageAdoptionFixtures(t)
 		alias := zarfState.DeployedPackage{Name: "adoption-alias", NamespaceOverride: "adoption-test"}
 		canonical := zarfState.DeployedPackage{Name: "adoption-canonical", NamespaceOverride: "adoption-test"}
 		deployCanonicalPackageAdoptionFixture(t, packagePath)
@@ -393,11 +393,13 @@ func TestAccPackageResourceAdoptionSafety(t *testing.T) {
 			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 			Steps: []resource.TestStep{
 				{
-					ResourceName:       "uds_package.canonical",
-					Config:             config,
-					ImportState:        true,
-					ImportStateKind:    resource.ImportBlockWithID,
-					ImportStateId:      "adoption-test:adoption-canonical",
+					ResourceName:    "uds_package.canonical",
+					Config:          config,
+					ImportState:     true,
+					ImportStateKind: resource.ImportBlockWithID,
+					ImportStateId:   "adoption-test:adoption-canonical",
+					// Zarf's deployed state cannot reconstruct all configured inputs, so
+					// configuration-driven import currently plans a follow-up deployment.
 					ExpectNonEmptyPlan: true,
 				},
 				{

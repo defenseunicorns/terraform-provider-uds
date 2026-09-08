@@ -8683,9 +8683,12 @@ func TestDelete_ExhaustedBudgetSkipsPackageRemoval(t *testing.T) {
 	mockPackager := &MockPackager{}
 	mockFilter := &MockPackageComponentFilter{}
 
+	deployedPackage := zarfState.DeployedPackage{Name: "test-pkg", Data: v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{Name: "test-pkg"}}}
+	cluster := &zarfCluster.Cluster{Clientset: fake.NewSimpleClientset(newPackageStateSecret(t, deployedPackage))}
+	mockCluster.On("NewWithWait", mock.Anything).Return(cluster, nil).Once()
 	mockCluster.On("NewWithWait", mock.Anything).
 		Run(func(args mock.Arguments) { <-args.Get(0).(context.Context).Done() }).
-		Return(&zarfCluster.Cluster{Clientset: fake.NewSimpleClientset()}, nil)
+		Return(cluster, nil).Once()
 
 	r := NewPackageResource(nil, mockPackager, mockFilter, mockCluster).(*PackageResource)
 	model := NewTestPackageResourceModel(WithTimeout("10ms"), WithDeployedState())
@@ -8696,12 +8699,14 @@ func TestDelete_ExhaustedBudgetSkipsPackageRemoval(t *testing.T) {
 	var resp resource.DeleteResponse
 	r.Delete(ctx, resource.DeleteRequest{State: state}, &resp)
 
-	require.False(t, resp.Diagnostics.HasError())
+	require.True(t, resp.Diagnostics.HasError())
+	assert.Equal(t, "Package removal could not start", resp.Diagnostics[0].Summary())
 	mockPackager.AssertNotCalled(t, "Remove")
 	entries, err := tflogtest.MultilineJSONDecode(&output)
 	require.NoError(t, err)
-	assertLogEntry(t, entries, "package completed", nil)
-	assertNoLogEntry(t, entries, "package failed")
+	assertLogEntry(t, entries, "package failed", nil)
+	assertLogEntryFieldNotEmpty(t, entries, "package failed", "error")
+	assertNoLogEntry(t, entries, "package completed")
 }
 
 // TestRead_DirectDeadlinePropagatedToCluster verifies that Read passes its full readTimeout
