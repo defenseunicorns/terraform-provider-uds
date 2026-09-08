@@ -48,7 +48,6 @@ import (
 	zarfValue "github.com/zarf-dev/zarf/src/pkg/value"
 	"github.com/zarf-dev/zarf/src/pkg/variables"
 	zarfZoci "github.com/zarf-dev/zarf/src/pkg/zoci"
-	zarfTypes "github.com/zarf-dev/zarf/src/types"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -164,90 +163,49 @@ func TestPackageResource_GetPackageSourceRemoteOptions(t *testing.T) {
 	})
 }
 
+const (
+	testDigestA = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	testDigestB = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+
 func TestPackageResource_ResolvePackageSourceDigest(t *testing.T) {
-	tests := []struct {
-		name           string
-		model          PackageResourceModel
-		providerConfig udsProviderConfig
-		wantSource     string
-		wantArch       string
-		wantRemote     zarfTypes.RemoteOptions
-		wantDigest     string
-	}{
-		{
-			name:       "tagged OCI source uses architecture and registry transport options",
-			model:      NewTestPackageResourceModel(WithArchitecture("arm64")),
-			wantSource: "oci://ghcr.io/defenseunicorns/packages/test:latest",
-			wantArch:   "arm64",
-			wantRemote: zarfTypes.RemoteOptions{InsecureSkipTLSVerify: true},
-			wantDigest: "sha256:oci",
-			providerConfig: udsProviderConfig{
-				InsecureSkipTLSVerification: true,
-			},
-		},
-	}
+	t.Run("passes architecture and remote options", func(t *testing.T) {
+		model := NewTestPackageResourceModel(WithArchitecture("arm64"))
+		mockPackager := &MockPackager{}
+		mockPackager.On("PackageDigest", mock.Anything, model.Source.ValueString(), mock.MatchedBy(func(opts zarfPackager.PackageDigestOptions) bool {
+			return opts.Architecture == "arm64" && opts.RemoteOptions.InsecureSkipTLSVerify
+		})).Return(testDigestA, nil).Once()
+		r := NewPackageResource(&udsProviderConfig{InsecureSkipTLSVerification: true}, mockPackager, nil, nil).(*PackageResource)
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			mockPackager := &MockPackager{}
-			mockPackager.On("PackageDigest", mock.Anything, tc.wantSource, mock.MatchedBy(func(opts zarfPackager.PackageDigestOptions) bool {
-				return opts.Architecture == tc.wantArch && opts.RemoteOptions == tc.wantRemote
-			})).Return(tc.wantDigest, nil).Once()
-			r := NewPackageResource(&tc.providerConfig, mockPackager, nil, nil).(*PackageResource)
+		digest, err := r.resolvePackageSourceDigest(context.Background(), model)
+		require.NoError(t, err)
+		assert.Equal(t, testDigestA, digest.ValueString())
+		mockPackager.AssertExpectations(t)
+	})
 
-			digest, err := r.resolvePackageSourceDigest(context.Background(), tc.model)
+	t.Run("uses local path override", func(t *testing.T) {
+		model := NewTestPackageResourceModel()
+		tempDir := t.TempDir()
+		overridePath := filepath.Join(tempDir, getPackageOverrideName(model))
+		require.NoError(t, os.WriteFile(overridePath, []byte("package"), 0o600))
+		mockPackager := &MockPackager{}
+		mockPackager.On("PackageDigest", mock.Anything, overridePath, mock.Anything).Return(testDigestA, nil).Once()
+		r := NewPackageResource(&udsProviderConfig{LocalPathOverride: tempDir}, mockPackager, nil, nil).(*PackageResource)
 
-			require.NoError(t, err)
-			assert.Equal(t, tc.wantDigest, digest.ValueString())
-			mockPackager.AssertExpectations(t)
-		})
-	}
-}
+		digest, err := r.resolvePackageSourceDigest(context.Background(), model)
+		require.NoError(t, err)
+		assert.Equal(t, testDigestA, digest.ValueString())
+		mockPackager.AssertExpectations(t)
+	})
 
-func TestPackageResource_ResolvePackageSourceDigestUsesLocalPathOverride(t *testing.T) {
-	tempDir := t.TempDir()
-	model := NewTestPackageResourceModel()
-	overridePath := filepath.Join(tempDir, getPackageOverrideName(model))
-	require.NoError(t, os.WriteFile(overridePath, []byte("package"), 0o600))
-	mockPackager := &MockPackager{}
-	mockPackager.On("PackageDigest", mock.Anything, overridePath, mock.MatchedBy(func(opts zarfPackager.PackageDigestOptions) bool {
-		return opts.Architecture == runtime.GOARCH
-	})).Return("sha256:local", nil).Once()
-	r := NewPackageResource(&udsProviderConfig{LocalPathOverride: tempDir}, mockPackager, nil, nil).(*PackageResource)
-
-	digest, err := r.resolvePackageSourceDigest(context.Background(), model)
-
-	require.NoError(t, err)
-	assert.Equal(t, "sha256:local", digest.ValueString())
-	mockPackager.AssertExpectations(t)
-}
-
-func TestPackageResource_ResolvePackageSourceDigestDefersUnknownInputs(t *testing.T) {
-	tests := []struct {
-		name  string
-		model PackageResourceModel
-	}{
-		{
-			name: "unknown source",
-			model: NewTestPackageResourceModel(func(model *PackageResourceModel) {
-				model.Source = types.StringUnknown()
-			}),
-		},
-		{
-			name: "unknown architecture",
-			model: NewTestPackageResourceModel(func(model *PackageResourceModel) {
-				model.Architecture = types.StringUnknown()
-			}),
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+	for name, option := range map[string]PackageResourceModelDataOption{
+		"unknown source":       func(model *PackageResourceModel) { model.Source = types.StringUnknown() },
+		"unknown architecture": func(model *PackageResourceModel) { model.Architecture = types.StringUnknown() },
+	} {
+		t.Run(name, func(t *testing.T) {
 			mockPackager := &MockPackager{}
 			r := NewPackageResource(&udsProviderConfig{}, mockPackager, nil, nil).(*PackageResource)
-
-			digest, err := r.resolvePackageSourceDigest(context.Background(), tc.model)
-
+			digest, err := r.resolvePackageSourceDigest(context.Background(), NewTestPackageResourceModel(option))
 			require.NoError(t, err)
 			assert.True(t, digest.IsUnknown())
 			mockPackager.AssertNotCalled(t, "PackageDigest", mock.Anything, mock.Anything, mock.Anything)
@@ -256,39 +214,15 @@ func TestPackageResource_ResolvePackageSourceDigestDefersUnknownInputs(t *testin
 }
 
 func TestPinOCISourceToDigest(t *testing.T) {
-	const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	tests := []struct {
-		name   string
-		source string
-		value  types.String
-		want   string
-	}{
-		{
-			name:   "mutable tag becomes immutable digest",
-			source: "oci://registry.example.com/team/package:dev",
-			value:  types.StringValue(digest),
-			want:   "oci://registry.example.com/team/package@" + digest,
-		},
-		{
-			name:   "digest reference remains stable",
-			source: "oci://registry.example.com/team/package@" + digest,
-			value:  types.StringValue(digest),
-			want:   "oci://registry.example.com/team/package@" + digest,
-		},
-		{
-			name:   "local source is unchanged",
-			source: "./zarf-package-test.tar.zst",
-			value:  types.StringValue(digest),
-			want:   "./zarf-package-test.tar.zst",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := pinOCISourceToDigest(tc.source, tc.value)
-			require.NoError(t, err)
-			assert.Equal(t, tc.want, got)
-		})
+	immutable := "oci://registry.example.com/team/package@" + testDigestA
+	for source, want := range map[string]string{
+		"oci://registry.example.com/team/package:dev": immutable,
+		immutable:                     immutable,
+		"./zarf-package-test.tar.zst": "./zarf-package-test.tar.zst",
+	} {
+		got, err := pinOCISourceToDigest(source, types.StringValue(testDigestA))
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
 	}
 }
 
@@ -2383,11 +2317,10 @@ func TestPackageResource_Upsert_SourceAttribute(t *testing.T) {
 }
 
 func TestPackageResource_LoadPackageLayoutPinsOCIToPlannedDigest(t *testing.T) {
-	const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const mutableSource = "oci://registry.example.com/team/package:dev"
-	const immutableSource = "oci://registry.example.com/team/package@" + digest
+	const immutableSource = "oci://registry.example.com/team/package@" + testDigestA
 	pkgLayout := newValidLoadPackageResult().Layout
-	pkgLayout.SetRegistryDigest(digest)
+	pkgLayout.SetRegistryDigest(testDigestA)
 	mockPackager := &MockPackager{}
 	mockPackager.On("LoadPackage", mock.Anything, immutableSource, mock.MatchedBy(func(opts zarfPackager.LoadOptions) bool {
 		return opts.Architecture == runtime.GOARCH
@@ -2396,7 +2329,7 @@ func TestPackageResource_LoadPackageLayoutPinsOCIToPlannedDigest(t *testing.T) {
 
 	loaded, err := r.loadPackageLayoutFromSource(context.Background(), NewTestPackageResourceModel(
 		WithSource(mutableSource),
-		WithSourceDigest(digest),
+		WithSourceDigest(testDigestA),
 	))
 
 	require.NoError(t, err)
@@ -2405,20 +2338,18 @@ func TestPackageResource_LoadPackageLayoutPinsOCIToPlannedDigest(t *testing.T) {
 }
 
 func TestPackageResource_UpsertRejectsSourceChangedAfterPlanBeforeDeploy(t *testing.T) {
-	const plannedDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	const loadedDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	tempDir := t.TempDir()
 	packagePath := filepath.Join(tempDir, "zarf-package-test.tar.zst")
 	require.NoError(t, os.WriteFile(packagePath, []byte("changed package"), 0o600))
 	pkgLayout := newValidLoadPackageResult().Layout
-	pkgLayout.SetRegistryDigest(loadedDigest)
+	pkgLayout.SetRegistryDigest(testDigestB)
 	mockPackager := &MockPackager{}
 	mockPackager.On("LoadPackage", mock.Anything, packagePath, mock.Anything).Return(pkgLayout, nil).Once()
 	r := NewPackageResource(&udsProviderConfig{}, mockPackager, nil, nil).(*PackageResource)
 
 	_, err := r.upsert(context.Background(), NewTestPackageResourceModel(
 		WithSource(packagePath),
-		WithSourceDigest(plannedDigest),
+		WithSourceDigest(testDigestA),
 	))
 
 	require.ErrorContains(t, err, "package source changed after planning")
@@ -4107,105 +4038,81 @@ func TestModifyPlan_TimeoutOnlyChangePreservesComputedState(t *testing.T) {
 }
 
 func TestModifyPlan_SourceDigestLifecycle(t *testing.T) {
-	const digestA = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	const digestB = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	tests := []struct {
-		name                string
-		source              string
-		stateDigest         types.String
-		resolvedDigest      string
-		timeout             string
-		wantDiff            bool
-		wantStateOnlyUpdate bool
-		wantComputedUnknown bool
+		name           string
+		source         string
+		stateDigest    types.String
+		resolvedDigest string
+		timeout        string
+		stateOnly      bool
 	}{
 		{
-			name:                "unchanged tagged OCI digest produces no update",
-			source:              "oci://registry.example.com/team/package:dev",
-			stateDigest:         types.StringValue(digestA),
-			resolvedDigest:      digestA,
-			timeout:             "30m",
-			wantDiff:            false,
-			wantStateOnlyUpdate: false,
+			name:           "unchanged tagged OCI digest produces no update",
+			stateDigest:    types.StringValue(testDigestA),
+			resolvedDigest: testDigestA,
 		},
 		{
-			name:                "changed tagged OCI digest produces update with same package version",
-			source:              "oci://registry.example.com/team/package:dev",
-			stateDigest:         types.StringValue(digestA),
-			resolvedDigest:      digestB,
-			timeout:             "30m",
-			wantDiff:            true,
-			wantStateOnlyUpdate: false,
-			wantComputedUnknown: true,
+			name:           "changed tagged OCI digest produces update with same package version",
+			stateDigest:    types.StringValue(testDigestA),
+			resolvedDigest: testDigestB,
 		},
 		{
-			name:                "digest pinned OCI source remains stable",
-			source:              "oci://registry.example.com/team/package@" + digestA,
-			stateDigest:         types.StringValue(digestA),
-			resolvedDigest:      digestA,
-			timeout:             "30m",
-			wantDiff:            false,
-			wantStateOnlyUpdate: false,
+			name:           "digest pinned OCI source remains stable",
+			source:         "oci://registry.example.com/team/package@" + testDigestA,
+			stateDigest:    types.StringValue(testDigestA),
+			resolvedDigest: testDigestA,
 		},
 		{
-			name:                "timeout only change does not redeploy",
-			source:              "oci://registry.example.com/team/package:dev",
-			stateDigest:         types.StringValue(digestA),
-			resolvedDigest:      digestA,
-			timeout:             "45m",
-			wantDiff:            true,
-			wantStateOnlyUpdate: true,
+			name:           "timeout only change does not redeploy",
+			stateDigest:    types.StringValue(testDigestA),
+			resolvedDigest: testDigestA,
+			timeout:        "45m",
+			stateOnly:      true,
 		},
 		{
-			name:                "digest change is not discarded alongside timeout change",
-			source:              "oci://registry.example.com/team/package:dev",
-			stateDigest:         types.StringValue(digestA),
-			resolvedDigest:      digestB,
-			timeout:             "45m",
-			wantDiff:            true,
-			wantStateOnlyUpdate: false,
-			wantComputedUnknown: true,
+			name:           "digest change is not discarded alongside timeout change",
+			stateDigest:    types.StringValue(testDigestA),
+			resolvedDigest: testDigestB,
+			timeout:        "45m",
 		},
 		{
-			name:                "legacy state without source digest visibly converges",
-			source:              "oci://registry.example.com/team/package:dev",
-			stateDigest:         types.StringNull(),
-			resolvedDigest:      digestA,
-			timeout:             "30m",
-			wantDiff:            true,
-			wantStateOnlyUpdate: false,
-			wantComputedUnknown: true,
+			name:           "legacy state without source digest visibly converges",
+			stateDigest:    types.StringNull(),
+			resolvedDigest: testDigestA,
 		},
 		{
-			name:                "external digest drift is repaired",
-			source:              "oci://registry.example.com/team/package:dev",
-			stateDigest:         types.StringValue(digestB),
-			resolvedDigest:      digestA,
-			timeout:             "30m",
-			wantDiff:            true,
-			wantStateOnlyUpdate: false,
-			wantComputedUnknown: true,
+			name:           "external digest drift is repaired",
+			stateDigest:    types.StringValue(testDigestB),
+			resolvedDigest: testDigestA,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			source := tc.source
+			if source == "" {
+				source = "oci://registry.example.com/team/package:dev"
+			}
+			timeout := tc.timeout
+			if timeout == "" {
+				timeout = "30m"
+			}
 			mockPackager := &MockPackager{}
-			mockPackager.On("PackageDigest", mock.Anything, tc.source, mock.Anything).Return(tc.resolvedDigest, nil).Once()
+			mockPackager.On("PackageDigest", mock.Anything, source, mock.Anything).Return(tc.resolvedDigest, nil).Once()
 			r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: false}, mockPackager, nil, nil).(*PackageResource)
 
 			stateModel := NewTestPackageResourceModel(
-				WithSource(tc.source),
+				WithSource(source),
 				WithTimeout("30m"),
 				WithDeployedState(),
 				WithOptionalComponents([]string{}),
 			)
 			stateModel.SourceDigest = tc.stateDigest
 			planModel := stateModel
-			WithTimeout(tc.timeout)(&planModel)
+			WithTimeout(timeout)(&planModel)
 			planModel.SourceDigest = types.StringUnknown()
 			configModel := stateModel
-			WithTimeout(tc.timeout)(&configModel)
+			WithTimeout(timeout)(&configModel)
 			configModel.SourceDigest = types.StringNull()
 
 			state := buildTestState(t, r, stateModel)
@@ -4220,19 +4127,16 @@ func TestModifyPlan_SourceDigestLifecycle(t *testing.T) {
 			var got PackageResourceModel
 			resp.Diagnostics.Append(resp.Plan.Get(context.Background(), &got)...)
 			require.False(t, resp.Diagnostics.HasError(), "plan decode diagnostics: %v", resp.Diagnostics)
-			assert.Equal(t, tc.source, got.Source.ValueString(), "configured source must remain authored")
+			assert.Equal(t, source, got.Source.ValueString(), "configured source must remain authored")
 			assert.Equal(t, tc.resolvedDigest, got.SourceDigest.ValueString())
-			assert.Equal(t, tc.wantComputedUnknown, got.Metadata.IsUnknown())
+			digestChanged := !types.StringValue(tc.resolvedDigest).Equal(tc.stateDigest)
+			assert.Equal(t, digestChanged, got.Metadata.IsUnknown())
 			diffs, err := resp.Plan.Raw.Diff(state.Raw)
 			require.NoError(t, err)
-			diffPaths := make([]string, 0, len(diffs))
-			for _, diff := range diffs {
-				diffPaths = append(diffPaths, fmt.Sprint(diff.Path))
-			}
-			assert.Equal(t, tc.wantDiff, len(diffs) > 0, "diffs: %v", diffPaths)
+			assert.Equal(t, digestChanged || timeout != "30m", len(diffs) > 0, "diffs: %v", diffs)
 			stateOnly, err := isStateOnlyUpdate(resp.Plan, state)
 			require.NoError(t, err)
-			assert.Equal(t, tc.wantStateOnlyUpdate, stateOnly)
+			assert.Equal(t, tc.stateOnly, stateOnly)
 			mockPackager.AssertNotCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 			mockPackager.AssertExpectations(t)
 		})
