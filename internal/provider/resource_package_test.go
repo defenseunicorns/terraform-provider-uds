@@ -4174,6 +4174,9 @@ func TestModifyPlan_SourceDigestLifecycle(t *testing.T) {
 			require.False(t, resp.Diagnostics.HasError(), "plan decode diagnostics: %v", resp.Diagnostics)
 			assert.Equal(t, source, got.Source.ValueString(), "configured source must remain authored")
 			assert.Equal(t, tc.resolvedDigest, got.SourceDigest.ValueString())
+			assert.Equal(t, stateModel.ID, got.ID, "package ID must remain stable across digest updates")
+			assert.Equal(t, stateModel.Name, got.Name, "package name must remain stable across digest updates")
+			assert.Equal(t, stateModel.Kind, got.Kind, "package kind must remain stable across digest updates")
 			digestChanged := !types.StringValue(tc.resolvedDigest).Equal(tc.stateDigest)
 			assert.Equal(t, digestChanged, got.Metadata.IsUnknown())
 			diffs, err := resp.Plan.Raw.Diff(state.Raw)
@@ -4380,6 +4383,175 @@ func TestDeployAsNewOrUpdate_OptionalComponentRemoval(t *testing.T) {
 	}
 	assert.Equal(t, []string{"metrics"}, forRemoveArgs, "ForRemove should be called with the removed optional component")
 	mockPackager.AssertCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestDeployAsNewOrUpdate_RejectsPackageNameChange(t *testing.T) {
+	loadedPackage := newValidLoadPackageResult()
+	renamedPackage := loadedPackage.Layout.AsV1alpha1()
+	renamedPackage.Metadata.Name = "renamed-package"
+	loadedPackage.Layout.PackageDefinition = zarfAPI.NewPackageDefinitionFromV1alpha1(renamedPackage)
+	loadedPackage.Layout.SetRegistryDigest(testDigestB)
+
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(loadedPackage.Layout, nil).Once()
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	oldPlan := NewTestPackageResourceModel(WithDeployedState(), WithOptionalComponents([]string{}), WithSourceDigest(testDigestA))
+	oldPlan.Name = types.StringValue("original-package")
+	newPlan := oldPlan
+	newPlan.ID = types.StringUnknown()
+	newPlan.Name = types.StringUnknown()
+	newPlan.SourceDigest = types.StringValue(testDigestB)
+
+	packageResource := NewPackageResource(
+		&udsProviderConfig{ValidatePackagesOnPlan: true},
+		mockPackager,
+		mockPackageComponentFilter,
+		nil,
+	).(*PackageResource)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	_, err := packageResource.deployAsNewOrUpdate(ctx, newPlan, oldPlan)
+
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "original-package")
+		assert.Contains(t, err.Error(), "renamed-package")
+	}
+	mockPackager.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
+	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestDeployAsNewOrUpdate_RemovesRequiredComponentUsingLoadedDigestWhenPlanValidationDisabled(t *testing.T) {
+	oldPackage := newValidLoadPackageResult().Layout
+	oldDefinition := oldPackage.AsV1alpha1()
+	removedComponent := oldDefinition.Components[0].Name
+	deployedPackage := newLifecycleDeployedPackage(
+		oldPackage,
+		zarfState.DeployedComponent{Name: removedComponent},
+	)
+	cluster := &zarfCluster.Cluster{
+		Clientset: fake.NewSimpleClientset(newPackageStateSecret(t, deployedPackage)),
+	}
+	mockCluster := &MockCluster{}
+	mockCluster.On("NewWithWait", mock.Anything).Return(cluster, nil).Maybe()
+
+	loadedPackage := newValidLoadPackageResult()
+	newDefinition := loadedPackage.Layout.AsV1alpha1()
+	newDefinition.Components = newDefinition.Components[1:]
+	loadedPackage.Layout.PackageDefinition = zarfAPI.NewPackageDefinitionFromV1alpha1(newDefinition)
+	loadedPackage.Layout.SetRegistryDigest(testDigestB)
+
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(loadedPackage.Layout, nil).Once()
+	mockPackager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(oldPackage.PackageDefinition, nil).Maybe()
+	mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+	mockPackageComponentFilter.On("ForRemove", mock.Anything).Return(mock.Anything).Maybe()
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	oldPlan := NewTestPackageResourceModel(WithDeployedState(), WithOptionalComponents([]string{}), WithSourceDigest(testDigestA))
+	oldPlan.Name = types.StringValue(oldDefinition.Metadata.Name)
+	newPlan := oldPlan
+	newPlan.SourceDigest = types.StringUnknown()
+
+	packageResource := NewPackageResource(
+		&udsProviderConfig{ValidatePackagesOnPlan: false},
+		mockPackager,
+		mockPackageComponentFilter,
+		mockCluster,
+	).(*PackageResource)
+
+	_, err := packageResource.deployAsNewOrUpdate(testCtx(t), newPlan, oldPlan)
+
+	require.NoError(t, err)
+	mockPackager.AssertCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
+	var removedDefinition v1alpha1.ZarfPackage
+	removeCalled := false
+	for _, call := range mockPackager.Calls {
+		if call.Method == "Remove" {
+			removedDefinition = call.Arguments.Get(1).(v1alpha1.ZarfPackage)
+			removeCalled = true
+			break
+		}
+	}
+	require.True(t, removeCalled)
+	require.Len(t, removedDefinition.Components, 1)
+	assert.Equal(t, removedComponent, removedDefinition.Components[0].Name)
+	mockPackager.AssertCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestDeployAsNewOrUpdate_RejectsPackageKindChange(t *testing.T) {
+	loadedPackage := newValidLoadPackageResult()
+	newDefinition := loadedPackage.Layout.AsV1alpha1()
+	newDefinition.Kind = v1alpha1.ZarfInitConfig
+	loadedPackage.Layout.PackageDefinition = zarfAPI.NewPackageDefinitionFromV1alpha1(newDefinition)
+	loadedPackage.Layout.SetRegistryDigest(testDigestB)
+
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(loadedPackage.Layout, nil).Once()
+	mockPackager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).Return(packager.DeployResult{}, nil)
+
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
+
+	oldPlan := NewTestPackageResourceModel(WithDeployedState(), WithOptionalComponents([]string{}), WithSourceDigest(testDigestA))
+	oldPlan.Name = types.StringValue(newDefinition.Metadata.Name)
+	oldPlan.Kind = types.StringValue(string(v1alpha1.ZarfPackageConfig))
+	newPlan := oldPlan
+	newPlan.Kind = types.StringUnknown()
+	newPlan.SourceDigest = types.StringValue(testDigestB)
+
+	packageResource := NewPackageResource(
+		&udsProviderConfig{ValidatePackagesOnPlan: true},
+		mockPackager,
+		mockPackageComponentFilter,
+		nil,
+	).(*PackageResource)
+
+	_, err := packageResource.deployAsNewOrUpdate(testCtx(t), newPlan, oldPlan)
+
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), string(v1alpha1.ZarfPackageConfig))
+		assert.Contains(t, err.Error(), string(v1alpha1.ZarfInitConfig))
+	}
+	mockPackager.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
+	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestDeployAsNewOrUpdate_SignatureFailureDoesNotMutate(t *testing.T) {
+	loadedPackage := newValidLoadPackageResult()
+	loadedPackage.Layout.PackageDefinition.SetBuildSigned(true)
+	packageName := loadedPackage.Layout.AsV1alpha1().Metadata.Name
+
+	mockPackager := &MockPackager{}
+	mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(loadedPackage.Layout, nil).Once()
+	mockPackageComponentFilter := &MockPackageComponentFilter{}
+
+	oldPlan := NewTestPackageResourceModel(
+		WithDeployedState(),
+		WithDeployedPackageIdentity(packageName),
+		WithComponents([]ComponentModel{NewTestComponentModel("test-required-component-0")}),
+	)
+	newPlan := oldPlan
+	newPlan.Components = componentSliceToSet([]ComponentModel{})
+
+	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, nil).(*PackageResource)
+	packageResource.verifyPackageSignatureFunc = func(context.Context, *layout.PackageLayout, zarfSigning.VerifyBlobOptions) error {
+		return errors.New("signature verification failed")
+	}
+
+	_, err := packageResource.deployAsNewOrUpdate(testCtx(t), newPlan, oldPlan)
+
+	require.ErrorContains(t, err, "signature verification failed")
+	mockPackager.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
+	mockPackager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestDeployAsNewOrUpdate_RemovalFailureSkipsUpsert(t *testing.T) {
