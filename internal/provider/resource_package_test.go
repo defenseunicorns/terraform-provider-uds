@@ -547,6 +547,18 @@ func WithDeployedState() PackageResourceModelDataOption {
 	}
 }
 
+func WithDeployedPackageIdentity(name string) PackageResourceModelDataOption {
+	return func(model *PackageResourceModel) {
+		model.ID = types.StringValue(computePackageID(model.Namespace.ValueString(), name))
+		model.Name = types.StringValue(name)
+		if !model.Metadata.IsNull() && !model.Metadata.IsUnknown() {
+			attributes := model.Metadata.Attributes()
+			attributes["name"] = types.StringValue(name)
+			model.Metadata = types.ObjectValueMust(packageMetadataAttrTypes, attributes)
+		}
+	}
+}
+
 // buildTestState serializes model into a tfsdk.State using the resource schema.
 // Use for handler-level tests that call r.Create/Read/Update/Delete directly.
 func buildTestState(t *testing.T, r *PackageResource, model PackageResourceModel) tfsdk.State {
@@ -1591,7 +1603,11 @@ func TestPackageResource_UpdateSuccessfulDeploymentWithoutStateSecretRetainsFall
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything).Once()
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
-	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
+	stateModel := NewTestPackageResourceModel(
+		WithTimeout("30m"),
+		WithDeployedState(),
+		WithDeployedPackageIdentity(packageLayout.AsV1alpha1().Metadata.Name),
+	)
 	planModel := stateModel
 	planModel.Source = types.StringValue("oci://ghcr.io/defenseunicorns/packages/test:updated")
 
@@ -3966,7 +3982,11 @@ func TestPackageResource_UpdateSuccessfulDeploymentRefreshesState(t *testing.T) 
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
-	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
+	stateModel := NewTestPackageResourceModel(
+		WithTimeout("30m"),
+		WithDeployedState(),
+		WithDeployedPackageIdentity(packageLayout.AsV1alpha1().Metadata.Name),
+	)
 	planModel := stateModel
 	WithNamespace("updated")(&planModel)
 	// Conflict with the cluster values above to prove known planned values win.
@@ -3993,7 +4013,11 @@ func TestPackageResource_UpdateFailedDeploymentDoesNotReplaceStateOrRemove(t *te
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
-	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
+	stateModel := NewTestPackageResourceModel(
+		WithTimeout("30m"),
+		WithDeployedState(),
+		WithDeployedPackageIdentity(packageLayout.AsV1alpha1().Metadata.Name),
+	)
 	planModel := stateModel
 	WithNamespace("updated")(&planModel)
 
