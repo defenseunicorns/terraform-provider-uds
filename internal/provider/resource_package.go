@@ -1442,7 +1442,7 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	if found {
 		return plan, fmt.Errorf("%w: package with namespace '%s' and name '%s'", errDuplicatePackage, plan.Namespace.ValueString(), packageName)
 	}
-	return r.upsertLoadedPackage(ctx, plan, pkgLayout)
+	return r.upsertVerifiedLoadedPackage(ctx, plan, pkgLayout)
 }
 
 func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel) (PackageResourceModel, error) {
