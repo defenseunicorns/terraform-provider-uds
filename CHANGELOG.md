@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.4](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.5.3...v0.5.4) (2026-09-11)
+
+
+### Miscellaneous
+
+* **deps:** update support dependencies to v2026.9.5 ([#346](https://github.com/defenseunicorns/terraform-provider-uds/issues/346)) ([059cd42](https://github.com/defenseunicorns/terraform-provider-uds/commit/059cd4291cc28a260a5412bab56a1f5e091da2d3))
+* **deps:** update support-deps ([#342](https://github.com/defenseunicorns/terraform-provider-uds/issues/342)) ([39bf654](https://github.com/defenseunicorns/terraform-provider-uds/commit/39bf654874325b2c234fcfe6b00155debb3848ec))
+* **deps:** update support-deps ([#345](https://github.com/defenseunicorns/terraform-provider-uds/issues/345)) ([fa03110](https://github.com/defenseunicorns/terraform-provider-uds/commit/fa031109e87f92e076f05d83c121675292312559))
+
 ## [0.5.3](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.5.2...v0.5.3) (2026-09-04)
 
 
