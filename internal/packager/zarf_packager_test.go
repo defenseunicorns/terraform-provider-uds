@@ -131,6 +131,43 @@ func TestZarfPackagerLoadPackageWrapsCapturedOutputOnError(t *testing.T) {
 	require.ErrorContains(t, err, "load Zarf command output")
 }
 
+func TestZarfPackagerPackageDigestDelegatesWithLoggerContextAndReturnsDigest(t *testing.T) {
+	const source = "sentinel-source"
+	const want = "sha256:sentinel"
+	options := zPackager.PackageDigestOptions{Architecture: "arm64"}
+	called := false
+	p := newTestZarfPackager(testZarfPackagerOptions{
+		packageDigest: func(ctx context.Context, gotSource string, gotOptions zPackager.PackageDigestOptions) (string, error) {
+			called = true
+			require.True(t, logger.From(ctx).Enabled(ctx, slog.LevelInfo))
+			require.Equal(t, source, gotSource)
+			require.Equal(t, options, gotOptions)
+			return want, nil
+		},
+	})
+
+	digest, err := p.PackageDigest(context.Background(), source, options)
+	require.NoError(t, err)
+	require.Equal(t, want, digest)
+	require.True(t, called)
+}
+
+func TestZarfPackagerPackageDigestWrapsCapturedOutputOnError(t *testing.T) {
+	sentinel := errors.New("digest failed")
+	p := newTestZarfPackager(testZarfPackagerOptions{
+		packageDigest: func(ctx context.Context, _ string, _ zPackager.PackageDigestOptions) (string, error) {
+			logger.From(ctx).Error("digest Zarf command output")
+			return "", sentinel
+		},
+	})
+
+	_, err := p.PackageDigest(context.Background(), "source", zPackager.PackageDigestOptions{})
+
+	require.ErrorIs(t, err, sentinel)
+	require.ErrorContains(t, err, "captured Zarf output:")
+	require.ErrorContains(t, err, "digest Zarf command output")
+}
+
 func TestZarfPackagerGetPackageDelegatesWithLoggerContextAndReturnsPackage(t *testing.T) {
 	const source = "sentinel-source"
 	const namespace = "sentinel-namespace"
@@ -159,6 +196,7 @@ func TestZarfPackagerGetPackageDelegatesWithLoggerContextAndReturnsPackage(t *te
 func TestNewPackagerInitializesDelegates(t *testing.T) {
 	p := NewPackager().(*zarfPackager)
 	require.NotNil(t, p.loadPackage)
+	require.NotNil(t, p.packageDigest)
 	require.NotNil(t, p.deployPackage)
 	require.NotNil(t, p.getPackage)
 	require.NotNil(t, p.removePackage)
@@ -210,6 +248,7 @@ func TestZarfPackagerConfiguresConcurrently(t *testing.T) {
 
 type testZarfPackagerOptions struct {
 	loadPackage   loadPackageFunc
+	packageDigest packageDigestFunc
 	deployPackage deployFunc
 	getPackage    getPackageFunc
 	removePackage removeFunc
@@ -218,6 +257,7 @@ type testZarfPackagerOptions struct {
 func newTestZarfPackager(options testZarfPackagerOptions) *zarfPackager {
 	return &zarfPackager{
 		loadPackage:   options.loadPackage,
+		packageDigest: options.packageDigest,
 		deployPackage: options.deployPackage,
 		getPackage:    options.getPackage,
 		removePackage: options.removePackage,
