@@ -16,15 +16,17 @@ Standalone import cannot compare against source because the framework supplies o
 - Fail closed before source-derived operations can mutate a different Zarf identity.
 - Keep validation timing compatible with `validate_packages_on_plan`, unknown values, import, state-only updates, and destroy.
 - Preserve existing timeout budgets, diagnostic flow, logging, and canonical package behavior.
-- Provide concise migration safety guidance that distinguishes state removal from workload deletion without prescribing an unvalidated procedure.
+- Publish a guarded external migration runbook that distinguishes state removal from workload deletion and supports eligible ordinary-chart and raw-manifest packages without adding provider-managed migration behavior.
 
 **Non-Goals:**
 
 - Refactor the full deploy pipeline or eliminate the second source load during update.
 - Pin one immutable source digest or guarantee same-name package-content consistency across multiple update loads.
 - Add a configurable package name, alias persistence, Zarf takeover, or a migration action.
-- Infer whether two package identities share Helm or Kubernetes resources.
+- Have the provider infer whether two package identities share Helm or Kubernetes resources.
 - Define general replacement semantics when a package artifact changes canonical `metadata.name`.
+- Guarantee migration eligibility, rollback, or recovery for every package topology.
+- Cover namespace moves, changed-object migrations, multiple aliases converging on one canonical identity, or direct Helm storage editing.
 
 ## Decisions
 
@@ -88,7 +90,17 @@ Canonical import tests will verify that the following `Read` hydrates complete r
 
 Documentation will instruct users preserving the workload to use `tofu state rm`, explain that aliased deployments require external migration before canonical import, and warn against using destroy, Zarf remove, or Helm uninstall as substitutes for Terraform state removal.
 
-Guidance will remain deliberately high-level: users must investigate package-specific resource and release identity, back up relevant state, and verify any migration. A tested, prescriptive migration procedure and representative package examples are follow-on work.
+The migration guide will treat Terraform state, Zarf package state, Helm release history, and live Kubernetes objects as independent layers. Operators must inventory and back up each relevant layer, reconstruct the original deployment inputs, and classify every installed release or component before selecting a migration path. A package-level label alone is insufficient because one package can contain ordinary Helm charts, generated charts for raw manifests, or both.
+
+For an ordinary chart, the basic path is eligible only when the canonical deployment retains the same Helm release name and namespace and renders the same intended Kubernetes object identities. For a raw manifest, Zarf's generated Helm release name includes the package name, so canonical deployment creates a different release; `--take-ownership` may transfer exact rendered objects to that release, but it cannot rename objects, move namespaced resources, reconcile incompatible selectors or immutable fields, or make hooks and actions safe.
+
+The guide will gate canonical deployment on comparison of canonical rendering with the live deployment and stored Helm manifests. Operators must stop for changed object identities or namespaces, unsafe hooks or actions, unresolved shared or cluster-scoped resources, incompatible selectors or immutable fields, omitted resources without an explicit disposition, or multiple aliases converging on one canonical name and namespace.
+
+The guarded sequence is: back up state and deployment metadata; remove only the provisional Terraform state with `tofu state rm`; reconstruct values, variables, selected components, namespace override, and other package inputs; inspect and compare canonical rendering; perform the eligible canonical deployment externally; verify canonical Zarf, Helm, Kubernetes, and application state; delete only the exact verified stale alias Zarf Secret; then import the canonical identity and review the resulting plan. `tofu destroy`, alias package removal, and old-release uninstall are not substitutes for state removal or cleanup.
+
+For raw-manifest takeover, stale old Helm release history remains after exact-object ownership transfer. The basic procedure preserves and documents that history rather than uninstalling it or editing Helm storage because either action can delete or corrupt objects now owned by the canonical release. Deleting the stale alias Zarf Secret relinquishes Zarf's normal removal and recovery path for the alias, so its exact identity must be decoded, compared, and backed up immediately before cleanup.
+
+A high-level warning without an executable path was rejected because it leaves eligible users to improvise the most hazardous handoff steps. Provider automation was also rejected because package eligibility and application safety require operator judgment across all four state layers. The published procedure will instead be manually exercised on disposable synthetic packages that cover an ordinary chart and a raw manifest; this documentation validation does not require provider runtime tests or permanent migration-only fixtures.
 
 ### Preserve the public schema
 
@@ -103,16 +115,23 @@ Guidance will remain deliberately high-level: users must investigate package-spe
 - [Same-name package content can change between update loads] -> Keep immutable digest pinning and source snapshot consistency outside this adoption-safety change; consolidate or pin update loads in follow-on work.
 - [Package metadata may be loaded multiple times during update] -> Accept temporary duplicate I/O to keep the guard small and auditable; all loads share the lifecycle timeout and can be consolidated in follow-on work.
 - [Stricter validation breaks management of existing aliases] -> Treat this as an intentional safety break, provide actionable diagnostics and migration guidance, and keep exact Delete available.
-- [External takeover can still damage shared resources] -> Do not automate or prescribe it in this change; state the principal hazards and require package-specific investigation, backups, and verification.
+- [External takeover can still damage shared or application-specific resources] -> Gate the basic procedure on exact rendered identity and package-specific safety checks, require backups and multi-layer verification, and direct ineligible or uncertain cases to stop for application-specific investigation.
+- [A partial migration can leave the four state layers inconsistent] -> Require operators to stop and investigate the observed package-specific state; backups preserve evidence and recovery inputs but are not presented as a universal rollback.
+- [Deleting the alias Secret removes Zarf's normal recovery and removal path] -> Require exact Secret discovery, decoded identity comparison, immediate backup, and successful handoff verification before deletion.
+- [Stale raw-manifest Helm history can prompt a future unsafe uninstall] -> Preserve and explicitly document the stale history, including that it rendered objects now adopted by the canonical release.
+- [Documented CLI flags or behavior can drift] -> Use `uds zarf`, tell operators to verify deployment flags with their installed CLI help, and manually validate the guide against the repository's pinned Zarf behavior.
 - [String matching for Zarf not-found errors is fragile] -> Preserve existing absence detection initially and cover it with tests; improve upstream error typing separately if available.
 - [Dependency errors can echo source references, paths, or credentials] -> Build diagnostics from allowlisted identity metadata and safe error categories, retain raw details only in channels proven safe, and use sentinel-secret tests.
 
 ## Migration Plan
 
-1. Release the provider with lifecycle guards, tests, generated resource documentation, and concise migration safety guidance in the same version.
+1. Release the provider with lifecycle guards, tests, generated resource documentation, and the generated guarded migration guide in the same version.
 2. Canonical resources and imports require no state migration and continue normal lifecycle behavior.
 3. Existing or newly imported aliases fail configured plan when plan validation is enabled, or fail before mutation during apply when it is disabled or deferred.
-4. Users who want to preserve an alias deployment remove only its Terraform state entry and keep it unmanaged until they have developed and verified a safe package-specific migration to canonical identity.
-5. Users who intentionally want to remove the alias may use normal resource deletion after evaluating shared Helm and Kubernetes ownership.
+4. Users who want to preserve an alias deployment assess every release and component against the guide's eligibility and stop conditions before changing state or workloads.
+5. Eligible users back up all relevant state, remove only the provisional Terraform state entry, reconstruct inputs, compare canonical rendering, and perform the external canonical deployment.
+6. After verifying the canonical Zarf, Helm, Kubernetes, and application state, users remove only the exact stale alias Zarf Secret, preserve any stale raw-manifest Helm history, and import the canonical identity.
+7. Ineligible, uncertain, or partially failed migrations remain unmanaged while operators perform package-specific investigation; backups are recovery inputs, not a guaranteed rollback procedure.
+8. Users who intentionally want to remove the alias may use normal resource deletion after evaluating shared Helm and Kubernetes ownership.
 
-Rollback of the provider release restores the prior unsafe behavior and is therefore not a safe migration strategy for aliases. If implementation rollout must be reverted, affected aliases should remain removed from Terraform state until the guard is restored or an external migration is completed.
+Rollback of the provider release restores the prior unsafe behavior and is therefore not a safe migration strategy for aliases. If implementation rollout must be reverted, affected aliases should remain removed from Terraform state until the guard is restored or an external migration is completed. Migration rollback itself is package-specific: after a partial handoff, operators must inspect all four state layers rather than assume that restoring one backup or uninstalling one release safely reverses the operation.

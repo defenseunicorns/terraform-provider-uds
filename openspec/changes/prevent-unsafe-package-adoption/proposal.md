@@ -9,7 +9,7 @@ The `uds_package` resource can import a Zarf deployment whose name was previousl
 - Validate known canonical-name mismatches during planning when package validation on plan is enabled, while always repeating authoritative validation before a remote-mutating update.
 - Preserve exact deletion of a freshly verified deployed identity without requiring source access, and preserve explicitly allowlisted state-only updates without cluster or source access.
 - Keep the current import ID syntax and computed `name` attribute; do not add alias support, automatic canonicalization, takeover, or provider-managed migration.
-- Document provisional standalone imports, why aliased deployments are unsupported, and high-level safety considerations for external migration before canonical provider adoption.
+- Document provisional standalone imports, why aliased deployments are unsupported, and a guarded operator-run migration workflow covering inventory and backups, deployment-input reconstruction, per-release classification, canonical render comparison, explicit stop conditions, eligible exact-object takeover, handoff verification, exact stale alias Secret cleanup, and canonical provider import. The provider does not automate this migration.
 
 ## Capabilities
 
@@ -26,5 +26,5 @@ None.
 - Affects `uds_package` import, read, plan modification, update, component removal, and delete behavior.
 - Adds internal package identity and canonical-name validation around existing Zarf lookup and package-loading paths.
 - Extends unit, framework, and acceptance coverage for canonical and non-canonical imports, stale or inconsistent identity, deferred validation, state-only updates, and exact deletion.
-- Updates package import documentation with concise migration safety guidance for deployments created with UDS CLI package-name overrides; prescriptive migration procedures remain follow-on work.
+- Adds a generated Terraform Registry migration guide for deployments created with UDS CLI package-name overrides and manually validates its commands against disposable synthetic packages. Comprehensive topology-specific procedures, namespace moves, changed-object migrations, direct Helm storage surgery, and universal rollback guarantees remain outside scope.
 - Adds no provider schema fields, external services, or new runtime dependencies.
