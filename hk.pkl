@@ -1,5 +1,5 @@
-amends "package://github.com/jdx/hk/releases/download/v1.49.0/hk@1.49.0#/Config.pkl"
-import "package://github.com/jdx/hk/releases/download/v1.49.0/hk@1.49.0#/Builtins.pkl"
+amends "package://github.com/jdx/hk/releases/download/v2.0.0/hk@2.0.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v2.0.0/hk@2.0.0#/Builtins.pkl"
 
 local linters = new Mapping<String, Step> {
     ["check-added-large-files"] {
@@ -67,19 +67,13 @@ hooks {
     ["pre-commit"] {
         fix = true
         stash = "git"
-        steps {
-            ...linters
-        }
+        steps = linters
     }
     ["check"] {
-        steps {
-            ...linters
-        }
+        steps = linters
     }
     ["fix"] {
         fix = true
-        steps {
-            ...linters
-        }
+        steps = linters
     }
 }
