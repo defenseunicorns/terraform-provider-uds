@@ -26,16 +26,19 @@ type Packager interface {
 	Deploy(ctx context.Context, pkgLayout *layout.PackageLayout, opts zPackager.DeployOptions) (zPackager.DeployResult, error)
 	Remove(ctx context.Context, pkg zarfAPI.PackageDefinition, opts zPackager.RemoveOptions) error
 	LoadPackage(ctx context.Context, source string, opts zPackager.LoadOptions) (_ *layout.PackageLayout, err error)
+	PackageDigest(ctx context.Context, source string, opts zPackager.PackageDigestOptions) (string, error)
 	GetPackageFromSourceOrCluster(ctx context.Context, cluster *cluster.Cluster, src string, namespaceOverride string, opts zPackager.LoadOptions) (_ zarfAPI.PackageDefinition, err error)
 }
 
 type loadPackageFunc func(context.Context, string, zPackager.LoadOptions) (*layout.PackageLayout, error)
+type packageDigestFunc func(context.Context, string, zPackager.PackageDigestOptions) (string, error)
 type deployFunc func(context.Context, *layout.PackageLayout, zPackager.DeployOptions) (zPackager.DeployResult, error)
 type getPackageFunc func(context.Context, *cluster.Cluster, string, string, zPackager.LoadOptions) (zarfAPI.PackageDefinition, error)
 type removeFunc func(context.Context, zarfAPI.PackageDefinition, zPackager.RemoveOptions) error
 
 type zarfPackager struct {
 	loadPackage   loadPackageFunc
+	packageDigest packageDigestFunc
 	deployPackage deployFunc
 	getPackage    getPackageFunc
 	removePackage removeFunc
@@ -47,10 +50,21 @@ var zarfConfigOnce sync.Once
 func NewPackager() Packager {
 	return &zarfPackager{
 		loadPackage:   zPackager.LoadPackage,
+		packageDigest: zPackager.PackageDigest,
 		deployPackage: zPackager.Deploy,
 		getPackage:    zPackager.GetPackageFromSourceOrCluster,
 		removePackage: zPackager.Remove,
 	}
+}
+
+func (p *zarfPackager) PackageDigest(ctx context.Context, source string, opts zPackager.PackageDigestOptions) (string, error) {
+	p.ensureZarfConfigured()
+	zarfCtx := logging.WithZarfLogger(ctx)
+	digest, err := p.packageDigest(zarfCtx, source, opts)
+	if err != nil {
+		return "", logging.WrapZarfError(zarfCtx, err)
+	}
+	return digest, nil
 }
 
 func (p *zarfPackager) Deploy(ctx context.Context, pkgLayout *layout.PackageLayout, opts zPackager.DeployOptions) (zPackager.DeployResult, error) {
