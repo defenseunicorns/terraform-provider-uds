@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.4](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.5.3...v0.5.4) (2026-09-18)
+
+
+### Miscellaneous
+
+* **deps:** update support dependencies to v1.13.0 ([#351](https://github.com/defenseunicorns/terraform-provider-uds/issues/351)) ([804f6d6](https://github.com/defenseunicorns/terraform-provider-uds/commit/804f6d669ae23cc1ca0052088614b911bc7760b8))
+* **deps:** update support dependencies to v2 ([#349](https://github.com/defenseunicorns/terraform-provider-uds/issues/349)) ([1dc19f2](https://github.com/defenseunicorns/terraform-provider-uds/commit/1dc19f25bb6927d429563ed5d062814e3aeeb5cb))
+* **deps:** update support dependencies to v2026.9.10 ([#350](https://github.com/defenseunicorns/terraform-provider-uds/issues/350)) ([a4fa0b4](https://github.com/defenseunicorns/terraform-provider-uds/commit/a4fa0b4e7ed862f35b539f0b3af54f5de5403f9d))
+* **deps:** update support dependencies to v2026.9.5 ([#346](https://github.com/defenseunicorns/terraform-provider-uds/issues/346)) ([059cd42](https://github.com/defenseunicorns/terraform-provider-uds/commit/059cd4291cc28a260a5412bab56a1f5e091da2d3))
+* **deps:** update support dependencies to v2026.9.9 ([#348](https://github.com/defenseunicorns/terraform-provider-uds/issues/348)) ([c95efd6](https://github.com/defenseunicorns/terraform-provider-uds/commit/c95efd69a6d0ac1c3c5a82b8bbac8992e5e94269))
+* **deps:** update support-deps ([#342](https://github.com/defenseunicorns/terraform-provider-uds/issues/342)) ([39bf654](https://github.com/defenseunicorns/terraform-provider-uds/commit/39bf654874325b2c234fcfe6b00155debb3848ec))
+* **deps:** update support-deps ([#345](https://github.com/defenseunicorns/terraform-provider-uds/issues/345)) ([fa03110](https://github.com/defenseunicorns/terraform-provider-uds/commit/fa031109e87f92e076f05d83c121675292312559))
+* **deps:** update support-deps ([#347](https://github.com/defenseunicorns/terraform-provider-uds/issues/347)) ([8b11b68](https://github.com/defenseunicorns/terraform-provider-uds/commit/8b11b687fa57d3a43d07d6cd3f48b03d8490fc3e))
+* **deps:** update zarf to v0.86.0 ([#353](https://github.com/defenseunicorns/terraform-provider-uds/issues/353)) ([af80293](https://github.com/defenseunicorns/terraform-provider-uds/commit/af80293706f0556c02da7fd3b1d423466a3c6097))
+
 ## [0.5.3](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.5.2...v0.5.3) (2026-09-04)
 
 
