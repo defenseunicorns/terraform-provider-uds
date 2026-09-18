@@ -1,0 +1,58 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+schema: spec-driven
+
+context: |
+  Project: terraform-provider-uds
+  Repository: https://github.com/defenseunicorns/terraform-provider-uds
+  Go module: github.com/defenseunicorns/terraform-provider-uds
+
+  This is an OpenTofu provider, also published for Terraform, for
+  managing Unified Defense Stack resources. Its current public resource,
+  `uds_package`, deploys and manages UDS and Zarf packages on Kubernetes through
+  Zarf's Go APIs.
+
+  Technical foundation:
+  - Implementation language: Go
+  - Provider framework: HashiCorp Terraform Plugin Framework, protocol 6
+  - Package and cluster integration: Zarf and Kubernetes Go APIs
+  - Development tool management: mise
+  - Repository tasks: UDS CLI (`uds run ...`)
+  - Testing: Testify; unit tests cover `internal/`, while acceptance tests
+    use OpenTofu against a live k3d cluster.
+
+  Provider conventions:
+  - Preserve OpenTofu/Terraform configuration, plan, state, import, drift,
+    null/unknown, and sensitive-value semantics.
+  - Treat provider schemas and persisted state as public interfaces; make
+    breaking changes explicit, even while the provider is alpha.
+  - Keep Zarf output in the provider log and diagnostic streams, not stdout.
+
+  Documentation:
+  - Public behavior changes should update examples and generated provider
+    documentation; run `uds run generate`.
+  - Validate changes with `uds run lint:check` and `uds run test-unit`.
+    Use `uds run test-acc` when live provider behavior is affected.
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

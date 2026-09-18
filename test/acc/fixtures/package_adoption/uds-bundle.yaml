@@ -1,0 +1,14 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+kind: UDSBundle
+metadata:
+  name: package-adoption
+  description: Exercises a UDS package entry name that differs from canonical package metadata.
+  version: 0.1.0
+
+packages:
+  - name: adoption-alias
+    path: package
+    ref: 0.1.0
+    namespace: adoption-test

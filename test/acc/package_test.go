@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"text/template"
 
@@ -136,6 +137,165 @@ func buildFailedPackageFixture(t *testing.T) string {
 	return packagePath
 }
 
+func buildPackageAdoptionFixtures(t *testing.T) (string, string) {
+	t.Helper()
+
+	fixtureDir, err := filepath.Abs("fixtures/package_adoption")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputDir := t.TempDir()
+	sourcePackageDir := filepath.Join(fixtureDir, "package")
+
+	packageCmd := exec.Command(
+		"uds", "zarf", "package", "create", sourcePackageDir,
+		"--architecture", runtime.GOARCH,
+		"--confirm",
+		"--output", outputDir,
+		"--skip-sbom",
+	)
+	if output, err := packageCmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to build package adoption fixture: %v\n%s", err, output)
+	}
+	packagePath := filepath.Join(outputDir, fmt.Sprintf("zarf-package-adoption-canonical-%s-0.1.0.tar.zst", runtime.GOARCH))
+	if _, err := os.Stat(packagePath); err != nil {
+		t.Fatalf("expected package adoption fixture at %s: %v", packagePath, err)
+	}
+
+	// Build one canonical Zarf package, then copy those exact archive bytes to
+	// the filename UDS expects for the aliased bundle entry. UDS CLI applies the
+	// bundle entry name override when it deploys the resulting bundle.
+	bundleDir := t.TempDir()
+	stagedPackageDir := filepath.Join(bundleDir, "package")
+	if err := os.MkdirAll(stagedPackageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	packageBytes, err := os.ReadFile(packagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasPackagePath := filepath.Join(stagedPackageDir, fmt.Sprintf("zarf-package-adoption-alias-%s-0.1.0.tar.zst", runtime.GOARCH))
+	if err := os.WriteFile(aliasPackagePath, packageBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bundleDefinition, err := os.ReadFile(filepath.Join(fixtureDir, "uds-bundle.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "uds-bundle.yaml"), bundleDefinition, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bundleCmd := exec.Command(
+		"uds", "create", bundleDir,
+		"--architecture", runtime.GOARCH,
+		"--confirm",
+		"--output", outputDir,
+	)
+	if output, err := bundleCmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to build package adoption bundle: %v\n%s", err, output)
+	}
+	bundlePath := filepath.Join(outputDir, fmt.Sprintf("uds-bundle-package-adoption-%s-0.1.0.tar.zst", runtime.GOARCH))
+	if _, err := os.Stat(bundlePath); err != nil {
+		t.Fatalf("expected package adoption bundle at %s: %v", bundlePath, err)
+	}
+	return packagePath, bundlePath
+}
+
+func deployBundleWithAliasedPackage(t *testing.T, bundlePath string) {
+	t.Helper()
+	cmd := exec.Command("uds", "deploy", bundlePath, "--confirm")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to deploy bundle with aliased package: %v\n%s", err, output)
+	}
+}
+
+func deployCanonicalPackageAdoptionFixture(t *testing.T, packagePath string) {
+	t.Helper()
+	cmd := exec.Command("uds", "zarf", "package", "deploy", packagePath, "--namespace", "adoption-test", "--confirm")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to deploy canonical package adoption fixture: %v\n%s", err, output)
+	}
+}
+
+func packageAdoptionConfig(packagePath, resourceName string) string {
+	return fmt.Sprintf(`
+resource "uds_package" %q {
+  source       = %q
+  architecture = %q
+  namespace    = "adoption-test"
+
+  signature_verification = {
+    verify = false
+  }
+}
+`, resourceName, packagePath, runtime.GOARCH)
+}
+
+func packageAdoptionRemovedConfig(resourceName string) string {
+	return fmt.Sprintf(`
+removed {
+  from = uds_package.%s
+
+  lifecycle {
+    destroy = false
+  }
+}
+`, resourceName)
+}
+
+func checkPackageAdoptionIdentities(present, absent []zarfState.DeployedPackage) resource.TestCheckFunc {
+	return func(_ *terraform.State) error {
+		clientset, err := acceptanceKubernetesClient()
+		if err != nil {
+			return err
+		}
+		for _, pkg := range present {
+			if _, err := clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Get(context.Background(), pkg.GetSecretName(), metav1.GetOptions{}); err != nil {
+				return fmt.Errorf("expected package identity %s: %w", pkg.GetSecretName(), err)
+			}
+		}
+		for _, pkg := range absent {
+			if _, err := clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Get(context.Background(), pkg.GetSecretName(), metav1.GetOptions{}); err == nil {
+				return fmt.Errorf("unexpected package identity %s", pkg.GetSecretName())
+			} else if !apierrors.IsNotFound(err) {
+				return fmt.Errorf("failed checking package identity %s: %w", pkg.GetSecretName(), err)
+			}
+		}
+		return nil
+	}
+}
+
+func cleanupPackageAdoptionIdentity(t *testing.T, pkg zarfState.DeployedPackage) {
+	t.Helper()
+	clientset, err := acceptanceKubernetesClient()
+	if err != nil {
+		t.Logf("could not initialize package adoption cleanup: %v", err)
+		return
+	}
+	err = clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Delete(context.Background(), pkg.GetSecretName(), metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		t.Logf("could not clean up package adoption identity %s: %v", pkg.GetSecretName(), err)
+	}
+	err = clientset.CoreV1().ConfigMaps("adoption-test").Delete(context.Background(), "package-adoption-marker", metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		t.Logf("could not clean up package adoption marker: %v", err)
+	}
+}
+
+func cleanupPackageAdoptionNamespace(t *testing.T) {
+	t.Helper()
+	clientset, err := acceptanceKubernetesClient()
+	if err != nil {
+		t.Logf("could not initialize package adoption namespace cleanup: %v", err)
+		return
+	}
+	err = clientset.CoreV1().Namespaces().Delete(context.Background(), "adoption-test", metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		t.Logf("could not clean up package adoption namespace: %v", err)
+	}
+}
+
 var testAccPackageResourceConfig = fmt.Sprintf(`
 resource "uds_package" "init" {
   source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
@@ -164,6 +324,101 @@ func TestAccPackageResource(t *testing.T) {
 			},
 			// Delete testing automatically occurs in TestCase
 		},
+	})
+}
+
+func TestAccPackageResourceAdoptionSafety(t *testing.T) {
+	if os.Getenv(resource.EnvTfAcc) == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC=1")
+	}
+	t.Cleanup(func() { cleanupPackageAdoptionNamespace(t) })
+
+	t.Run("provisional alias import is read only and removable from state", func(t *testing.T) {
+		packagePath, bundlePath := buildPackageAdoptionFixtures(t)
+		alias := zarfState.DeployedPackage{Name: "adoption-alias", NamespaceOverride: "adoption-test"}
+		canonical := zarfState.DeployedPackage{Name: "adoption-canonical", NamespaceOverride: "adoption-test"}
+		deployBundleWithAliasedPackage(t, bundlePath)
+		t.Cleanup(func() { cleanupPackageAdoptionIdentity(t, alias) })
+		if err := checkPackageAdoptionIdentities([]zarfState.DeployedPackage{alias}, []zarfState.DeployedPackage{canonical})(nil); err != nil {
+			t.Fatal(err)
+		}
+		config := packageAdoptionConfig(packagePath, "alias")
+
+		resource.Test(t, resource.TestCase{
+			PreCheck:                 func() { testAccPreCheck(t) },
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			Steps: []resource.TestStep{
+				{
+					ResourceName:    "uds_package.alias",
+					Config:          config,
+					ImportState:     true,
+					ImportStateKind: resource.ImportBlockWithID,
+					ImportStateId:   "adoption-test:adoption-alias",
+					ExpectError:     regexp.MustCompile(`Cannot manage package with non-canonical deployment name`),
+				},
+				{
+					ResourceName:       "uds_package.alias",
+					Config:             config,
+					ImportState:        true,
+					ImportStateId:      "adoption-test:adoption-alias",
+					ImportStatePersist: true,
+				},
+				{
+					Config:      config,
+					PlanOnly:    true,
+					ExpectError: regexp.MustCompile(`Cannot manage package with non-canonical deployment name`),
+				},
+				{
+					Config: packageAdoptionRemovedConfig("alias"),
+					Check:  checkPackageAdoptionIdentities([]zarfState.DeployedPackage{alias}, []zarfState.DeployedPackage{canonical}),
+				},
+			},
+		})
+	})
+
+	t.Run("canonical import and redeployment retain one identity", func(t *testing.T) {
+		packagePath, _ := buildPackageAdoptionFixtures(t)
+		alias := zarfState.DeployedPackage{Name: "adoption-alias", NamespaceOverride: "adoption-test"}
+		canonical := zarfState.DeployedPackage{Name: "adoption-canonical", NamespaceOverride: "adoption-test"}
+		deployCanonicalPackageAdoptionFixture(t, packagePath)
+		t.Cleanup(func() { cleanupPackageAdoptionIdentity(t, canonical) })
+		if err := checkPackageAdoptionIdentities([]zarfState.DeployedPackage{canonical}, []zarfState.DeployedPackage{alias})(nil); err != nil {
+			t.Fatal(err)
+		}
+		config := packageAdoptionConfig(packagePath, "canonical")
+		updatedConfig := strings.Replace(config, "verify = false", "verify = true", 1)
+
+		resource.Test(t, resource.TestCase{
+			PreCheck:                 func() { testAccPreCheck(t) },
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			Steps: []resource.TestStep{
+				{
+					ResourceName:    "uds_package.canonical",
+					Config:          config,
+					ImportState:     true,
+					ImportStateKind: resource.ImportBlockWithID,
+					ImportStateId:   "adoption-test:adoption-canonical",
+					// Zarf's deployed state cannot reconstruct all configured inputs, so
+					// configuration-driven import currently plans a follow-up deployment.
+					ExpectNonEmptyPlan: true,
+				},
+				{
+					ResourceName:       "uds_package.canonical",
+					Config:             config,
+					ImportState:        true,
+					ImportStateId:      "adoption-test:adoption-canonical",
+					ImportStatePersist: true,
+				},
+				{
+					Config: updatedConfig,
+					Check: resource.ComposeAggregateTestCheckFunc(
+						resource.TestCheckResourceAttr("uds_package.canonical", "id", "adoption-test:adoption-canonical"),
+						resource.TestCheckResourceAttr("uds_package.canonical", "name", "adoption-canonical"),
+						checkPackageAdoptionIdentities([]zarfState.DeployedPackage{canonical}, []zarfState.DeployedPackage{alias}),
+					),
+				},
+			},
+		})
 	})
 }
 

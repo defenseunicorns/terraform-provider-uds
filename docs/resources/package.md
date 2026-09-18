@@ -292,7 +292,21 @@ Read-Only:
 
 Import is supported using the following syntax:
 
-> Import records the package ID in state. The first apply after import redeploys the package from the declared resource configuration. Zarf does not currently expose enough of the deployed configuration, including applied values, for the provider to determine whether that configuration has drifted.
+Import a deployed Zarf package using either `name` or `namespace:name`. Import and refresh do not rename, deploy, or remove the package.
+
+The deployed name must match the `metadata.name` in the package configured by `source` before the provider can manage it. UDS CLI bundle deployments can create an alias when a package entry's `name` differs from the Zarf package's `metadata.name`. The provider does not support managing these aliased deployments.
+
+A standalone CLI import may initially accept an alias because it has no resource configuration or `source` to compare. If a later plan or apply reports `Cannot manage package with non-canonical deployment name`, leave the workload running and remove only its Terraform state entry:
+
+```shell
+tofu state rm uds_package.example
+```
+
+!> Do not use `tofu destroy`, `zarf package remove`, or `helm uninstall` instead of `tofu state rm` unless you intend to remove the workload. These commands can remove shared Helm releases or Kubernetes resources.
+
+To manage an aliased deployment with this provider, first migrate it outside Terraform so its deployed name matches the source package's `metadata.name`. Review the package's resources, Helm releases, actions, hooks, and namespace behavior; back up relevant state; and verify application health before importing the canonical identity. The provider does not automate this migration.
+
+After a successful import, the first apply may redeploy the package because Zarf's deployed state does not contain every configured input needed to produce a no-op plan. Deleting the Terraform resource verifies and removes the exact package identity recorded in state. If that package is already absent from the cluster, deletion succeeds without further action.
 
 In Terraform v1.5.0 and later, the [`import` block](https://developer.hashicorp.com/terraform/language/import) can be used with the `id` attribute, for example:
 
