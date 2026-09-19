@@ -36,7 +36,7 @@ uds run test-acc
 
 > [!TIP]
 > To rerun acceptance tests against the cluster left running by `test-acc`, use
-> `uds run test:acc`. Unlike `test-acc`, this task does not recreate the cluster.
+> `uds run test-acc-reuse`. Unlike `test-acc`, this task reuses the existing cluster.
 
 Run OpenTofu directly from a configuration directory:
 
@@ -61,6 +61,9 @@ uds run dev-plan --set TOFU_DIR=examples/zarf_values
 Commits run hk automatically. Other available development tasks include:
 
 ```console
-uds run lint:check
+uds run lint
+uds run lint-fix
 uds run generate
 ```
+
+`lint-fix` modifies files to fix supported lint findings; rerun `lint` afterward to verify the result.

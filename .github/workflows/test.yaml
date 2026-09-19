@@ -42,7 +42,7 @@ jobs:
           install: true
           cache: true
       - name: Lint
-        run: uds run lint:check
+        run: uds run lint
 
   acceptance:
     name: Acceptance tests
@@ -61,7 +61,7 @@ jobs:
           cache: true
 
       - name: Configure Provider Development Overrides
-        run: uds run build:configure
+        run: uds run configure
 
       - name: Acceptance tests
         run: uds run test-acc
