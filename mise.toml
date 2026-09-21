@@ -2,14 +2,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
 [tools]
-go = "1.27.0"
-hk = "1.58.1"
+go = "1.27.1"
+hk = "2.0.1"
 golangci-lint = "2.13.2"
 "aqua:google/addlicense" = "1.2.0"
 opentofu = "1.12.6"
-terraform = "1.16.1"
+terraform = "1.16.3"
 k3d = "5.9.0"
-"aqua:defenseunicorns/uds-cli" = "0.37.0"
+"aqua:defenseunicorns/uds-cli" = "0.38.0"
 
 [env]
 MISE_USE_VERSIONS_HOST_TRACK = "0"
