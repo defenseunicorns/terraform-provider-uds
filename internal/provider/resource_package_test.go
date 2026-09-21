@@ -1607,7 +1607,7 @@ func TestPackageResource_UpdateRejectsAliasBeforeMutation(t *testing.T) {
 	resp := runUpdateLifecycleTest(t, resource, planModel, stateModel)
 
 	require.True(t, resp.Diagnostics.HasError())
-	assert.Equal(t, "Cannot manage package with non-canonical deployment name", resp.Diagnostics.Errors()[0].Summary())
+	assert.Equal(t, "Cannot manage package whose deployed name differs from its package-defined name", resp.Diagnostics.Errors()[0].Summary())
 	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "test-package-alias")
 	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "test-package")
 	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "tofu state rm")
@@ -1710,7 +1710,7 @@ func TestPackageResource_UpdateRejectsCanonicalNameChangedBeforeDeploy(t *testin
 	resp := runUpdateLifecycleTest(t, packageResource, planModel, stateModel)
 
 	require.True(t, resp.Diagnostics.HasError())
-	assert.Equal(t, "Cannot manage package with non-canonical deployment name", resp.Diagnostics.Errors()[0].Summary())
+	assert.Equal(t, "Cannot manage package whose deployed name differs from its package-defined name", resp.Diagnostics.Errors()[0].Summary())
 	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "changed-name")
 	assert.True(t, resp.State.Raw.IsNull(), "Update must not rewrite state after a late canonical-name mismatch")
 	packager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
@@ -3904,10 +3904,12 @@ func TestCanonicalMismatchDiagnosticIsActionable(t *testing.T) {
 
 	detail := canonicalIdentityDetail(err)
 
-	assert.Equal(t, "Cannot manage package with non-canonical deployment name", canonicalIdentitySummary(err))
+	assert.Equal(t, "Cannot manage package whose deployed name differs from its package-defined name", canonicalIdentitySummary(err))
 	assert.Contains(t, detail, "deployed-name")
 	assert.Contains(t, detail, "canonical-name")
 	assert.Contains(t, detail, "team-a")
+	assert.Contains(t, detail, "package-defined identity")
+	assert.Contains(t, detail, "remove the resource from configuration")
 	assert.Contains(t, detail, "tofu state rm")
 	assert.NotContains(t, detail, "configure the name")
 }
@@ -4399,7 +4401,7 @@ func TestModifyPlan_RejectsPriorAliasWithoutClusterLookup(t *testing.T) {
 	}, &resp)
 
 	require.True(t, resp.Diagnostics.HasError())
-	assert.Equal(t, "Cannot manage package with non-canonical deployment name", resp.Diagnostics.Errors()[0].Summary())
+	assert.Equal(t, "Cannot manage package whose deployed name differs from its package-defined name", resp.Diagnostics.Errors()[0].Summary())
 	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "test-package-alias")
 	cluster.AssertNotCalled(t, "NewWithWait", mock.Anything)
 	packager.AssertExpectations(t)
@@ -4542,7 +4544,7 @@ func TestModifyPlan_StateOnlyAndPackageChangeRunsPackageChecks(t *testing.T) {
 	}, &resp)
 
 	require.True(t, resp.Diagnostics.HasError())
-	assert.Contains(t, resp.Diagnostics.Errors()[0].Summary(), "Cannot verify package canonical name")
+	assert.Contains(t, resp.Diagnostics.Errors()[0].Summary(), "Cannot verify package-defined name")
 	mockPackager.AssertCalled(t, "LoadPackage", mock.Anything, mock.Anything, mock.Anything)
 }
 

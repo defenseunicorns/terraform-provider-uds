@@ -100,14 +100,14 @@ An explicitly allowlisted state-only update MUST preserve prior deployment-deriv
 - **THEN** the provider blocks deletion rather than risk removing a different package
 
 ### Requirement: Actionable adoption diagnostics and migration guidance
-Canonical-name mismatch diagnostics MUST identify the deployed name, canonical source name, namespace override, source attribute, and required external migration action, and MUST NOT suggest configuring the computed-only `name` attribute. Diagnostics MUST NOT expose source credentials, sensitive source content, or raw package, registry, transport, or cluster error details that have not been established as safe.
+Package-defined-name mismatch diagnostics MUST identify the deployed name, package-defined source name, namespace override, source attribute, and required external migration action, and MUST NOT suggest configuring the computed-only `name` attribute. Diagnostics MUST NOT expose source credentials, sensitive source content, or raw package, registry, transport, or cluster error details that have not been established as safe.
 
-Public documentation MUST distinguish non-destructive Terraform state removal from workload deletion and MUST explain why aliased deployments are unsupported. It MUST provide a guarded, operator-run migration workflow for potentially eligible ordinary-chart and raw-manifest packages. The workflow MUST require operators to inventory and back up relevant Terraform, Zarf, Helm, and Kubernetes state; reconstruct deployment inputs; classify every installed release or component; compare canonical rendering and identity with the live deployment; apply explicit stop conditions; perform an eligible canonical deployment externally; verify the handoff across state layers; remove only the exact verified stale alias Zarf Secret; and import and review the canonical provider resource.
+Public documentation MUST distinguish non-destructive Terraform state removal from workload deletion and MUST explain why aliased deployments are unsupported. It MUST provide a guarded, operator-run migration workflow for potentially eligible ordinary-chart and raw-manifest packages. The workflow MUST require operators to inventory and back up relevant Terraform, Zarf, Helm, and Kubernetes state; reconstruct deployment inputs; classify every installed release or component; compare package-defined rendering and identity with the live deployment; apply explicit stop conditions; perform an eligible package-defined deployment externally; verify the handoff across state layers; remove only the exact verified stale alias Zarf Secret; and import and review the package-defined provider resource.
 
 The documentation MUST explain that takeover can claim exact Helm-rendered Kubernetes objects but cannot rename or move them. It MUST warn against using Terraform destroy, alias package removal, old-release uninstall, or direct Helm storage editing as substitutes for state removal or verified cleanup. It MUST require stale raw-manifest Helm release history to be retained after ownership transfer and MUST state that partial failures require package-specific investigation because backups do not provide a universal rollback.
 
-#### Scenario: Canonical-name mismatch is reported
-- **WHEN** the provider detects a deployed-to-canonical name mismatch
+#### Scenario: Package-defined-name mismatch is reported
+- **WHEN** the provider detects that the deployed name differs from the package-defined name
 - **THEN** the diagnostic explains that management is unsupported because later Zarf operations would target a different identity and directs the user toward external migration
 
 #### Scenario: Validation dependency returns unsafe details
@@ -116,28 +116,28 @@ The documentation MUST explain that takeover can claim exact Helm-rendered Kuber
 
 #### Scenario: User abandons a provisional import
 - **WHEN** a user needs to preserve the deployed workload after a provisional import is rejected
-- **THEN** documentation directs the user to use `tofu state rm` and warns against destroy, package removal, or Helm uninstall as substitutes
+- **THEN** documentation directs the user to remove both the resource configuration and provisional state with `tofu state rm`, and warns against destroy, package removal, or Helm uninstall as substitutes
 
 #### Scenario: Ordinary chart retains release and object identity
-- **WHEN** an ordinary chart's canonical deployment retains its Helm release name and namespace and renders the same intended Kubernetes object identities
+- **WHEN** an ordinary chart's package-defined deployment retains its Helm release name and namespace and renders the same intended Kubernetes object identities
 - **THEN** documentation presents it as a potential basic migration candidate after all required input, action, hook, shared-resource, and render checks pass
 
 #### Scenario: Raw manifest changes generated release identity
-- **WHEN** a raw manifest's canonical deployment uses a different package-name-derived Helm release but renders the same intended Kubernetes object identities
+- **WHEN** a raw manifest's package-defined deployment uses a different package-name-derived Helm release but renders the same intended Kubernetes object identities
 - **THEN** documentation explains the eligible exact-object takeover path and requires the old Helm release history to remain untouched and documented after handoff
 
 #### Scenario: Migration hits a stop condition
-- **WHEN** canonical rendering changes object identity or namespace, has incompatible selectors or immutable fields, omits resources without an explicit disposition, involves unresolved shared resources or unsafe hooks or actions, or causes multiple aliases to converge on one canonical identity
+- **WHEN** package-defined rendering changes object identity or namespace, has incompatible selectors or immutable fields, omits resources without an explicit disposition, involves unresolved shared resources or unsafe hooks or actions, or causes multiple aliases to converge on one package-defined identity
 - **THEN** documentation directs the operator to stop the basic procedure and perform an application-specific migration assessment
 
-#### Scenario: Canonical handoff is verified
-- **WHEN** canonical Zarf state, Helm ownership and status, Kubernetes object identity and health, and application behavior have all been verified after external canonical deployment
-- **THEN** documentation permits deletion of only the decoded, compared, and freshly backed-up stale alias Zarf Secret before canonical import
+#### Scenario: Package-defined handoff is verified
+- **WHEN** package-defined Zarf state, Helm ownership and status, Kubernetes object identity and health, and application behavior have all been verified after external package-defined deployment
+- **THEN** documentation permits deletion of only the decoded, compared, and freshly backed-up stale alias Zarf Secret before package-defined import
 
 #### Scenario: Migration partially fails
 - **WHEN** a migration step leaves Terraform, Zarf, Helm, or Kubernetes state inconsistent or the expected verification does not pass
 - **THEN** documentation directs the operator to stop and investigate the package-specific state without claiming that restoring one backup or uninstalling one release is a safe rollback
 
-#### Scenario: Canonical identity is imported
+#### Scenario: Package-defined identity is imported
 - **WHEN** the external handoff and exact alias-state cleanup have completed successfully
-- **THEN** documentation directs the operator to import the canonical name and namespace identity, run a plan, verify canonical state, and review the first post-import deployment
+- **THEN** documentation directs the operator to import the package-defined name and namespace identity, run a plan, verify package-defined state, and review the first post-import deployment

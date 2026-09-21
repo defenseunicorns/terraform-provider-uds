@@ -354,7 +354,7 @@ func TestAccPackageResourceAdoptionSafety(t *testing.T) {
 					ImportState:     true,
 					ImportStateKind: resource.ImportBlockWithID,
 					ImportStateId:   "adoption-test:adoption-alias",
-					ExpectError:     regexp.MustCompile(`Cannot manage package with non-canonical deployment name`),
+					ExpectError:     regexp.MustCompile(`Cannot manage package whose deployed name differs from its package-defined name`),
 				},
 				{
 					ResourceName:       "uds_package.alias",
@@ -366,7 +366,7 @@ func TestAccPackageResourceAdoptionSafety(t *testing.T) {
 				{
 					Config:      config,
 					PlanOnly:    true,
-					ExpectError: regexp.MustCompile(`Cannot manage package with non-canonical deployment name`),
+					ExpectError: regexp.MustCompile(`Cannot manage package whose deployed name differs from its package-defined name`),
 				},
 				{
 					Config: packageAdoptionRemovedConfig("alias"),

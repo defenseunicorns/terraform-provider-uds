@@ -90,13 +90,13 @@ type canonicalNameMismatchError struct {
 }
 
 func (e *canonicalNameMismatchError) Error() string {
-	return fmt.Sprintf("deployed package name %q does not match canonical source package name %q", e.deployedName, e.canonicalName)
+	return fmt.Sprintf("deployed package name %q does not match package-defined name %q from the configured source", e.deployedName, e.canonicalName)
 }
 
 type canonicalSourceError struct{}
 
 func (e *canonicalSourceError) Error() string {
-	return "could not load source package metadata needed to verify its canonical name"
+	return "could not load source package metadata needed to verify its package-defined name"
 }
 
 // deploymentAttemptedError marks failures after packager.Deploy was invoked
@@ -1410,17 +1410,17 @@ func identityErrorDetail(err error) string {
 func canonicalIdentitySummary(err error) string {
 	var mismatch *canonicalNameMismatchError
 	if errors.As(err, &mismatch) {
-		return "Cannot manage package with non-canonical deployment name"
+		return "Cannot manage package whose deployed name differs from its package-defined name"
 	}
-	return "Cannot verify package canonical name"
+	return "Cannot verify package-defined name"
 }
 
 func canonicalIdentityDetail(err error) string {
 	var mismatch *canonicalNameMismatchError
 	if errors.As(err, &mismatch) {
-		return fmt.Sprintf("The deployed package is named %q in namespace %q, but the configured source has canonical name %q. Managing it could target a different Zarf package identity. Migrate the package externally, then import its canonical identity; to preserve this workload while migrating, remove only its Terraform state entry with `tofu state rm`.", mismatch.deployedName, mismatch.namespace, mismatch.canonicalName)
+		return fmt.Sprintf("The deployed package is named %q in namespace %q, but the configured source defines the package name as %q. Managing it could target a different Zarf package identity. Follow the package-alias migration procedure, then import the package-defined identity. If provisional state must be removed while preserving the workload, remove the resource from configuration and use `tofu state rm`; do not destroy the package.", mismatch.deployedName, mismatch.namespace, mismatch.canonicalName)
 	}
-	return "The configured source package could not be inspected to establish its canonical name. No package mutation was performed."
+	return "The configured source package could not be inspected to establish its package-defined name. No package mutation was performed."
 }
 
 // deployAsNew deploys a package only when its name and namespace are not already present.
