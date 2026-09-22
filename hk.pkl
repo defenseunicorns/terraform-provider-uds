@@ -36,8 +36,8 @@ local linters = new Mapping<String, Step> {
         glob = List("**/*.go", "go.mod", "go.sum")
     }
     ["license-check"] {
-        check = "uds run lint:license"
-        fix = "uds run lint:fix-license"
+        check = "uds run lint-tasks:license"
+        fix = "uds run lint-tasks:fix-license"
     }
     ["generated-docs"] {
         check = """
