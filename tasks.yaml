@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
 includes:
-  - build: tasks/build.yaml
-  - test: tasks/test.yaml
-  - lint: tasks/lint.yaml
+  - build-tasks: tasks/build.yaml
+  - test-tasks: tasks/test.yaml
+  - lint-tasks: tasks/lint.yaml
 
 variables:
   - name: TOFU_DIR
@@ -14,45 +14,60 @@ tasks:
   - name: default
     description: "Run lint checks and unit tests"
     actions:
-      - task: lint:check
-      - task: test:unit
+      - task: lint
+      - task: test-unit
 
   - name: build
     description: "Build and configure the provider for local OpenTofu development"
     actions:
-      - cmd: uds run build:local
-      - cmd: uds run build:configure
+      - task: build-tasks:local
+      - task: build-tasks:configure
 
-  - name: lint
-    description: "Lint the code"
+  - name: configure
+    description: "Configure OpenTofu to use the local provider build"
     actions:
-      - task: lint:check
-
-  - name: test
-    description: "Run the tests"
-    actions:
-      - cmd: uds run test:all
+      - task: build-tasks:configure
 
   - name: generate
     description: "Format examples and regenerate provider documentation"
     actions:
-      - cmd: uds run build:generate
+      - task: build-tasks:generate
+
+  - name: lint
+    description: "Lint the code"
+    actions:
+      - task: lint-tasks:check
+
+  - name: lint-fix
+    description: "Fix lint findings where supported"
+    actions:
+      - task: lint-tasks:fix
+
+  - name: test
+    description: "Run tests across all Go packages (acceptance tests are compiled but skipped)"
+    actions:
+      - task: test-tasks:all
 
   - name: test-unit
-    description: "Run unit tests for the project"
+    description: "Run unit tests in internal packages"
     actions:
-      - task: test:unit
-
-  - name: setup-cluster
-    description: "Create the local k3d/UDS test cluster"
-    actions:
-      - task: test:setup-cluster
+      - task: test-tasks:unit
 
   - name: test-acc
     description: "Create the test cluster and run acceptance tests"
     actions:
-      - task: test:setup-cluster
-      - task: test:acc
+      - task: test-tasks:setup-cluster
+      - task: test-tasks:acc
+
+  - name: test-acc-reuse
+    description: "Run acceptance tests against the existing test cluster"
+    actions:
+      - task: test-tasks:acc
+
+  - name: setup-cluster
+    description: "Create the local k3d/UDS test cluster"
+    actions:
+      - task: test-tasks:setup-cluster
 
   - name: dev-plan
     description: "Plan using the locally built provider"
@@ -66,7 +81,7 @@ tasks:
             echo "TF_CLI_CONFIG_FILE is required. Activate mise in your shell before running this task."
             exit 1
           fi
-      - cmd: uds run build
+      - task: build
       - cmd: tofu -chdir=${TOFU_DIR} plan
 
   - name: dev-apply
@@ -81,7 +96,7 @@ tasks:
             echo "TF_CLI_CONFIG_FILE is required. Activate mise in your shell before running this task."
             exit 1
           fi
-      - cmd: uds run build
+      - task: build
       - cmd: tofu -chdir=${TOFU_DIR} apply
 
   - name: dev-destroy
@@ -96,5 +111,5 @@ tasks:
             echo "TF_CLI_CONFIG_FILE is required. Activate mise in your shell before running this task."
             exit 1
           fi
-      - cmd: uds run build
+      - task: build
       - cmd: tofu -chdir=${TOFU_DIR} destroy

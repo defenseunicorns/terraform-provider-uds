@@ -4,23 +4,24 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/defenseunicorns/maru-runner/refs/heads/main/tasks.schema.json
 tasks:
   - name: all
-    description: "Run the tests"
+    description: "Run tests across all Go packages (acceptance tests are compiled but skipped)"
     actions:
       - cmd: go test -v -cover -timeout=120s -parallel=10 ./...
 
   - name: unit
-    description: "Run unit tests for the project"
+    description: "Run unit tests in internal packages"
     actions:
       - cmd: go test -v -cover -timeout 10m ./internal/...
 
   - name: setup-cluster
+    description: "Create the local k3d/UDS test cluster"
     actions:
       - description: "Create the local k3d/UDS test cluster"
-        # renovate: datasource=github-tags depName=defenseunicorns/uds-k3d versioning=semver
-        cmd: "uds zarf package deploy oci://defenseunicorns/uds-k3d:0.20.3 --confirm --no-progress"
+        # renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds-k3d versioning=docker
+        cmd: "uds zarf package deploy oci://ghcr.io/defenseunicorns/packages/uds-k3d:0.20.3-airgap --confirm --no-progress"
 
   - name: acc
-    description: "Run acceptance tests"
+    description: "Run acceptance tests against an existing cluster"
     actions:
       # Point terraform-plugin-testing at the local tofu CLI and resolve the
       # in-process provider against registry.opentofu.org rather than the
