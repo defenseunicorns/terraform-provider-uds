@@ -18,7 +18,7 @@ tasks:
     actions:
       - description: "Create the local k3d/UDS test cluster"
         # renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds-k3d versioning=docker
-        cmd: "uds zarf package deploy oci://defenseunicorns/uds-k3d:0.20.3-airgap --confirm --no-progress"
+        cmd: "uds zarf package deploy oci://ghcr.io/defenseunicorns/packages/uds-k3d:0.20.3-airgap --confirm --no-progress"
 
   - name: acc
     description: "Run acceptance tests against an existing cluster"
