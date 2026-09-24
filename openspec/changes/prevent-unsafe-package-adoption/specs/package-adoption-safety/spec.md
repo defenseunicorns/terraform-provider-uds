@@ -74,7 +74,7 @@ The provider MUST preserve import IDs in `name` and `namespace:name` forms and M
 
 #### Scenario: Provisional alias reaches configured management
 - **WHEN** a later configured plan or apply compares a provisional alias with a differently named canonical source
-- **THEN** the provider blocks source-derived management and directs the user to remove only the Terraform state entry and migrate externally before canonical import
+- **THEN** the provider blocks source-derived management and directs the user to migrate outside the provider before package-defined import; preserving the workload while abandoning the provisional import requires removing both active resource configuration and its state entry
 
 ### Requirement: Safe lifecycle exceptions
 An explicitly allowlisted state-only update MUST preserve prior deployment-derived identity without cluster lookup, source loading, component removal, deployment, or package removal. Delete MUST freshly verify and remove the exact identity recorded in state without requiring source access or canonical-name equality.
@@ -102,7 +102,7 @@ An explicitly allowlisted state-only update MUST preserve prior deployment-deriv
 ### Requirement: Actionable adoption diagnostics and migration guidance
 Package-defined-name mismatch diagnostics MUST identify the deployed name, package-defined source name, namespace override, source attribute, and required external migration action, and MUST NOT suggest configuring the computed-only `name` attribute. Diagnostics MUST NOT expose source credentials, sensitive source content, or raw package, registry, transport, or cluster error details that have not been established as safe.
 
-Public documentation MUST distinguish non-destructive Terraform state removal from workload deletion and MUST explain why aliased deployments are unsupported. It MUST provide a guarded, operator-run migration workflow for potentially eligible ordinary-chart and raw-manifest packages. The workflow MUST require operators to inventory and back up relevant Terraform, Zarf, Helm, and Kubernetes state; reconstruct deployment inputs; classify every installed release or component; compare package-defined rendering and identity with the live deployment; apply explicit stop conditions; perform an eligible package-defined deployment externally; verify the handoff across state layers; remove only the exact verified stale alias Zarf Secret; and import and review the package-defined provider resource.
+Public documentation MUST distinguish non-destructive Terraform state removal from workload deletion and MUST explain why UDS CLI Legacy aliased deployments are unsupported. It MUST provide a guarded, operator-run migration workflow for potentially eligible ordinary-chart and raw-manifest packages. The workflow MUST require operators to inventory and back up relevant Terraform, Zarf, Helm, and Kubernetes state; reconstruct deployment inputs; classify every installed release or component; compare package-defined rendering and identity with the live deployment; apply explicit stop conditions; perform an eligible package-defined deployment externally; verify the handoff across state layers; remove only the exact verified stale alias Zarf Secret; and import and review the package-defined provider resource. It MUST require both the selected deployment path and the final provider configuration to reproduce the workload's required inputs.
 
 The documentation MUST explain that takeover can claim exact Helm-rendered Kubernetes objects but cannot rename or move them. It MUST warn against using Terraform destroy, alias package removal, old-release uninstall, or direct Helm storage editing as substitutes for state removal or verified cleanup. It MUST require stale raw-manifest Helm release history to be retained after ownership transfer and MUST state that partial failures require package-specific investigation because backups do not provide a universal rollback.
 
@@ -120,11 +120,15 @@ The documentation MUST explain that takeover can claim exact Helm-rendered Kuber
 
 #### Scenario: Ordinary chart retains release and object identity
 - **WHEN** an ordinary chart's package-defined deployment retains its Helm release name and namespace and renders the same intended Kubernetes object identities
-- **THEN** documentation presents it as a potential basic migration candidate after all required input, action, hook, shared-resource, and render checks pass
+- **THEN** documentation presents an ordinary-chart-only package as a potential Legacy bundle redeployment candidate after all required input, action, hook, shared-resource, provider-configuration, and render checks pass
 
 #### Scenario: Raw manifest changes generated release identity
 - **WHEN** a raw manifest's package-defined deployment uses a different package-name-derived Helm release but renders the same intended Kubernetes object identities
-- **THEN** documentation explains the eligible exact-object takeover path and requires the old Helm release history to remain untouched and documented after handoff
+- **THEN** documentation explains direct Zarf exact-object takeover only when bundle inputs and final provider inputs can be reproduced without Legacy chart-specific overrides, and requires the old Helm release history to remain untouched and documented after handoff
+
+#### Scenario: Legacy chart overrides and raw manifests require incompatible migration commands
+- **WHEN** a raw-manifest or mixed package requires Legacy UDS bundle chart overrides or bundle-only inputs that direct Zarf deployment cannot reproduce
+- **THEN** documentation does not present either a renamed Legacy bundle redeployment without takeover or a direct Zarf takeover without those inputs as a basic migration path, and directs the operator to a custom migration
 
 #### Scenario: Migration hits a stop condition
 - **WHEN** package-defined rendering changes object identity or namespace, has incompatible selectors or immutable fields, omits resources without an explicit disposition, involves unresolved shared resources or unsafe hooks or actions, or causes multiple aliases to converge on one package-defined identity

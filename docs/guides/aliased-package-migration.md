@@ -1,14 +1,27 @@
 ---
-page_title: "Migrate a UDS Package Alias"
+page_title: "Migrate a Legacy UDS Package Alias"
 description: |-
-  Migrate an eligible UDS CLI deployment alias to the name defined by its source package while preserving the deployed workload.
+  Migrate an eligible UDS CLI Legacy deployment alias to the name defined by its source package while preserving the deployed workload.
 ---
 
 # Migrate a Package Previously Deployed by UDS CLI Using an Overridden Package Name
 
-A Zarf package source defines its name in `metadata.name`. When a UDS bundle gives that package entry a different `name` in `uds-bundle.yaml`, UDS CLI applies the deployment alias to the package definition before handing it to Zarf. The resulting Zarf package record, including its embedded `data.metadata.name`, reflects the deployment alias rather than the name from the source artifact.
+A Zarf package source defines its name in `metadata.name`. In UDS CLI **Legacy mode**, when a bundle gives that package entry a different `name` in `uds-bundle.yaml`, UDS CLI applies the deployment alias to the package definition before handing it to Zarf. The resulting Zarf package record, including its embedded `data.metadata.name`, reflects the deployment alias rather than the name from the source artifact. UDS CLI Next mode does not apply this Legacy name override.
 
-This is expected UDS CLI behavior, but it creates two relevant identities:
+For example, if the source package defines `metadata.name: podinfo`, this Legacy bundle entry deploys it as `podinfo-a`:
+
+```yaml
+kind: UDSBundle
+metadata:
+  name: example
+  version: 0.1.0
+packages:
+  - name: podinfo-a
+    repository: ghcr.io/example/packages/podinfo
+    ref: 0.1.0
+```
+
+This creates two relevant identities:
 
 - the **package-defined name** from `metadata.name` in the source package;
 - the **deployment alias** applied by the UDS bundle.
@@ -39,7 +52,7 @@ zarf-<sha1("raw-<package-name>-<component-name>-<manifest-name>")>
 
 Changing from a deployment alias to the package-defined name therefore creates a different Helm release for a raw manifest, even when both releases render the same Kubernetes objects. The new release created by the package-defined deployment must take ownership of those exact objects. The old release history remains in the cluster and must not be uninstalled because it still describes objects now owned by the new release.
 
-The migration command uses `uds zarf package deploy --take-ownership`. Zarf passes this option to Helm so the new release can claim exact objects that already exist. It does not rename objects, move namespaced objects, merge releases, reconcile incompatible selectors or immutable fields, or make package actions and Helm hooks safe to replay.
+For raw-manifest takeover, `uds zarf package deploy --take-ownership` passes the ownership option to Helm so the new release can claim exact objects that already exist. It does not rename objects, move namespaced objects, merge releases, reconcile incompatible selectors or immutable fields, or make package actions and Helm hooks safe to replay. Legacy `uds deploy` does not offer this takeover option; `--force-conflicts` controls a different kind of conflict and is not a substitute.
 
 ## State involved in the migration
 
@@ -70,7 +83,7 @@ Back up OpenTofu, Zarf, Helm, and Kubernetes state
 Remove provisional OpenTofu state, if present, and keep the resource configuration inactive
                             |
                             v
-Deploy the source package under its package-defined name
+Use the eligible Legacy bundle or direct Zarf deployment path
                             |
                             v
 Verify the package, releases, objects, and application
@@ -88,9 +101,15 @@ When possible, perform this migration before adding or importing the `uds_packag
 
 Use this procedure only when deployment under the package-defined name preserves the existing Kubernetes object names and namespaces. Assess every installed release and component independently because a package can contain ordinary charts, raw manifests, or both.
 
-An ordinary chart is a potential candidate when its Helm release name, release namespace, and Kubernetes object identities remain unchanged.
+An ordinary-chart-only package is a potential candidate for **Legacy bundle redeployment** when every Helm release name, release namespace, and Kubernetes object identity remains unchanged. This path can retain the bundle's chart overrides and resolved variables during the handoff.
 
-A raw manifest is a potential candidate when its generated release name changes as expected but it renders the same Kubernetes object identities. Those objects can then move to the new release with `uds zarf package deploy --take-ownership`.
+A package with raw manifests (including a mixed chart-and-manifest package) is a potential candidate for **direct Zarf takeover** when each new generated release renders the same Kubernetes object identities and every required deployment input is reproducible using the source package and direct Zarf options. Those objects can then move to the new release with `uds zarf package deploy --take-ownership`.
+
+Legacy UDS bundle `overrides` target specific charts and can set Helm values or chart namespaces. Direct Zarf `--values` and `--set-values` set **Zarf package values**, not those chart-specific Legacy overrides. If a package with raw manifests also needs Legacy chart overrides, chart namespace overrides, or other bundle-only behavior that cannot be reproduced directly, neither path in this guide preserves both the inputs and takeover. Do not rename its bundle entry and run `uds deploy`: it cannot take ownership of the old raw-manifest objects. This case requires a package-specific migration.
+
+For **either path**, the final `uds_package` configuration must also reproduce the required deployment inputs on its first update. The provider supports Zarf package values and variables and currently offers deprecated `component.override` chart-value configuration, but it cannot reproduce every Legacy bundle setting (such as a per-chart namespace override). If the provider cannot preserve the intended workload on its next apply, do not import it through this basic procedure, even if the handoff deployment succeeds.
+
+The preferred longer-term approach is for package maintainers to expose supported customization through Zarf package values so operators can provide the same inputs through the provider or direct Zarf deployment. Test a package version using those values separately and compare its rendering with the live workload before using it for this handoff. Do not combine an unverified change in package behavior with the alias migration. A future Legacy UDS CLI bundle-level takeover option could support remaining override-dependent cases during the handoff, but would not by itself make unsupported provider inputs manageable.
 
 This basic procedure does not apply when:
 
@@ -100,6 +119,7 @@ This basic procedure does not apply when:
 - replaying a package action or Helm hook would repeat a one-time operation or otherwise produce an unsafe side effect;
 - you cannot determine which deployment owns a shared or cluster-scoped resource, or whether takeover would affect another workload;
 - the package does not support the existing namespace override, or the proposed override differs from the alias deployment;
+- the selected deployment path or the final provider configuration cannot reproduce all required bundle variables, chart values or namespaces, imports, exports, or other deployment inputs;
 - multiple aliases would map to the same package-defined name and namespace;
 - you cannot reconstruct the deployed components or inputs well enough to predict the resulting releases and objects;
 - you do not have a recovery plan for the application-specific state affected by the handoff.
@@ -121,9 +141,11 @@ Package architecture/version: <architecture-and-version>
 
 Use an immutable source digest when the source supports one. Confirm that only one deployment alias is moving to the package-defined name and namespace.
 
-Verify the flags supported by the installed UDS CLI. The examples below use current `uds zarf` commands, but available package options can change between versions.
+Verify the flags supported by the installed UDS CLI. The examples use Legacy `uds create` and `uds deploy` or direct `uds zarf` commands, depending on the path; available options can change between versions.
 
 ```shell
+uds create --help
+uds deploy --help
 uds zarf package deploy --help
 uds zarf package inspect manifests --help
 ```
@@ -132,7 +154,7 @@ Use `terraform` in place of `tofu` when the resource is managed by Terraform.
 
 ## 1. Back up the deployment
 
-Back up all four state layers before changing the deployment. These files can contain credentials, package variables, values, and other sensitive data. Set `<secure-backup-directory>` to restricted encrypted storage outside the configuration repository. The timestamp creates a new directory so a later attempt does not overwrite earlier evidence.
+Back up all four state layers and retain the original Legacy bundle artifact, `uds-bundle.yaml`, deployment configuration, and referenced values files before changing the deployment. These files can contain credentials, package variables, values, and other sensitive data. Set `<secure-backup-directory>` to restricted encrypted storage outside the configuration repository. The timestamp creates a new directory so a later attempt does not overwrite earlier evidence.
 
 ```shell
 # Create a private, unique directory outside the configuration repository.
@@ -207,17 +229,19 @@ kubectl --namespace <object-namespace> get <kind> <object-name> -o yaml \
 
 Recover the inputs used for the alias deployment:
 
-- exact package source, version, architecture, and verification settings;
+- exact unmodified Zarf package source, version, architecture, and verification settings (a bundle artifact alone may not provide a directly deployable source reference);
+- original Legacy bundle definition and artifact;
 - selected optional components;
-- values files and sensitive values;
-- package variables;
-- namespace override;
+- package values and values files, including sensitive values;
+- Legacy bundle per-chart `overrides` (static values, variable-backed values, values files, and chart namespaces);
+- resolved shared and per-package variables from `uds-config.yaml`, `UDS_` environment variables, `--set`, and bundle imports/exports;
+- package namespace override;
 - connectivity, registry, and package-specific deployment flags;
 - expected package actions and Helm hooks.
 
-Do not continue if an input cannot be reconstructed. Different components, values, variables, or namespace behavior can produce a different workload even when the package source is unchanged. Package actions and Helm hooks can also run again during deployment.
+Do not continue if an input cannot be reconstructed or represented in the eventual `uds_package` configuration. Different components, values, variables, chart overrides, or namespace behavior can produce a different workload even when the package source is unchanged. Renaming a bundle entry also changes the name used by package-specific configuration, `--set` selectors, and imports or exports; update those references in a rebuilt bundle. A `--packages` deployment selects only that package; if it depends on exports from another package that are unavailable when deployed alone, stop and design a package-specific migration rather than redeploying the entire bundle by default. Package actions and Helm hooks can also run again during deployment.
 
-Inspect the package definition and render it with the reconstructed inputs:
+Inspect the unmodified Zarf package definition. For the direct Zarf takeover path, render it using the reconstructed **package-level** values and variables:
 
 ```shell
 uds zarf package inspect definition <package-source> \
@@ -231,15 +255,15 @@ uds zarf package inspect manifests <package-source> \
   > "$BACKUP_DIR/package-manifests.yaml"
 ```
 
-Omit flags that were not used and repeat supported flags where needed. Compare the new rendering with the stored Helm manifests and the live cluster. Expected Zarf and Helm metadata can change, but the intended object kind, API identity, name, and namespace must remain compatible.
+Omit flags that were not used and repeat supported flags where needed. The `inspect manifests` command does not apply Legacy bundle chart overrides; do not use its output alone to claim equivalence for the bundle path. Test the rebuilt bundle with its resolved overrides in a representative environment and compare the result against stored Helm manifests and the live workload. For either path, the intended object kind, API identity, name, and namespace must remain compatible; account for expected Zarf and Helm metadata changes.
 
-Classify every installed release as one of these paths:
+Classify every installed release, then select one deployment path for the **whole package**:
 
 | Path | Evidence required | Expected handoff |
 | --- | --- | --- |
-| Ordinary chart | Release name, release namespace, and intended object identities remain the same | The existing Helm release is upgraded or reused |
-| Raw manifest | The generated release changes, but intended object identities remain the same | A new Helm release takes ownership of those exact objects |
-| Needs custom migration | Evidence is incomplete or any eligibility condition fails | Stop this procedure and design a package-specific migration |
+| Ordinary chart only | All release names, release namespaces, and intended object identities remain the same; provider configuration can reproduce the required inputs | Redeploy the rebuilt Legacy bundle entry; existing Helm releases are upgraded or reused |
+| Raw manifest or mixed package | Generated raw-manifest releases change, intended object identities remain the same, and **all** inputs can be represented by direct Zarf options and provider configuration | Deploy the unmodified Zarf package directly; new raw-manifest releases take ownership of those exact objects |
+| Needs custom migration | Required inputs cannot be reproduced through the selected path, or any eligibility condition fails | Stop this procedure and design a package-specific migration |
 
 Review selectors, immutable fields, owner references, persistent storage, cluster-scoped objects, custom resources, admission behavior, package actions, and Helm hooks before approving the handoff.
 
@@ -263,9 +287,24 @@ Keep the resource configuration inactive until the import step. If the configura
 
 ## 4. Deploy under the package-defined name
 
-This step creates an additional Zarf package record under the package-defined name. Its ordinary charts refer to the existing Helm releases, while its raw-manifest releases assume ownership of the matching live objects.
+Choose **one** path for the whole package, based on the classification in Step 2. Both paths create an additional Zarf package record under the package-defined name. An ordinary chart reuses its existing Helm release; a raw manifest needs its new generated release to take ownership of matching live objects.
 
-Deploy the same package source with the reconstructed inputs and ownership takeover enabled:
+### Ordinary-chart-only package: redeploy through the Legacy bundle
+
+Use this path only when the package has no raw-manifest releases. Prepare a new Legacy bundle definition with the affected entry's `name` changed from the deployment alias to the package-defined name, leaving its package source, component selection, overrides, and namespace behavior equivalent. Update package-keyed `uds-config.yaml` entries, `--set` selectors, imports, and exports to use the new name. Rebuild the bundle from the correct package artifact; merely passing the old bundle artifact to `uds deploy` cannot change the name embedded in it. When the bundle includes a local package, ensure the staging filename and package entry match the new name as required by the installed Legacy CLI.
+
+Verify that this rebuilt bundle preserves the required inputs and does not unexpectedly redeploy other packages. Deploy only the renamed entry with the original configuration and CLI inputs:
+
+```shell
+uds create <rebuilt-bundle-directory> --output <output-directory>
+uds deploy <rebuilt-bundle-artifact> --packages <package-defined-name>
+```
+
+Use the same architecture, signing, verification, `uds-config.yaml`, environment variables, and `--set` values established during assessment; adjust package-specific references to the new name. Review the interactive deployment summary before confirming. Legacy `uds deploy` retains bundle-level chart overrides, but has no `--take-ownership` option. Do not use `--force-conflicts` as a replacement for Helm release takeover.
+
+### Package with raw manifests: deploy the unmodified Zarf package directly
+
+Use this path only if **every** required input can be supplied without the Legacy bundle's chart-specific overrides, imports/exports, or other unavailable bundle processing. The unmodified source Zarf package must have `metadata.name` equal to the package-defined name. A bundle artifact is not a direct substitute for that package source. Pass the matching package-level values, variables, components, and namespace with ownership takeover enabled:
 
 ```shell
 uds zarf package deploy <package-source> \
@@ -277,9 +316,9 @@ uds zarf package deploy <package-source> \
   --take-ownership
 ```
 
-Omit `--namespace` when the alias had no namespace override. Omit other unused flags, and include all verification, connectivity, registry, value, variable, and component options established during assessment. Review the deployment summary and confirm interactively only after verifying the package and reconstructed inputs.
+Omit `--namespace` when the alias had no namespace override. Omit other unused flags, and include all verification, connectivity, registry, value, variable, and component options established during assessment. `--values` and `--set-values` supply Zarf package values, **not** arbitrary Legacy UDS per-chart overrides. Review the deployment summary and confirm interactively only after verifying the package and reconstructed inputs.
 
-For an ordinary chart, Helm should reuse or upgrade the existing release. At this point, both Zarf package records refer to that release. For a raw manifest, Zarf should create the expected release derived from the package-defined name and transfer the exact matching objects to it. Its old release history remains but no longer owns those objects.
+For either path, Helm should reuse or upgrade existing ordinary-chart releases. At this point, both Zarf package records refer to those releases. On the direct Zarf path, raw manifests should create the expected releases derived from the package-defined name and transfer the exact matching objects to them. Their old release histories remain but no longer own those objects.
 
 If deployment reports an error or an unexpected create, replacement, deletion, hook, action, or ownership change, stop. Keep both Zarf records and all Helm histories while you investigate.
 
@@ -333,7 +372,7 @@ Verify once more that the new Zarf record, Helm releases, Kubernetes objects, an
 
 ## 7. Import the package-defined deployment
 
-Restore the assessed `uds_package` resource configuration at `<resource-address>`, including the exact package source, components, values, variables, namespace override, and other provider inputs. Do not apply it before import.
+Restore the assessed `uds_package` resource configuration at `<resource-address>`, including the exact package source, components, values, variables, namespace override, and any supported component chart-value overrides needed to preserve the deployed workload. The provider cannot infer Legacy bundle overrides from Zarf state. Do not apply the configuration before import, and do not import if the provider cannot reproduce the required inputs during a subsequent Terraform or OpenTofu apply after import.
 
 Import the package-defined name that the new Zarf record now uses as its deployed package name. Run exactly one of the following commands.
 
