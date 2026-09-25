@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.6.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.5.4...v0.6.0) (2026-09-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* uds_package no longer attempts to manage existing package deployments whose deployed name differs from the configured source package's canonical metadata.name. Previously deployed packages who's name's were overridden, for example by uds-cli, cannot be imported by the provider and must be migrated externally before they can be managed under their canonical identity.
+
+### Bug Fixes
+
+* reject import/management of packages deployed with overridden package name ([#343](https://github.com/defenseunicorns/terraform-provider-uds/issues/343)) ([08be99e](https://github.com/defenseunicorns/terraform-provider-uds/commit/08be99e8bcc3bd1f525e67622f7c11ec7d8878c5))
+
+
+### Miscellaneous
+
+* **deps:** update application-deps ([#354](https://github.com/defenseunicorns/terraform-provider-uds/issues/354)) ([fe1a92d](https://github.com/defenseunicorns/terraform-provider-uds/commit/fe1a92d5a88cd2ba53397b758f9f3fb87582d49a))
+* **deps:** update support-deps ([#352](https://github.com/defenseunicorns/terraform-provider-uds/issues/352)) ([94cef75](https://github.com/defenseunicorns/terraform-provider-uds/commit/94cef75dfd0e40515937eb76544f2a14c208bd19))
+* **deps:** update support-deps ([#357](https://github.com/defenseunicorns/terraform-provider-uds/issues/357)) ([395064c](https://github.com/defenseunicorns/terraform-provider-uds/commit/395064c139770eb19b2c53f88b511c32be5a9706))
+* improve developer task ergonomics ([#355](https://github.com/defenseunicorns/terraform-provider-uds/issues/355)) ([6b44ec3](https://github.com/defenseunicorns/terraform-provider-uds/commit/6b44ec350b66975e38350e6d913410a37734ae00))
+* switch to airgap version of uds-k3d ([#358](https://github.com/defenseunicorns/terraform-provider-uds/issues/358)) ([edd5a2c](https://github.com/defenseunicorns/terraform-provider-uds/commit/edd5a2c359ecd41d3694f9657690052aeee23fa4))
+
 ## [0.5.4](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.5.3...v0.5.4) (2026-09-18)
 
 
