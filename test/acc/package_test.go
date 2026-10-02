@@ -32,7 +32,7 @@ const (
 	initPackageVersion = "v0.86.0"
 
 	// renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/core-crds versioning=semver extractVersion=^(?<version>.*)-upstream$
-	udsCoreCRDsPackageVersion = "1.13.1"
+	udsCoreCRDsPackageVersion = "1.14.0"
 
 	// renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/nginx versioning=semver extractVersion=^(?<version>.*)-upstream$
 	udsNginxPackageVersion = "1.31.1-uds.1"
@@ -581,6 +581,12 @@ resource "uds_package" "uds_crds" {
 
   source       = "{{ .CoreCRDsSource }}"
   architecture = "{{ .Architecture }}"
+  signature_verification = {
+    keyless = {
+      certificate_identity_regexp = "^https://github\\.com/defenseunicorns/uds-core/\\.github/workflows/publish\\.yaml@refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+$"
+      certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
+    }
+  }
 }
 
 resource "uds_package" "nginx" {
