@@ -41,7 +41,6 @@ import (
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 
-	zarfAPI "github.com/zarf-dev/zarf/src/api"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	"github.com/zarf-dev/zarf/src/pkg/ocischeme"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
@@ -924,6 +923,11 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		resp.Diagnostics.AddError("Deployed package identity could not be verified", identityErrorDetail(err))
 		return
 	}
+	definition, err := identity.Package.Definition()
+	if err != nil {
+		resp.Diagnostics.AddError("Deployed package definition could not be loaded", "The deployed package does not contain a readable package definition.")
+		return
+	}
 	clusterCtx, clusterCancel := withClusterTimeout(timeoutCtx)
 	defer clusterCancel()
 	c, err := r.cluster.NewWithWait(clusterCtx)
@@ -945,7 +949,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		Cluster:           c,
 		Timeout:           zarfTimeout,
 	}
-	if err := r.packager.Remove(timeoutCtx, zarfAPI.NewPackageDefinitionFromV1alpha1(identity.Package.Data), removeOpt); err != nil {
+	if err := r.packager.Remove(timeoutCtx, definition, removeOpt); err != nil {
 		resp.Diagnostics.AddError(
 			"Error removing package",
 			lifecycleErrorDetail(timeoutCtx, "delete", err),
@@ -1259,7 +1263,7 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	if err != nil {
 		return fmt.Errorf("could not load package: %w", err)
 	}
-	if err := verifyCanonicalName(pkg.AsV1alpha1().Metadata.Name, identity); err != nil {
+	if err := verifyCanonicalName(pkg.Metadata.Name, identity); err != nil {
 		return err
 	}
 
@@ -1267,9 +1271,12 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	// NOTE: Just because a component block is removed from the resource spec doesn't mean it wasn't deployed. Zarf components that are marked as 'required' should not be removed
 	foundRequired := false
 	newComponentsToRemove := []string{}
+	requiredComponents := make(map[string]bool, len(pkg.Components))
+	for _, component := range pkg.Components {
+		requiredComponents[component.Name] = !component.Optional
+	}
 	for _, componentName := range componentsToRemove {
-		zComponent, found := findPackageComponent(pkg.AsV1alpha1().Components, componentName)
-		if found && zComponent.Required != nil && *zComponent.Required {
+		if requiredComponents[componentName] {
 			// we are trying to remove a required component, don't do that...
 			foundRequired = true
 			continue
@@ -1294,7 +1301,7 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 		if err != nil {
 			return fmt.Errorf("could not load package: %w", err)
 		}
-		if err := verifyCanonicalName(pkg.AsV1alpha1().Metadata.Name, identity); err != nil {
+		if err := verifyCanonicalName(pkg.Metadata.Name, identity); err != nil {
 			return err
 		}
 	}
@@ -1357,7 +1364,11 @@ func (r *PackageResource) lookupVerifiedDeployedPackage(ctx context.Context, id 
 	if !found {
 		return deployedPackageIdentity{}, &packageAbsentError{}
 	}
-	if pkg.Name != name || pkg.NamespaceOverride != namespace || pkg.Data.Metadata.Name != pkg.Name {
+	definition, err := pkg.Definition()
+	if err != nil {
+		return deployedPackageIdentity{}, &remoteIdentityError{reason: "the deployed package does not contain a readable package definition"}
+	}
+	if pkg.Name != name || pkg.NamespaceOverride != namespace || definition.Metadata.Name != pkg.Name {
 		return deployedPackageIdentity{}, &remoteIdentityError{reason: "the deployed package returned by the cluster does not match the identity recorded in state"}
 	}
 	return deployedPackageIdentity{ID: id, Name: name, Namespace: namespace, Package: pkg}, nil
@@ -1461,11 +1472,23 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 }
 
 func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel, identity deployedPackageIdentity) (PackageResourceModel, error) {
+	identityErr := &remoteIdentityError{reason: "verified deployed package identity is missing or inconsistent at the update mutation boundary"}
+
+	// The recorded ID must describe the verified name and namespace.
 	namespace, name, err := parsePackageID(identity.ID)
-	if err != nil || identity.Name != name || identity.Namespace != namespace ||
-		identity.Package.Name != identity.Name || identity.Package.NamespaceOverride != identity.Namespace ||
-		identity.Package.Data.Metadata.Name != identity.Name {
-		return plan, &remoteIdentityError{reason: "verified deployed package identity is missing or inconsistent at the update mutation boundary"}
+	if err != nil || identity.Name != name || identity.Namespace != namespace {
+		return plan, identityErr
+	}
+
+	// The deployed package must match that same identity.
+	if identity.Package.Name != identity.Name || identity.Package.NamespaceOverride != identity.Namespace {
+		return plan, identityErr
+	}
+
+	// Its versioned definition must be readable and agree on the package name.
+	definition, err := identity.Package.Definition()
+	if err != nil || definition.Metadata.Name != identity.Name {
+		return plan, identityErr
 	}
 
 	// Generate list of components to remove before the update.
@@ -1585,7 +1608,7 @@ func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageR
 
 	originalPkgComponents := pkgLayout.AsV1alpha1().Components
 	filter := r.packageFilter.ForDeploy(optionalComponents)
-	pkgLayout.PackageDefinition, err = zarfFilters.Apply(pkgLayout.PackageDefinition, filter)
+	err = pkgLayout.Filter(filter)
 	if err != nil {
 		return plan, err
 	}

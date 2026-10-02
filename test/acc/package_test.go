@@ -29,7 +29,7 @@ import (
 
 const (
 	// renovate: datasource=github-tags depName=zarf-dev/zarf
-	initPackageVersion = "v0.86.0"
+	initPackageVersion = "v0.87.0"
 
 	// renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/core-crds versioning=semver extractVersion=^(?<version>.*)-upstream$
 	udsCoreCRDsPackageVersion = "1.14.0"

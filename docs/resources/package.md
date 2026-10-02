@@ -22,7 +22,7 @@ This example verifies the Zarf init package, then deploys another package with s
 
 ```terraform
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.86.0"
+  source = "oci://ghcr.io/zarf-dev/packages/init:v0.87.0"
 
   signature_verification = {
     keyless = {
@@ -136,7 +136,7 @@ Use `optional_components` to select optional components declared by the package.
 
 ```terraform
 resource "uds_package" "init_with_git_server" {
-  source              = "oci://ghcr.io/zarf-dev/packages/init:v0.86.0"
+  source              = "oci://ghcr.io/zarf-dev/packages/init:v0.87.0"
   optional_components = ["git-server"]
 
   signature_verification = {
@@ -333,7 +333,7 @@ import {
 }
 
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.86.0"
+  source = "oci://ghcr.io/zarf-dev/packages/init:v0.87.0"
 }
 
 # With a namespace override, the import ID is the namespace and package name:
