@@ -104,6 +104,13 @@ resource "uds_package" "uds_crds" {
 
   source       = "oci://ghcr.io/defenseunicorns/packages/uds/core-crds:${local.uds_core_crds_version}-${local.uds_package_flavor}"
   architecture = var.architecture
+
+  signature_verification = {
+    keyless = {
+      certificate_identity_regexp = "^https://github\\.com/defenseunicorns/uds-core/\\.github/workflows/publish\\.yaml@refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+$"
+      certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
+    }
+  }
 }
 
 resource "uds_package" "nginx" {

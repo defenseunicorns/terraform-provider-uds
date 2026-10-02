@@ -583,9 +583,10 @@ resource "uds_package" "uds_crds" {
   architecture = "{{ .Architecture }}"
   signature_verification = {
     keyless = {
-      certificate_identity_regexp = "^https://github\.com/defenseunicorns/uds-core/\.github/workflows/publish\.yaml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$"
+      certificate_identity_regexp = "^https://github\\.com/defenseunicorns/uds-core/\\.github/workflows/publish\\.yaml@refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+$"
       certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
     }
+  }
 }
 
 resource "uds_package" "nginx" {
