@@ -51,8 +51,8 @@ resource "uds_package" "uds_crds" {
 
   signature_verification = {
     keyless = {
-      certificate_identity_regexp = "^https://github\\.com/defenseunicorns/uds-core/\\.github/workflows/publish\\.yaml@refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+$"
-      certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
+      certificate_identity    = "https://github.com/defenseunicorns/uds-core/.github/workflows/publish.yaml@refs/tags/v${local.uds_core_crds_version}"
+      certificate_oidc_issuer = "https://token.actions.githubusercontent.com"
     }
   }
 }
