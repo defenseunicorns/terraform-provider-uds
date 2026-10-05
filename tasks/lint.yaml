@@ -10,6 +10,7 @@ tasks:
     description: "Run the repository lint checks"
     actions:
       - cmd: hk check --all
+      - task: common:renovate
 
   - name: fix
     description: "Fix lint findings where supported"
