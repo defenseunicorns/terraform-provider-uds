@@ -559,8 +559,6 @@ github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 h1:5RVFMOWjMyRy8cARdy79nAmgYw3h
 github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1/go.mod h1:ZXNYxsqcloTdSy/rNShjYzMhyjf0LaoftYK0p+A3h40=
 github.com/defenseunicorns/pkg/helpers/v2 v2.0.4 h1:niBIdhRUpJghWthzJJq/SKr/dYQHW9Mn97UJT5I/2SI=
 github.com/defenseunicorns/pkg/helpers/v2 v2.0.4/go.mod h1:7demM0eE/+nMqPT7PCKgO9/KVUmRSyi9UpDzb0KfYDM=
-github.com/defenseunicorns/pkg/oci v1.3.2 h1:7Ph4DRwcccwGPKrEGDPZTkY4VJaJ1qqZVNmr3G1Hup0=
-github.com/defenseunicorns/pkg/oci v1.3.2/go.mod h1:iXzZXG7jNjkOIt5MqQp12iZH3c762zP0AOVwKTGhNhY=
 github.com/deitch/magic v0.0.0-20240306090643-c67ab88f10cb h1:4W/2rQ3wzEimF5s+J6OY3ODiQtJZ5W1sForSgogVXkY=
 github.com/deitch/magic v0.0.0-20240306090643-c67ab88f10cb/go.mod h1:B3tI9iGHi4imdLi4Asdha1Sc6feLMTfPLXh9IUYmysk=
 github.com/depcheck-test/depcheck-test v0.0.0-20220607135614-199033aaa936 h1:foGzavPWwtoyBvjWyKJYDYsyzy+23iBV7NKTwdk+LRY=
@@ -1804,8 +1802,8 @@ github.com/yuin/gopher-lua v1.1.2 h1:yF/FjE3hD65tBbt0VXLE13HWS9h34fdzJmrWRXwobGA
 github.com/yuin/gopher-lua v1.1.2/go.mod h1:7aRmXIWl37SqRf0koeyylBEzJ+aPt8A+mmkQ4f1ntR8=
 github.com/zalando/go-keyring v0.2.6 h1:r7Yc3+H+Ux0+M72zacZoItR3UDxeWfKTcabvkI8ua9s=
 github.com/zalando/go-keyring v0.2.6/go.mod h1:2TCrxYrbUNYfNS/Kgy/LSrkSQzZ5UPVH85RwfczwvcI=
-github.com/zarf-dev/zarf v0.86.0 h1:CFzUiPdlDGUYmn5RgmSbEf24vAqJbNUw7ajsEDYcZt8=
-github.com/zarf-dev/zarf v0.86.0/go.mod h1:u9Caf3/D9PrzZF7h9x/nPiK7qDhS3aytsPafpaymEHs=
+github.com/zarf-dev/zarf v0.87.0 h1:1hW4Uqyvopn4DmoCNLcP2zzOyr8HHVUyVT2R3En70RI=
+github.com/zarf-dev/zarf v0.87.0/go.mod h1:IBTusa/EPSuLhMEUbxHRCoky5iog1CNfH92dde9LHCQ=
 github.com/zclconf/go-cty v1.14.0/go.mod h1:VvMs5i0vgZdhYawQNq5kePSpLAoz8u1xvZgrPIxfnZE=
 github.com/zclconf/go-cty v1.19.0 h1:IV8WdqYZc2c5rLX9bEoLNXKojBAp0MZPBHMIrCoa/s4=
 github.com/zclconf/go-cty v1.19.0/go.mod h1:12W89jGn3JCOIQi7infWr9m80rOkb5RNYJqXMZcN4c8=

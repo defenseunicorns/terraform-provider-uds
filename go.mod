@@ -17,7 +17,7 @@ require (
 	github.com/hashicorp/terraform-plugin-log v0.11.0
 	github.com/hashicorp/terraform-plugin-testing v1.16.0
 	github.com/stretchr/testify v1.12.1
-	github.com/zarf-dev/zarf v0.86.0
+	github.com/zarf-dev/zarf v0.87.0
 	helm.sh/helm/v4 v4.3.0
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
@@ -208,7 +208,6 @@ require (
 	github.com/cyphar/filepath-securejoin v0.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
-	github.com/defenseunicorns/pkg/oci v1.3.2 // indirect
 	github.com/deitch/magic v0.0.0-20240306090643-c67ab88f10cb // indirect
 	github.com/derailed/k9s v0.51.0 // indirect
 	github.com/derailed/tcell/v2 v2.3.1-rc.4 // indirect
