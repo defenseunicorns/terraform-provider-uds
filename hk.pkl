@@ -35,6 +35,10 @@ local linters = new Mapping<String, Step> {
         fix = "go mod tidy"
         glob = List("**/*.go", "go.mod", "go.sum")
     }
+    ["renovate-config"] {
+        check = "uds run -f tasks/lint.yaml common:renovate"
+        glob = List("renovate.json")
+    }
     ["license-check"] {
         check = "uds run lint-tasks:license"
         fix = "uds run lint-tasks:fix-license"
