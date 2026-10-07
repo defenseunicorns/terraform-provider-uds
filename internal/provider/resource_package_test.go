@@ -529,7 +529,7 @@ func WithSensitiveValues(values types.Dynamic) PackageResourceModelDataOption {
 	}
 }
 
-// NewTestPackageResourceModel creates a PackageResourceModel with default values and applies data options
+// NewTestPackageResourceModel uses unsigned fixtures, so verification is disabled unless explicitly configured.
 func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) PackageResourceModel {
 	model := PackageResourceModel{
 		Source:                types.StringValue("oci://ghcr.io/defenseunicorns/packages/test:latest"),
@@ -545,6 +545,7 @@ func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) Pack
 		SensitiveValues:       types.DynamicNull(),
 	}
 
+	WithSignatureVerificationEnabled(false)(&model)
 	for _, option := range options {
 		option(&model)
 	}
@@ -1443,7 +1444,7 @@ func TestPackageResource_CreateSignatureFailureDoesNotAdoptExistingPackage(t *te
 		return errors.New("signature verification failed")
 	}
 
-	resp := runCreateLifecycleTest(t, packageResource, newCreateLifecycleModel(WithSignatureVerificationEnabled(true)))
+	resp := runCreateLifecycleTest(t, packageResource, newCreateLifecycleModel(WithPublicKey("test-public-key")))
 
 	require.True(t, resp.Diagnostics.HasError())
 	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "signature verification failed")
@@ -1468,7 +1469,7 @@ func TestPackageResource_UpsertVerifiedPackagePreDeploymentFailureIsNotMarkedAsA
 }
 
 func TestPackageResource_CreateSuccessfulDeploymentWithoutStateSecretRetainsFallbackMetadata(t *testing.T) {
-	packageLayout := markTestPackageSigned(t, newValidLoadPackageResult(t).Layout)
+	packageLayout := newValidLoadPackageResult(t).Layout
 	mockCluster := &MockCluster{}
 	mockCluster.On("NewWithWait", mock.Anything).Return(newFakeCluster(), nil).Twice()
 	mockPackager := &MockPackager{}
@@ -1478,17 +1479,10 @@ func TestPackageResource_CreateSuccessfulDeploymentWithoutStateSecretRetainsFall
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything).Once()
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
-	verificationCalls := 0
-	packageResource.verifyPackageSignatureFunc = func(_ context.Context, verified *layout.PackageLayout, _ zarfSigning.VerifyBlobOptions) error {
-		assert.Same(t, packageLayout, verified)
-		verificationCalls++
-		return nil
-	}
 
 	resp := runCreateLifecycleTest(t, packageResource, newCreateLifecycleModel())
 
 	require.False(t, resp.Diagnostics.HasError(), "create diagnostics: %v", resp.Diagnostics)
-	assert.Equal(t, 1, verificationCalls)
 	state := requirePackageState(t, resp.State)
 	metadata := state.Metadata.Attributes()
 	assert.Equal(t, packageLayout.AsV1alpha1().Metadata.Name, metadata["name"].(types.String).ValueString())
@@ -1587,7 +1581,7 @@ func TestPackageResource_UpdateSignatureFailureDoesNotRemoveOptionalComponent(t 
 		return errors.New("signature verification failed")
 	}
 
-	state := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState(), WithOptionalComponents([]string{"metrics"}))
+	state := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState(), WithOptionalComponents([]string{"metrics"}), WithPublicKey("test-public-key"))
 	state.ID = types.StringValue(deployed.Name)
 	state.Name = types.StringValue(deployed.Name)
 	plan := state
@@ -2631,13 +2625,18 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 		modelOpts         []PackageResourceModelDataOption
 		loadPackageError  error
 		packageSigned     bool
+		verifySignature   packageSignatureVerifier
 		expectLoadErr     bool
 		expectSigErr      bool
 		expectLoadPackage bool
 	}{
 		{
-			name:              "verify=true with load success passes",
-			modelOpts:         []PackageResourceModelDataOption{WithPublicKey("some-key")},
+			name:          "verify=true with load success passes",
+			modelOpts:     []PackageResourceModelDataOption{WithPublicKey("some-key")},
+			packageSigned: true,
+			verifySignature: func(context.Context, *layout.PackageLayout, zarfSigning.VerifyBlobOptions) error {
+				return nil
+			},
 			loadPackageError:  nil,
 			expectLoadErr:     false,
 			expectSigErr:      false,
@@ -2681,8 +2680,16 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 			expectLoadPackage: false,
 		},
 		{
-			name: "unknown source skips verification",
+			name: "unknown public key defers verification until apply",
 			modelOpts: []PackageResourceModelDataOption{func(m *PackageResourceModel) {
+				sig := newTestSigVerification(true, "", nil)
+				sig.PublicKey = types.StringUnknown()
+				withSigVerification(sig)(m)
+			}},
+		},
+		{
+			name: "unknown source skips verification",
+			modelOpts: []PackageResourceModelDataOption{WithSignatureVerificationEnabled(true), func(m *PackageResourceModel) {
 				m.Source = types.StringUnknown()
 			}},
 			loadPackageError:  fmt.Errorf("should not be called"),
@@ -2709,6 +2716,7 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 			}
 
 			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+			packageResource.verifyPackageSignatureFunc = tc.verifySignature
 			model := NewTestPackageResourceModel(tc.modelOpts...)
 			result := packageResource.runPackagePlanChecks(context.Background(), model)
 
@@ -2736,6 +2744,7 @@ func TestPackageResource_RunPackagePlanChecks_ErrorRouting(t *testing.T) {
 		name             string
 		modelOpts        []PackageResourceModelDataOption
 		loadPackageError error
+		verifySignature  packageSignatureVerifier
 		expectLoadErr    bool
 		expectSigErr     bool
 		expectOptErr     bool
@@ -2764,6 +2773,9 @@ func TestPackageResource_RunPackagePlanChecks_ErrorRouting(t *testing.T) {
 		},
 		{
 			name: "invalid optional_components routes to optErr not sigErr",
+			verifySignature: func(context.Context, *layout.PackageLayout, zarfSigning.VerifyBlobOptions) error {
+				return nil
+			},
 			modelOpts: []PackageResourceModelDataOption{
 				WithPublicKey("some-key"),
 				WithOptionalComponents([]string{"nonexistent-component"}),
@@ -2780,6 +2792,9 @@ func TestPackageResource_RunPackagePlanChecks_ErrorRouting(t *testing.T) {
 			mockPackager := &MockPackager{}
 			if tc.loadPackageError == nil {
 				result := newValidLoadPackageResult(t)
+				if tc.verifySignature != nil {
+					result.Layout = markTestPackageSigned(t, result.Layout)
+				}
 				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(result.Layout, result.Error)
 			} else {
 				result := newErrorLoadPackageResult(tc.loadPackageError)
@@ -2787,6 +2802,7 @@ func TestPackageResource_RunPackagePlanChecks_ErrorRouting(t *testing.T) {
 			}
 
 			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+			packageResource.verifyPackageSignatureFunc = tc.verifySignature
 			model := NewTestPackageResourceModel(tc.modelOpts...)
 			result := packageResource.runPackagePlanChecks(context.Background(), model)
 
@@ -2969,6 +2985,32 @@ func TestPackageResource_VerifyPackageSignature_SkipsWhenVerificationDisabled(t 
 	assert.NoError(t, err)
 }
 
+func TestPackageResource_VerifyPackageSignature_RequiresVerificationMaterial(t *testing.T) {
+	for _, signed := range []bool{false, true} {
+		pkgLayout := newTestPackageLayout(t, v1alpha1.ZarfPackage{Build: v1alpha1.ZarfBuildData{Signed: helpers.BoolPtr(signed)}})
+		resource := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+		err := resource.verifyPackageSignature(context.Background(), NewTestPackageResourceModel(WithSignatureVerificationEnabled(true)), pkgLayout)
+		require.ErrorContains(t, err, "requires `public_key` or `keyless`")
+	}
+}
+
+func TestPackageResource_VerifyPackageSignature_RejectsUnsignedWithVerificationMaterial(t *testing.T) {
+	for name, verification := range map[string]PackageResourceModelDataOption{
+		"public key": WithPublicKey("test-public-key"),
+		"keyless":    WithKeylessVerification("test@example.com", "https://token.actions.githubusercontent.com"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			resource := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+			pkgLayout := newTestPackageLayout(t, v1alpha1.ZarfPackage{})
+			model := NewTestPackageResourceModel(verification)
+
+			err := resource.verifyPackageSignature(context.Background(), model, pkgLayout)
+
+			require.ErrorContains(t, err, "package is unsigned but signature verification material is configured")
+		})
+	}
+}
+
 func TestPackageResource_VerifyPackageSignature_CallsVerifierWithPublicKey(t *testing.T) {
 	packageResource := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
 	var called bool
@@ -3046,7 +3088,7 @@ func TestPackageResource_Create_DoesNotDeployWhenSignatureVerificationFails(t *t
 		return errors.New("signature verification failed")
 	}
 
-	_, err := packageResource.deployAsNew(testCtx(t), NewTestPackageResourceModel())
+	_, err := packageResource.deployAsNew(testCtx(t), NewTestPackageResourceModel(WithPublicKey("test-public-key")))
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "signature verification failed")
@@ -3073,7 +3115,7 @@ func TestPackageResource_Create_DeploysWhenSignatureVerificationSucceeds(t *test
 		return nil
 	}
 
-	_, err := packageResource.deployAsNew(testCtx(t), NewTestPackageResourceModel())
+	_, err := packageResource.deployAsNew(testCtx(t), NewTestPackageResourceModel(WithPublicKey("test-public-key")))
 
 	assert.NoError(t, err)
 	assert.True(t, called)
@@ -4200,7 +4242,7 @@ func TestUpdate_TimeoutOnlyChangeSkipsPackageOperations(t *testing.T) {
 }
 
 func TestPackageResource_UpdateSuccessfulDeploymentRefreshesState(t *testing.T) {
-	packageLayout := markTestPackageSigned(t, newValidLoadPackageResult(t).Layout)
+	packageLayout := newValidLoadPackageResult(t).Layout
 	deployedPackage := newLifecycleDeployedPackage(packageLayout,
 		zarfState.DeployedComponent{Name: "test-required-component-0", Status: zarfState.ComponentStatusSucceeded},
 		zarfState.DeployedComponent{Name: "test-optional-non-default-component-0", Status: zarfState.ComponentStatusSucceeded},
@@ -4229,12 +4271,6 @@ func TestPackageResource_UpdateSuccessfulDeploymentRefreshesState(t *testing.T) 
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
 	packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, mockCluster).(*PackageResource)
-	verificationCalls := 0
-	packageResource.verifyPackageSignatureFunc = func(_ context.Context, verified *layout.PackageLayout, _ zarfSigning.VerifyBlobOptions) error {
-		assert.Same(t, packageLayout, verified)
-		verificationCalls++
-		return nil
-	}
 	stateModel := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
 	stateModel.ID = types.StringValue(packageLayout.AsV1alpha1().Metadata.Name)
 	stateModel.Name = types.StringValue(packageLayout.AsV1alpha1().Metadata.Name)
@@ -4247,7 +4283,6 @@ func TestPackageResource_UpdateSuccessfulDeploymentRefreshesState(t *testing.T) 
 	resp := runUpdateLifecycleTest(t, packageResource, planModel, stateModel)
 
 	require.False(t, resp.Diagnostics.HasError(), "update diagnostics: %v", resp.Diagnostics)
-	assert.Equal(t, 1, verificationCalls)
 	mockPackager.AssertNumberOfCalls(t, "LoadPackage", 2)
 	updated := requirePackageState(t, resp.State)
 	assert.Equal(t, "arm64", updated.Architecture.ValueString())
@@ -4613,8 +4648,8 @@ func TestDeployAsNewOrUpdate_RemovesOnlyVerifiedContent(t *testing.T) {
 		return nil
 	}
 	expectedOptional := verifiedLayout.Definition().Components[1]
-	oldPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{"optional"}))
-	newPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{}))
+	oldPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{"optional"}), WithPublicKey("test-public-key"))
+	newPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{}), WithPublicKey("test-public-key"))
 	identity := testPackageIdentity("")
 
 	// Deselecting the optional component removes it before deploying the required one.
@@ -4652,8 +4687,8 @@ func TestDeployAsNewOrUpdate_OptionalComponentRemoval(t *testing.T) {
 	mockPackageComponentFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
 	mockPackageComponentFilter.On("ForDeploy", mock.Anything).Return(mock.Anything)
 
-	oldPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics"}))
-	newPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{}))
+	oldPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{"metrics"}), WithPublicKey("test-public-key"))
+	newPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{}), WithPublicKey("test-public-key"))
 	identity := deployedPackageIdentity{
 		ID: "test-package", Name: "test-package",
 		Package: zarfState.DeployedPackage{Name: "test-package", Data: v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{Name: "test-package"}}},
@@ -6679,8 +6714,39 @@ func TestPackageResource_ValidateConfig_SignatureVerification(t *testing.T) {
 		errorMsg    string
 	}{
 		{
-			name:        "no error when signature_verification absent",
-			configFunc:  func() PackageResourceModel { return NewTestPackageResourceModel() },
+			name: "error when signature_verification absent",
+			configFunc: func() PackageResourceModel {
+				model := NewTestPackageResourceModel()
+				model.SignatureVerification = types.ObjectNull(signatureVerificationAttrTypes)
+				return model
+			},
+			expectError: true,
+			errorMsg:    "requires `public_key` or `keyless`",
+		},
+		{
+			name: "verify=true without material",
+			configFunc: func() PackageResourceModel {
+				return NewTestPackageResourceModel(WithSignatureVerificationEnabled(true))
+			},
+			expectError: true,
+			errorMsg:    "requires `public_key` or `keyless`",
+		},
+		{
+			name: "unknown verify defers validation",
+			configFunc: func() PackageResourceModel {
+				sig := newTestSigVerification(true, "", nil)
+				sig.Verify = types.BoolUnknown()
+				return NewTestPackageResourceModel(withSigVerification(sig))
+			},
+			expectError: false,
+		},
+		{
+			name: "unknown public key defers validation",
+			configFunc: func() PackageResourceModel {
+				sig := newTestSigVerification(true, "", nil)
+				sig.PublicKey = types.StringUnknown()
+				return NewTestPackageResourceModel(withSigVerification(sig))
+			},
 			expectError: false,
 		},
 		{
@@ -7606,7 +7672,9 @@ func TestBuildVerifyBlobOptions(t *testing.T) {
 		{
 			name: "no verification config returns nil",
 			setupModel: func() PackageResourceModel {
-				return NewTestPackageResourceModel()
+				model := NewTestPackageResourceModel()
+				model.SignatureVerification = types.ObjectNull(signatureVerificationAttrTypes)
+				return model
 			},
 			wantNil: true,
 		},
@@ -7707,9 +7775,13 @@ func TestPackageResource_GetEffectiveSignatureVerification(t *testing.T) {
 		expected   bool
 	}{
 		{
-			name:       "absent signature_verification block returns true",
-			setupModel: func() PackageResourceModel { return NewTestPackageResourceModel() },
-			expected:   true,
+			name: "absent signature_verification block returns true",
+			setupModel: func() PackageResourceModel {
+				model := NewTestPackageResourceModel()
+				model.SignatureVerification = types.ObjectNull(signatureVerificationAttrTypes)
+				return model
+			},
+			expected: true,
 		},
 		{
 			name: "signature_verification with enabled=true returns true",

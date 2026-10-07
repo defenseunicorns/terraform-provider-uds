@@ -4,7 +4,7 @@
 kind: ZarfPackageConfig
 metadata:
   name: adoption-canonical
-  version: 0.1.0
+  version: "###ZARF_PKG_TMPL_VERSION###"
 
 components:
   - name: marker
