@@ -314,7 +314,7 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				Computed:            true,
 			},
 			"signature_verification": schema.SingleNestedAttribute{
-				MarkdownDescription: "Signature verification configuration. Verification defaults to enabled and requires `public_key` or `keyless`.",
+				MarkdownDescription: "Signature verification configuration. Verification is enabled by default and requires `public_key` or `keyless`. Set `verify` to `false` to skip verification.",
 				Optional:            true,
 				Computed:            true,
 				Default:             objectdefault.StaticValue(defaultSignatureVerification),

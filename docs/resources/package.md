@@ -171,7 +171,7 @@ resource "uds_package" "init_with_git_server" {
 - `optional_components` (Set of String) [Alpha] Set of optional package component names to install. Case-sensitive. Mutually exclusive with `component` blocks — specifying both is a validation error. When omitted or set to an empty list, only required package components are installed.
 - `sensitive_values` (Dynamic, Sensitive) [Alpha] Sensitive Zarf package values to apply at deploy time. Packages with a values schema are validated against that schema. Values are redacted from Terraform/OpenTofu output. Cannot be used with component blocks.
 - `sensitive_vars` (Attributes Set) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))
-- `signature_verification` (Attributes) Signature verification configuration. Verification defaults to enabled and requires `public_key` or `keyless`. (see [below for nested schema](#nestedatt--signature_verification))
+- `signature_verification` (Attributes) Signature verification configuration. Verification is enabled by default and requires `public_key` or `keyless`. Set `verify` to `false` to skip verification. (see [below for nested schema](#nestedatt--signature_verification))
 - `timeouts` (Attributes) (see [below for nested schema](#nestedatt--timeouts))
 - `values` (Dynamic) [Alpha] Zarf package values to apply at deploy time. Packages with a values schema are validated against that schema. Cannot be used with component blocks.
 - `vars` (Attributes Set) UDS package variables to set. (see [below for nested schema](#nestedatt--vars))
@@ -344,7 +344,10 @@ resource "uds_package" "init" {
   source = "oci://ghcr.io/zarf-dev/packages/init:v0.87.0"
 
   signature_verification = {
-    verify = false
+    keyless = {
+      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
+    }
   }
 }
 
