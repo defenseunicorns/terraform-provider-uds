@@ -41,6 +41,7 @@ import (
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 
+	zarfAPI "github.com/zarf-dev/zarf/src/api"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	"github.com/zarf-dev/zarf/src/pkg/ocischeme"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
@@ -1227,7 +1228,7 @@ func getEffectiveSignatureVerification(ctx context.Context, model PackageResourc
 	return sig.Verify.ValueBool()
 }
 
-func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string, identity deployedPackageIdentity) error {
+func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string, identity deployedPackageIdentity, pkg zarfAPI.Package) error {
 	if len(componentsToRemove) == 0 {
 		return nil
 	}
@@ -1244,32 +1245,12 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 		return fmt.Errorf("could not connect to cluster: %w", err)
 	}
 
-	// get a reference to the ZarfPackage
-	packageSource, err := getPackageSource(plan, *r.providerConfig)
-	if err != nil {
-		return fmt.Errorf("could not get package source: %w", err)
-	}
-	remoteOptions, err := r.getPackageSourceRemoteOptions(ctx, packageSource)
-	if err != nil {
-		return err
-	}
-	loadOpts := zarfPackager.LoadOptions{
-		Architecture:  getArchitecture(plan, *r.providerConfig),
-		Filter:        r.packageFilter.ForRemove(componentsToRemove),
-		CachePath:     r.providerConfig.ZarfCachePath,
-		RemoteOptions: remoteOptions,
-	}
-	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
-	if err != nil {
-		return fmt.Errorf("could not load package: %w", err)
-	}
 	if err := verifyCanonicalName(pkg.Metadata.Name, identity); err != nil {
 		return err
 	}
 
 	// Check if any of the components provided are 'required' and remove them from the list of components we are removing
 	// NOTE: Just because a component block is removed from the resource spec doesn't mean it wasn't deployed. Zarf components that are marked as 'required' should not be removed
-	foundRequired := false
 	newComponentsToRemove := []string{}
 	requiredComponents := make(map[string]bool, len(pkg.Components))
 	for _, component := range pkg.Components {
@@ -1278,32 +1259,18 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	for _, componentName := range componentsToRemove {
 		if requiredComponents[componentName] {
 			// we are trying to remove a required component, don't do that...
-			foundRequired = true
 			continue
 		}
 		newComponentsToRemove = append(newComponentsToRemove, componentName)
 	}
 
-	// Fetch a new zarfPackage from the cluster, with a new filter of components
-	if foundRequired {
-		if len(newComponentsToRemove) == 0 {
-			// All requested components were required; nothing safe to remove.
-			return nil
-		}
-		loadOpts := zarfPackager.LoadOptions{
-			Architecture:  getArchitecture(plan, *r.providerConfig),
-			Filter:        r.packageFilter.ForRemove(newComponentsToRemove),
-			CachePath:     r.providerConfig.ZarfCachePath,
-			RemoteOptions: remoteOptions,
-		}
-
-		pkg, err = r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
-		if err != nil {
-			return fmt.Errorf("could not load package: %w", err)
-		}
-		if err := verifyCanonicalName(pkg.Metadata.Name, identity); err != nil {
-			return err
-		}
+	if len(newComponentsToRemove) == 0 {
+		return nil
+	}
+	// Filter a copy of the verified definition; never fetch the mutable source again.
+	pkg, err = zarfFilters.Apply(pkg, r.packageFilter.ForRemove(newComponentsToRemove))
+	if err != nil {
+		return fmt.Errorf("could not filter components for removal: %w", err)
 	}
 	for _, component := range newComponentsToRemove {
 		logging.ComponentSelected(ctx, component)
@@ -1526,7 +1493,7 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 		}
 	}
 	if len(componentsToRemove) > 0 {
-		if err := r.removeComponents(ctx, plan, componentsToRemove, identity); err != nil {
+		if err := r.removeComponents(ctx, plan, componentsToRemove, identity, pkgLayout.Definition()); err != nil {
 			return plan, err
 		}
 	}

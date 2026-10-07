@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1770,14 +1769,14 @@ func TestPackageResource_Deploy_OptionalComponentInstallation(t *testing.T) {
 		name                  string
 		componentNames        []string
 		expectedCallToDeploy  bool
-		expectedSelectedNames []string
+		expectedDeployedNames []string
 		expectedErrorContains []string
 	}{
 		{
 			name:                  "package without components deploys required components only",
 			componentNames:        []string{},
 			expectedCallToDeploy:  true,
-			expectedSelectedNames: []string{},
+			expectedDeployedNames: []string{"test-required-component-0", "test-required-component-1"},
 			expectedErrorContains: []string{},
 		},
 		{
@@ -1787,7 +1786,7 @@ func TestPackageResource_Deploy_OptionalComponentInstallation(t *testing.T) {
 				"test-required-component-1",
 			},
 			expectedCallToDeploy:  true,
-			expectedSelectedNames: []string{},
+			expectedDeployedNames: []string{"test-required-component-0", "test-required-component-1"},
 			expectedErrorContains: []string{},
 		},
 		{
@@ -1796,8 +1795,12 @@ func TestPackageResource_Deploy_OptionalComponentInstallation(t *testing.T) {
 				"test-optional-default-component-0",
 				"test-optional-non-default-component-0",
 			},
-			expectedCallToDeploy:  true,
-			expectedSelectedNames: []string{"test-optional-default-component-0", "test-optional-non-default-component-0"},
+			expectedCallToDeploy: true,
+			expectedDeployedNames: []string{
+				"test-required-component-0", "test-required-component-1",
+				"test-optional-default-component-0", "test-optional-default-component-1",
+				"test-optional-non-default-component-0",
+			},
 			expectedErrorContains: []string{},
 		},
 		{
@@ -1809,8 +1812,9 @@ func TestPackageResource_Deploy_OptionalComponentInstallation(t *testing.T) {
 				"test-optional-non-default-component-0",
 			},
 			expectedCallToDeploy: true,
-			expectedSelectedNames: []string{
-				"test-optional-default-component-0",
+			expectedDeployedNames: []string{
+				"test-required-component-0", "test-required-component-1",
+				"test-optional-default-component-0", "test-optional-default-component-1",
 				"test-optional-non-default-component-0",
 			},
 			expectedErrorContains: []string{},
@@ -1822,7 +1826,7 @@ func TestPackageResource_Deploy_OptionalComponentInstallation(t *testing.T) {
 				"test-unknown-component-1",
 			},
 			expectedCallToDeploy:  false,
-			expectedSelectedNames: []string{},
+			expectedDeployedNames: []string{},
 			expectedErrorContains: []string{
 				"unknown package component test-unknown-component-0",
 				"unknown package component test-unknown-component-1",
@@ -1849,34 +1853,18 @@ func TestPackageResource_Deploy_OptionalComponentInstallation(t *testing.T) {
 			testModel := NewTestPackageResourceModel(
 				WithComponents(componentModels),
 			)
-			expectErrors := len(tc.expectedErrorContains) > 0
-
 			_, err := packageResource.upsertVerifiedPackage(testCtx(t), testModel, validLoadPackageResult.Layout)
 
-			if expectErrors {
-				assert.NotNil(t, err, "Expected error, got none")
+			if len(tc.expectedErrorContains) > 0 {
+				require.Error(t, err)
 				for _, expectedErrorMsg := range tc.expectedErrorContains {
 					assert.Contains(t, err.Error(), expectedErrorMsg, "Expected error to contain %q, but got: %v", expectedErrorMsg, err.Error())
 				}
 			} else {
-				assert.Nil(t, err, "Expected no error, got %v", err)
+				require.NoError(t, err)
 			}
 			mockPackager.AssertExpectations(t)
-			if tc.expectedCallToDeploy {
-				expectedNames := append([]string{"test-required-component-0", "test-required-component-1"}, tc.expectedSelectedNames...)
-				if len(tc.expectedSelectedNames) == 0 {
-					assert.ElementsMatch(t, expectedNames, deployedNames)
-				} else {
-					assert.Subset(t, deployedNames, expectedNames)
-				}
-				for _, name := range []string{"test-optional-non-default-component-0", "test-optional-non-default-component-1"} {
-					if !slices.Contains(tc.expectedSelectedNames, name) {
-						assert.NotContains(t, deployedNames, name)
-					}
-				}
-			} else {
-				assert.Empty(t, deployedNames)
-			}
+			assert.ElementsMatch(t, tc.expectedDeployedNames, deployedNames)
 		})
 	}
 }
@@ -3396,7 +3384,7 @@ func TestPackageResource_RemoveComponents_LogEvent(t *testing.T) {
 	r := NewPackageResource(&udsProviderConfig{}, packagerMock, filterMock, clusterMock).(*PackageResource)
 	operationCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	t.Cleanup(cancel)
-	err := r.removeComponents(operationCtx, NewTestPackageResourceModel(WithNamespace("demo")), []string{"optional"}, testPackageIdentity("demo"))
+	err := r.removeComponents(operationCtx, NewTestPackageResourceModel(WithNamespace("demo")), []string{"optional"}, testPackageIdentity("demo"), zarfConvert.PackageFromV1alpha1(pkg))
 	require.NoError(t, err)
 
 	entries, err := tflogtest.MultilineJSONDecode(&output)
@@ -3425,7 +3413,7 @@ func TestPackageResource_RemoveComponents_DoesNotLogRequiredComponentAsStarted(t
 	r := NewPackageResource(&udsProviderConfig{}, packagerMock, filterMock, clusterMock).(*PackageResource)
 	operationCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	t.Cleanup(cancel)
-	err := r.removeComponents(operationCtx, NewTestPackageResourceModel(WithNamespace("demo")), []string{"required"}, testPackageIdentity("demo"))
+	err := r.removeComponents(operationCtx, NewTestPackageResourceModel(WithNamespace("demo")), []string{"required"}, testPackageIdentity("demo"), zarfConvert.PackageFromV1alpha1(pkg))
 	require.NoError(t, err)
 
 	entries, err := tflogtest.MultilineJSONDecode(&output)
@@ -3447,19 +3435,14 @@ func TestPackageResource_RemoveComponentsMixedRequestPreservesRequiredComponents
 	optionalOnly.Components = []zarfAPI.Component{pkg.Components[1]}
 
 	filter := &MockPackageComponentFilter{}
-	filter.On("ForRemove", []string{"required", "optional"}).Return(mock.Anything).Once()
 	filter.On("ForRemove", []string{"optional"}).Return(mock.Anything).Once()
 	cluster := &MockCluster{}
 	cluster.On("NewWithWait", mock.Anything).Return((*zarfCluster.Cluster)(nil), nil).Once()
 	packager := &MockPackager{}
-	packager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-		Return(pkg, nil).Once()
-	packager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-		Return(optionalOnly, nil).Once()
 	packager.On("Remove", mock.Anything, optionalOnly, mock.Anything).Return(nil).Once()
 	r := NewPackageResource(nil, packager, filter, cluster).(*PackageResource)
 
-	err := r.removeComponents(testCtx(t), NewTestPackageResourceModel(), []string{"required", "optional"}, testPackageIdentity(""))
+	err := r.removeComponents(testCtx(t), NewTestPackageResourceModel(), []string{"required", "optional"}, testPackageIdentity(""), pkg)
 
 	require.NoError(t, err)
 	filter.AssertExpectations(t)
@@ -4115,111 +4098,60 @@ func TestUpdate_RemoveComponents(t *testing.T) {
 	tests := []struct {
 		name               string
 		componentsToRemove []string
-		removeCalled       bool
+		removeCalls        int
 	}{
 		{
 			name:               "remove single component",
 			componentsToRemove: []string{"this-is-my-component"},
-			removeCalled:       true,
+			removeCalls:        1,
 		},
 		{
 			name:               "remove no components",
 			componentsToRemove: []string{},
-			removeCalled:       false,
+			removeCalls:        0,
 		},
 		{
 			name:               "remove multiple components",
 			componentsToRemove: []string{"this-is-my-component", "this-is-also-a-component"},
-			removeCalled:       true,
+			removeCalls:        1,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			mockPackageComponentFilter := &MockPackageComponentFilter{}
-			mockPackageComponentFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
-
 			mockCluster := MockCluster{}
 			cluster := zarfCluster.Cluster{}
 			mockCluster.On("NewWithWait", mock.Anything).Return(&cluster, nil)
 
 			mockPackager := &MockPackager{}
-			zarfPackage := v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{Name: "test-package"}}
-			mockPackager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(zarfPackage, nil)
-			mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-			packageResource := NewPackageResource(nil, mockPackager, mockPackageComponentFilter, &mockCluster).(*PackageResource)
-
-			// This is the meat of the test!
-			plan := NewTestPackageResourceModel()
-			err := packageResource.removeComponents(testCtx(t), plan, tc.componentsToRemove, testPackageIdentity(""))
-
-			// Assertions
-			assert.NoError(t, err)
-
-			// Check that Deploy was called and the variables map was provided with the correct values
-			for _, call := range mockPackager.Calls {
-				if call.Method == "Deploy" {
-					deployOptions := call.Arguments[2].(zarfPackager.DeployOptions)
-					assert.NotNil(t, deployOptions.SetVariables)
-				}
+			zarfPackage := v1alpha1.ZarfPackage{
+				Metadata: v1alpha1.ZarfMetadata{Name: "test-package"},
+				Components: []v1alpha1.ZarfComponent{
+					{Name: "this-is-my-component"},
+					{Name: "this-is-also-a-component"},
+				},
 			}
-
-			if tc.removeCalled {
-				// Validate that a remove filter was created with the correct inputs
-				mockPackageComponentFilter.AssertExpectations(t)
-				for _, call := range mockPackageComponentFilter.Calls {
-					if call.Method == "ForRemove" {
-						forRemoveOptions := call.Arguments[0].([]string)
-						assert.Equal(t, len(tc.componentsToRemove), len(forRemoveOptions))
-						for i := range forRemoveOptions {
-							assert.Equal(t, tc.componentsToRemove[i], forRemoveOptions[i])
-						}
+			var removedNames []string
+			mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).
+				Run(func(args mock.Arguments) {
+					for _, component := range args.Get(1).(zarfAPI.Package).Components {
+						removedNames = append(removedNames, component.Name)
 					}
-				}
+				}).Return(nil).Maybe()
 
-				// Validate that the remove function was called
-				mockPackager.AssertExpectations(t)
-			} else {
-				// Verify that functions were not called if we did not expect them to be
-				mockPackageComponentFilter.AssertNotCalled(t, "ForRemove")
+			packageResource := NewPackageResource(nil, mockPackager, nil, &mockCluster).(*PackageResource)
+
+			plan := NewTestPackageResourceModel()
+			err := packageResource.removeComponents(testCtx(t), plan, tc.componentsToRemove, testPackageIdentity(""), zarfConvert.PackageFromV1alpha1(zarfPackage))
+
+			require.NoError(t, err)
+			assert.ElementsMatch(t, tc.componentsToRemove, removedNames)
+			mockPackager.AssertNumberOfCalls(t, "Remove", tc.removeCalls)
+			if tc.removeCalls == 0 {
 				mockCluster.AssertNotCalled(t, "NewWithWait")
-				mockPackager.AssertNotCalled(t, "GetPackageFromSourceOrCluster")
-				mockPackager.AssertNotCalled(t, "Remove")
 			}
 		})
 	}
-}
-
-func TestPackageResource_RemoveComponentsUsesNegotiatedSourceOptions(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer server.Close()
-
-	mockPackageComponentFilter := &MockPackageComponentFilter{}
-	mockPackageComponentFilter.On("ForRemove", mock.Anything).Return(mock.Anything)
-	mockCluster := &MockCluster{}
-	cluster := zarfCluster.Cluster{}
-	mockCluster.On("NewWithWait", mock.Anything).Return(&cluster, nil)
-	mockPackager := &MockPackager{}
-	mockPackager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-		Return(v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{Name: "test-package"}}, nil)
-	mockPackager.On("Remove", mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-	packageResource := NewPackageResource(
-		&udsProviderConfig{InsecureForceHTTP: true},
-		mockPackager,
-		mockPackageComponentFilter,
-		mockCluster,
-	).(*PackageResource)
-	plan := NewTestPackageResourceModel(WithSource(testOCISource(server.URL)))
-
-	err := packageResource.removeComponents(testCtx(t), plan, []string{"component-a"}, testPackageIdentity(""))
-	require.NoError(t, err)
-
-	loadOptions := mockPackager.Calls[0].Arguments[4].(zarfPackager.LoadOptions)
-	assert.True(t, loadOptions.PlainHTTP)
 }
 
 func TestUpdate_TimeoutOnlyChangeSkipsPackageOperations(t *testing.T) {
@@ -4651,6 +4583,48 @@ func TestValidateOptionalComponentsAgainstPackage(t *testing.T) {
 	}
 }
 
+func TestDeployAsNewOrUpdate_RemovesOnlyVerifiedContent(t *testing.T) {
+	// Removal must use the verified optional component's manifest content while
+	// leaving the same layout usable for deployment of the remaining component.
+	verifiedLayout := markTestPackageSigned(t, newTestPackageLayout(t, v1alpha1.ZarfPackage{
+		Metadata: v1alpha1.ZarfMetadata{Name: "test-package"},
+		Components: []v1alpha1.ZarfComponent{
+			{Name: "required", Required: helpers.BoolPtr(true)},
+			{Name: "optional", Manifests: []v1alpha1.ZarfManifest{{Name: "verified-manifest", Files: []string{"verified.yaml"}}}},
+		},
+	}))
+	packager := &MockPackager{}
+	packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(verifiedLayout, nil).Once()
+	var removed zarfAPI.Package
+	packager.On("Remove", mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) { removed = args.Get(1).(zarfAPI.Package) }).Return(nil).Once()
+	var deployedNames []string
+	packager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			for _, component := range args.Get(1).(*layout.PackageLayout).Definition().Components {
+				deployedNames = append(deployedNames, component.Name)
+			}
+		}).Return(zarfPackager.DeployResult{}, nil).Once()
+	cluster := &MockCluster{}
+	cluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, nil)
+	r := NewPackageResource(nil, packager, nil, cluster).(*PackageResource)
+	r.verifyPackageSignatureFunc = func(_ context.Context, pkg *layout.PackageLayout, _ zarfSigning.VerifyBlobOptions) error {
+		assert.Same(t, verifiedLayout, pkg)
+		return nil
+	}
+	expectedOptional := verifiedLayout.Definition().Components[1]
+	oldPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{"optional"}))
+	newPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{}))
+	identity := testPackageIdentity("")
+
+	// Deselecting the optional component removes it before deploying the required one.
+	_, err := r.deployAsNewOrUpdate(testCtx(t), newPlan, oldPlan, identity)
+	require.NoError(t, err)
+	assert.Equal(t, []zarfAPI.Component{expectedOptional}, removed.Components)
+	assert.Equal(t, []string{"required"}, deployedNames, "removal filtering must not mutate the deployment layout")
+	packager.AssertExpectations(t)
+}
+
 func TestDeployAsNewOrUpdate_OptionalComponentRemoval(t *testing.T) {
 	boolFalse := false
 	zarfPkg := v1alpha1.ZarfPackage{
@@ -4776,11 +4750,14 @@ func TestDeployAsNewOrUpdate_RejectsInvalidIdentityBeforeRemovalCalculation(t *t
 }
 
 func TestDeployAsNewOrUpdate_RevalidatesMutationPackageNames(t *testing.T) {
-	t.Run("component removal load", func(t *testing.T) {
+	t.Run("component removal identity", func(t *testing.T) {
 		cluster := &MockCluster{}
 		cluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, nil).Once()
 		packager := &MockPackager{}
-		packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(newValidLoadPackageResult(t).Layout, nil).Once()
+		packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(newTestPackageLayout(t, v1alpha1.ZarfPackage{
+			Metadata:   v1alpha1.ZarfMetadata{Name: "changed-name"},
+			Components: []v1alpha1.ZarfComponent{{Name: "optional"}},
+		}), nil).Once()
 		packager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 			Return(v1alpha1.ZarfPackage{
 				Metadata:   v1alpha1.ZarfMetadata{Name: "changed-name"},
@@ -4802,12 +4779,15 @@ func TestDeployAsNewOrUpdate_RevalidatesMutationPackageNames(t *testing.T) {
 		packager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
 	})
 
-	t.Run("required component refilter load", func(t *testing.T) {
+	t.Run("mixed removal identity", func(t *testing.T) {
 		required := true
 		cluster := &MockCluster{}
 		cluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{}, nil).Once()
 		packager := &MockPackager{}
-		packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(newValidLoadPackageResult(t).Layout, nil).Once()
+		packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(newTestPackageLayout(t, v1alpha1.ZarfPackage{
+			Metadata:   v1alpha1.ZarfMetadata{Name: "changed-name"},
+			Components: []v1alpha1.ZarfComponent{{Name: "required", Required: &required}, {Name: "optional"}},
+		}), nil).Once()
 		packager.On("GetPackageFromSourceOrCluster", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 			Return(v1alpha1.ZarfPackage{
 				Metadata: v1alpha1.ZarfMetadata{Name: "test-package"},
@@ -8025,31 +8005,39 @@ func TestPackageResource_Deploy_OptionalComponents(t *testing.T) {
 		name                  string
 		optionalComponents    *[]string // nil = null (component block path)
 		components            []ComponentModel
-		expectedSelectedNames []string
+		expectedDeployedNames []string
 	}{
 		{
 			name:                  "only required components when optional_components is null",
 			optionalComponents:    nil,
 			components:            []ComponentModel{},
-			expectedSelectedNames: []string{},
+			expectedDeployedNames: []string{"test-required-component-0", "test-required-component-1"},
 		},
 		{
 			name:                  "only required components when optional_components is empty",
 			optionalComponents:    &[]string{},
 			components:            []ComponentModel{},
-			expectedSelectedNames: []string{},
+			expectedDeployedNames: []string{"test-required-component-0", "test-required-component-1"},
 		},
 		{
-			name:                  "selected optional component reaches deployment",
-			optionalComponents:    &[]string{"test-optional-non-default-component-0"},
-			components:            []ComponentModel{},
-			expectedSelectedNames: []string{"test-optional-non-default-component-0"},
+			name:               "selected optional component reaches deployment",
+			optionalComponents: &[]string{"test-optional-non-default-component-0"},
+			components:         []ComponentModel{},
+			expectedDeployedNames: []string{
+				"test-required-component-0", "test-required-component-1",
+				"test-optional-default-component-0", "test-optional-default-component-1",
+				"test-optional-non-default-component-0",
+			},
 		},
 		{
-			name:                  "all selected optional components reach deployment",
-			optionalComponents:    &[]string{"test-optional-non-default-component-0", "test-optional-non-default-component-1"},
-			components:            []ComponentModel{},
-			expectedSelectedNames: []string{"test-optional-non-default-component-0", "test-optional-non-default-component-1"},
+			name:               "all selected optional components reach deployment",
+			optionalComponents: &[]string{"test-optional-non-default-component-0", "test-optional-non-default-component-1"},
+			components:         []ComponentModel{},
+			expectedDeployedNames: []string{
+				"test-required-component-0", "test-required-component-1",
+				"test-optional-default-component-0", "test-optional-default-component-1",
+				"test-optional-non-default-component-0", "test-optional-non-default-component-1",
+			},
 		},
 	}
 
@@ -8076,17 +8064,7 @@ func TestPackageResource_Deploy_OptionalComponents(t *testing.T) {
 			defer cancel()
 			_, err := packageResource.upsertVerifiedPackage(ctx, NewTestPackageResourceModel(opts...), validLoadPackageResult.Layout)
 			require.NoError(t, err)
-			expectedNames := append([]string{"test-required-component-0", "test-required-component-1"}, tc.expectedSelectedNames...)
-			if len(tc.expectedSelectedNames) == 0 {
-				assert.ElementsMatch(t, expectedNames, deployedNames)
-			} else {
-				assert.Subset(t, deployedNames, expectedNames)
-			}
-			for _, name := range []string{"test-optional-non-default-component-0", "test-optional-non-default-component-1"} {
-				if !slices.Contains(tc.expectedSelectedNames, name) {
-					assert.NotContains(t, deployedNames, name)
-				}
-			}
+			assert.ElementsMatch(t, tc.expectedDeployedNames, deployedNames)
 			mockPackager.AssertExpectations(t)
 		})
 	}
@@ -8498,7 +8476,9 @@ func TestRemoveComponents_ZarfReceivesRemainingBudget(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), lifecycleBudget)
 		defer cancel()
 
-		err := packageResource.removeComponents(ctx, NewTestPackageResourceModel(), []string{"component-a"}, testPackageIdentity(""))
+		err := packageResource.removeComponents(ctx, NewTestPackageResourceModel(), []string{"component-a"}, testPackageIdentity(""), zarfConvert.PackageFromV1alpha1(v1alpha1.ZarfPackage{
+			Metadata: v1alpha1.ZarfMetadata{Name: "test-package"}, Components: []v1alpha1.ZarfComponent{{Name: "component-a"}},
+		}))
 		require.NoError(t, err)
 
 		for _, call := range mockPackager.Calls {
