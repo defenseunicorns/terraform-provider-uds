@@ -1468,7 +1468,7 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	if found {
 		return plan, fmt.Errorf("%w: package with namespace '%s' and name '%s'", errDuplicatePackage, plan.Namespace.ValueString(), packageName)
 	}
-	return r.upsertLoadedPackage(ctx, plan, pkgLayout)
+	return r.upsertVerifiedPackage(ctx, plan, pkgLayout)
 }
 
 func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel, identity deployedPackageIdentity) (PackageResourceModel, error) {
@@ -1490,6 +1490,27 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 	if err != nil || definition.Metadata.Name != identity.Name {
 		return plan, identityErr
 	}
+	if plan.OptionalComponents.IsUnknown() {
+		return plan, fmt.Errorf("optional_components must be known before apply")
+	}
+	ctx = r.withOCISchemeNegotiator(ctx)
+	// Use one verified source layout for both removal preflight and deployment.
+	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
+	if err != nil {
+		return plan, err
+	}
+	defer func() {
+		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
+			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
+		}
+	}()
+	canonicalName := pkgLayout.AsV1alpha1().Metadata.Name
+	if err := verifyCanonicalName(canonicalName, identity); err != nil {
+		return plan, err
+	}
+	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
+		return plan, err
+	}
 
 	// Generate list of components to remove before the update.
 	// Combines legacy component-block removals with optional_components removals.
@@ -1509,55 +1530,17 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 			return plan, err
 		}
 	}
-
-	return r.upsertExisting(ctx, plan, identity)
-}
-
-// upsert loads and cleans up the package layout before deploying it.
-func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
-	return r.upsertWithIdentity(ctx, plan, nil)
-}
-
-func (r *PackageResource) upsertExisting(ctx context.Context, plan PackageResourceModel, identity deployedPackageIdentity) (PackageResourceModel, error) {
-	return r.upsertWithIdentity(ctx, plan, &identity)
-}
-
-func (r *PackageResource) upsertWithIdentity(ctx context.Context, plan PackageResourceModel, identity *deployedPackageIdentity) (PackageResourceModel, error) {
-	ctx = r.withOCISchemeNegotiator(ctx)
-	if plan.OptionalComponents.IsUnknown() {
-		return plan, fmt.Errorf("optional_components must be known before apply")
-	}
-	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
-	if err != nil {
-		return plan, err
-	}
-	defer func() {
-		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
-			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
-		}
-	}()
-	canonicalName := pkgLayout.AsV1alpha1().Metadata.Name
-	if identity != nil {
-		if err := verifyCanonicalName(canonicalName, *identity); err != nil {
-			return plan, err
-		}
-	}
 	plan.Name = types.StringValue(canonicalName)
-	ctx = logging.WithPackageContext(ctx, "", plan.Name.ValueString(), plan.Namespace.ValueString())
-	return r.upsertLoadedPackage(ctx, plan, pkgLayout)
+	ctx = logging.WithPackageContext(ctx, "", canonicalName, plan.Namespace.ValueString())
+	return r.upsertVerifiedPackage(ctx, plan, pkgLayout)
 }
 
-// upsertLoadedPackage deploys an already-loaded package layout. The caller owns
-// loading and cleanup of the package layout.
-func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageResourceModel, pkgLayout *layout.PackageLayout) (PackageResourceModel, error) {
+// upsertVerifiedPackage deploys a layout already verified by the caller.
+func (r *PackageResource) upsertVerifiedPackage(ctx context.Context, plan PackageResourceModel, pkgLayout *layout.PackageLayout) (PackageResourceModel, error) {
 	ctx = r.withOCISchemeNegotiator(ctx)
 	if plan.OptionalComponents.IsUnknown() {
 		return plan, fmt.Errorf("optional_components must be known before apply")
 	}
-	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
-		return plan, err
-	}
-
 	optionalComponents, err := getOptionalComponentsForDeploy(ctx, plan, pkgLayout)
 	if err != nil {
 		return plan, err
