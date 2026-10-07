@@ -18,6 +18,13 @@ import {
 
 resource "uds_package" "init" {
   source = "oci://ghcr.io/zarf-dev/packages/init:v0.87.0"
+
+  signature_verification = {
+    keyless = {
+      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
+    }
+  }
 }
 
 # With a namespace override, the import ID is the namespace and package name:

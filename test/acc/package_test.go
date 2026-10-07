@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
-	"strings"
 	"testing"
 	"text/template"
 
@@ -137,7 +136,7 @@ func buildFailedPackageFixture(t *testing.T) string {
 	return packagePath
 }
 
-func buildPackageAdoptionFixtures(t *testing.T) (string, string) {
+func buildPackageAdoptionFixtures(t *testing.T, version string) (string, string) {
 	t.Helper()
 
 	fixtureDir, err := filepath.Abs("fixtures/package_adoption")
@@ -150,6 +149,7 @@ func buildPackageAdoptionFixtures(t *testing.T) (string, string) {
 	packageCmd := exec.Command(
 		"uds", "zarf", "package", "create", sourcePackageDir,
 		"--architecture", runtime.GOARCH,
+		"--set", "VERSION="+version,
 		"--confirm",
 		"--output", outputDir,
 		"--skip-sbom",
@@ -157,7 +157,7 @@ func buildPackageAdoptionFixtures(t *testing.T) (string, string) {
 	if output, err := packageCmd.CombinedOutput(); err != nil {
 		t.Fatalf("failed to build package adoption fixture: %v\n%s", err, output)
 	}
-	packagePath := filepath.Join(outputDir, fmt.Sprintf("zarf-package-adoption-canonical-%s-0.1.0.tar.zst", runtime.GOARCH))
+	packagePath := filepath.Join(outputDir, fmt.Sprintf("zarf-package-adoption-canonical-%s-%s.tar.zst", runtime.GOARCH, version))
 	if _, err := os.Stat(packagePath); err != nil {
 		t.Fatalf("expected package adoption fixture at %s: %v", packagePath, err)
 	}
@@ -174,7 +174,7 @@ func buildPackageAdoptionFixtures(t *testing.T) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	aliasPackagePath := filepath.Join(stagedPackageDir, fmt.Sprintf("zarf-package-adoption-alias-%s-0.1.0.tar.zst", runtime.GOARCH))
+	aliasPackagePath := filepath.Join(stagedPackageDir, fmt.Sprintf("zarf-package-adoption-alias-%s-%s.tar.zst", runtime.GOARCH, version))
 	if err := os.WriteFile(aliasPackagePath, packageBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -182,6 +182,7 @@ func buildPackageAdoptionFixtures(t *testing.T) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bundleDefinition = bytes.ReplaceAll(bundleDefinition, []byte("0.1.0"), []byte(version))
 	if err := os.WriteFile(filepath.Join(bundleDir, "uds-bundle.yaml"), bundleDefinition, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +196,7 @@ func buildPackageAdoptionFixtures(t *testing.T) (string, string) {
 	if output, err := bundleCmd.CombinedOutput(); err != nil {
 		t.Fatalf("failed to build package adoption bundle: %v\n%s", err, output)
 	}
-	bundlePath := filepath.Join(outputDir, fmt.Sprintf("uds-bundle-package-adoption-%s-0.1.0.tar.zst", runtime.GOARCH))
+	bundlePath := filepath.Join(outputDir, fmt.Sprintf("uds-bundle-package-adoption-%s-%s.tar.zst", runtime.GOARCH, version))
 	if _, err := os.Stat(bundlePath); err != nil {
 		t.Fatalf("expected package adoption bundle at %s: %v", bundlePath, err)
 	}
@@ -334,7 +335,7 @@ func TestAccPackageResourceAdoptionSafety(t *testing.T) {
 	t.Cleanup(func() { cleanupPackageAdoptionNamespace(t) })
 
 	t.Run("provisional alias import is read only and removable from state", func(t *testing.T) {
-		packagePath, bundlePath := buildPackageAdoptionFixtures(t)
+		packagePath, bundlePath := buildPackageAdoptionFixtures(t, "0.1.0")
 		alias := zarfState.DeployedPackage{Name: "adoption-alias", NamespaceOverride: "adoption-test"}
 		canonical := zarfState.DeployedPackage{Name: "adoption-canonical", NamespaceOverride: "adoption-test"}
 		deployBundleWithAliasedPackage(t, bundlePath)
@@ -377,7 +378,7 @@ func TestAccPackageResourceAdoptionSafety(t *testing.T) {
 	})
 
 	t.Run("canonical import and redeployment retain one identity", func(t *testing.T) {
-		packagePath, _ := buildPackageAdoptionFixtures(t)
+		packagePath, _ := buildPackageAdoptionFixtures(t, "0.1.0")
 		alias := zarfState.DeployedPackage{Name: "adoption-alias", NamespaceOverride: "adoption-test"}
 		canonical := zarfState.DeployedPackage{Name: "adoption-canonical", NamespaceOverride: "adoption-test"}
 		deployCanonicalPackageAdoptionFixture(t, packagePath)
@@ -386,7 +387,8 @@ func TestAccPackageResourceAdoptionSafety(t *testing.T) {
 			t.Fatal(err)
 		}
 		config := packageAdoptionConfig(packagePath, "canonical")
-		updatedConfig := strings.Replace(config, "verify = false", "verify = true", 1)
+		updatedPackagePath, _ := buildPackageAdoptionFixtures(t, "0.2.0")
+		updatedConfig := packageAdoptionConfig(updatedPackagePath, "canonical")
 
 		resource.Test(t, resource.TestCase{
 			PreCheck:                 func() { testAccPreCheck(t) },
@@ -414,6 +416,7 @@ func TestAccPackageResourceAdoptionSafety(t *testing.T) {
 					Check: resource.ComposeAggregateTestCheckFunc(
 						resource.TestCheckResourceAttr("uds_package.canonical", "id", "adoption-test:adoption-canonical"),
 						resource.TestCheckResourceAttr("uds_package.canonical", "name", "adoption-canonical"),
+						resource.TestCheckResourceAttr("uds_package.canonical", "metadata.version", "0.2.0"),
 						checkPackageAdoptionIdentities([]zarfState.DeployedPackage{canonical}, []zarfState.DeployedPackage{alias}),
 					),
 				},
@@ -427,6 +430,10 @@ resource "uds_package" "nginx" {
   source       = "oci://ghcr.io/defenseunicorns/packages/uds/nginx:%s-%s"
   architecture = "%s"
 
+  signature_verification = {
+    verify = false
+  }
+
   values = {
     nginx = {
       replicaCount = 1
@@ -439,6 +446,10 @@ var testAccPackageResourceRemoteValuesInvalidPathConfig = fmt.Sprintf(`
 resource "uds_package" "nginx" {
   source       = "oci://ghcr.io/defenseunicorns/packages/uds/nginx:%s-%s"
   architecture = "%s"
+
+  signature_verification = {
+    verify = false
+  }
 
   values = {
     nginx = {
@@ -457,6 +468,10 @@ resource "uds_package" "init" {
   source       = "oci://ghcr.io/zarf-dev/packages/init:values-test-missing"
   architecture = "%s"
   optional_components = ["definitely-not-a-component"]
+
+  signature_verification = {
+    public_key = "unused-test-key"
+  }
 
   values = {
     definitely_unexposed_by_zarf_init_values_test = "deferred"
@@ -547,6 +562,10 @@ resource "uds_package" "values" {
   architecture = "{{ .Architecture }}"
   namespace    = "zarf-values"
 
+  signature_verification = {
+    verify = false
+  }
+
   values = {
     config = {
       annotations = {
@@ -595,6 +614,10 @@ resource "uds_package" "nginx" {
 
   source       = "{{ .NginxSource }}"
   architecture = "{{ .Architecture }}"
+
+  signature_verification = {
+    verify = false
+  }
 
   values = {
     nginx = {
@@ -744,6 +767,10 @@ resource "uds_package" "lifecycle" {
   depends_on   = [uds_package.init]
   source       = %q
   architecture = "%s"
+
+  signature_verification = {
+    verify = false
+  }
 }
 `, initPackageVersion, runtime.GOARCH, packagePath, runtime.GOARCH)
 }
