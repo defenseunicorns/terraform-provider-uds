@@ -529,7 +529,7 @@ func WithSensitiveValues(values types.Dynamic) PackageResourceModelDataOption {
 	}
 }
 
-// NewTestPackageResourceModel creates a PackageResourceModel with default values and applies data options
+// NewTestPackageResourceModel uses unsigned fixtures, so verification is disabled unless explicitly configured.
 func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) PackageResourceModel {
 	model := PackageResourceModel{
 		Source:                types.StringValue("oci://ghcr.io/defenseunicorns/packages/test:latest"),
@@ -545,6 +545,7 @@ func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) Pack
 		SensitiveValues:       types.DynamicNull(),
 	}
 
+	WithSignatureVerificationEnabled(false)(&model)
 	for _, option := range options {
 		option(&model)
 	}
@@ -1460,7 +1461,7 @@ func TestPackageResource_CreateSignatureFailureDoesNotAdoptExistingPackage(t *te
 		return errors.New("signature verification failed")
 	}
 
-	resp := runCreateLifecycleTest(t, packageResource, newCreateLifecycleModel(WithSignatureVerificationEnabled(true)))
+	resp := runCreateLifecycleTest(t, packageResource, newCreateLifecycleModel(WithPublicKey("test-public-key")))
 
 	require.True(t, resp.Diagnostics.HasError())
 	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "signature verification failed")
@@ -2692,8 +2693,16 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 			expectLoadPackage: false,
 		},
 		{
-			name: "unknown source skips verification",
+			name: "unknown public key defers verification until apply",
 			modelOpts: []PackageResourceModelDataOption{func(m *PackageResourceModel) {
+				sig := newTestSigVerification(true, "", nil)
+				sig.PublicKey = types.StringUnknown()
+				withSigVerification(sig)(m)
+			}},
+		},
+		{
+			name: "unknown source skips verification",
+			modelOpts: []PackageResourceModelDataOption{WithSignatureVerificationEnabled(true), func(m *PackageResourceModel) {
 				m.Source = types.StringUnknown()
 			}},
 			loadPackageError:  fmt.Errorf("should not be called"),
@@ -2989,6 +2998,15 @@ func TestPackageResource_VerifyPackageSignature_SkipsWhenVerificationDisabled(t 
 	assert.NoError(t, err)
 }
 
+func TestPackageResource_VerifyPackageSignature_RequiresVerificationMaterial(t *testing.T) {
+	for _, signed := range []bool{false, true} {
+		pkgLayout := newTestPackageLayout(t, v1alpha1.ZarfPackage{Build: v1alpha1.ZarfBuildData{Signed: helpers.BoolPtr(signed)}})
+		resource := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+		err := resource.verifyPackageSignature(context.Background(), NewTestPackageResourceModel(WithSignatureVerificationEnabled(true)), pkgLayout)
+		require.ErrorContains(t, err, "requires `public_key` or `keyless`")
+	}
+}
+
 func TestPackageResource_VerifyPackageSignature_RejectsUnsignedWithVerificationMaterial(t *testing.T) {
 	for name, verification := range map[string]PackageResourceModelDataOption{
 		"public key": WithPublicKey("test-public-key"),
@@ -3081,7 +3099,7 @@ func TestPackageResource_Upsert_DoesNotDeployWhenSignatureVerificationFails(t *t
 		return errors.New("signature verification failed")
 	}
 
-	_, err := packageResource.upsert(testCtx(t), NewTestPackageResourceModel())
+	_, err := packageResource.upsert(testCtx(t), NewTestPackageResourceModel(WithPublicKey("test-public-key")))
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "signature verification failed")
@@ -3106,7 +3124,7 @@ func TestPackageResource_Upsert_DeploysWhenSignatureVerificationSucceeds(t *test
 		return nil
 	}
 
-	_, err := packageResource.upsert(testCtx(t), NewTestPackageResourceModel())
+	_, err := packageResource.upsert(testCtx(t), NewTestPackageResourceModel(WithPublicKey("test-public-key")))
 
 	assert.NoError(t, err)
 	assert.True(t, called)
@@ -6714,8 +6732,39 @@ func TestPackageResource_ValidateConfig_SignatureVerification(t *testing.T) {
 		errorMsg    string
 	}{
 		{
-			name:        "no error when signature_verification absent",
-			configFunc:  func() PackageResourceModel { return NewTestPackageResourceModel() },
+			name: "error when signature_verification absent",
+			configFunc: func() PackageResourceModel {
+				model := NewTestPackageResourceModel()
+				model.SignatureVerification = types.ObjectNull(signatureVerificationAttrTypes)
+				return model
+			},
+			expectError: true,
+			errorMsg:    "requires `public_key` or `keyless`",
+		},
+		{
+			name: "verify=true without material",
+			configFunc: func() PackageResourceModel {
+				return NewTestPackageResourceModel(WithSignatureVerificationEnabled(true))
+			},
+			expectError: true,
+			errorMsg:    "requires `public_key` or `keyless`",
+		},
+		{
+			name: "unknown verify defers validation",
+			configFunc: func() PackageResourceModel {
+				sig := newTestSigVerification(true, "", nil)
+				sig.Verify = types.BoolUnknown()
+				return NewTestPackageResourceModel(withSigVerification(sig))
+			},
+			expectError: false,
+		},
+		{
+			name: "unknown public key defers validation",
+			configFunc: func() PackageResourceModel {
+				sig := newTestSigVerification(true, "", nil)
+				sig.PublicKey = types.StringUnknown()
+				return NewTestPackageResourceModel(withSigVerification(sig))
+			},
 			expectError: false,
 		},
 		{
@@ -7641,7 +7690,9 @@ func TestBuildVerifyBlobOptions(t *testing.T) {
 		{
 			name: "no verification config returns nil",
 			setupModel: func() PackageResourceModel {
-				return NewTestPackageResourceModel()
+				model := NewTestPackageResourceModel()
+				model.SignatureVerification = types.ObjectNull(signatureVerificationAttrTypes)
+				return model
 			},
 			wantNil: true,
 		},
@@ -7742,9 +7793,13 @@ func TestPackageResource_GetEffectiveSignatureVerification(t *testing.T) {
 		expected   bool
 	}{
 		{
-			name:       "absent signature_verification block returns true",
-			setupModel: func() PackageResourceModel { return NewTestPackageResourceModel() },
-			expected:   true,
+			name: "absent signature_verification block returns true",
+			setupModel: func() PackageResourceModel {
+				model := NewTestPackageResourceModel()
+				model.SignatureVerification = types.ObjectNull(signatureVerificationAttrTypes)
+				return model
+			},
+			expected: true,
 		},
 		{
 			name: "signature_verification with enabled=true returns true",

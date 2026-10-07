@@ -314,13 +314,13 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				Computed:            true,
 			},
 			"signature_verification": schema.SingleNestedAttribute{
-				MarkdownDescription: "Signature verification configuration. Omit to use defaults (verification enabled, no key).",
+				MarkdownDescription: "Signature verification configuration. Verification defaults to enabled and requires `public_key` or `keyless`.",
 				Optional:            true,
 				Computed:            true,
 				Default:             objectdefault.StaticValue(defaultSignatureVerification),
 				Attributes: map[string]schema.Attribute{
 					"verify": schema.BoolAttribute{
-						MarkdownDescription: "When true, verify the signature of a signed UDS package. Unsigned packages are rejected if `public_key` or `keyless` is configured, otherwise verification is skipped with a warning. When false, skip package signature verification.",
+						MarkdownDescription: "When true, require a signed UDS package and verify its signature using `public_key` or `keyless`. When false, skip package signature verification.",
 						Optional:            true,
 						Computed:            true,
 						Default:             booldefault.StaticBool(true),
@@ -1179,19 +1179,19 @@ func (r *PackageResource) verifyPackageSignature(ctx context.Context, model Pack
 		return err
 	}
 
-	if verifyBlobOpts != nil && !pkgLayout.IsSigned() {
+	if verifyBlobOpts == nil {
+		return errors.New("`verify = true` requires `public_key` or `keyless`; set `verify = false` to skip signature verification")
+	}
+
+	if !pkgLayout.IsSigned() {
 		return errors.New("package is unsigned but signature verification material is configured")
 	}
 
-	verifyOpts := zarfSigning.DefaultVerifyBlobOptions()
-	if verifyBlobOpts != nil {
-		verifyOpts = *verifyBlobOpts
-	}
 	verifyPackageSignatureFunc := r.verifyPackageSignatureFunc
 	if verifyPackageSignatureFunc == nil {
 		verifyPackageSignatureFunc = defaultPackageSignatureVerifier
 	}
-	verifyErr := verifyPackageSignatureFunc(ctx, pkgLayout, verifyOpts)
+	verifyErr := verifyPackageSignatureFunc(ctx, pkgLayout, *verifyBlobOpts)
 	return handleVerifyResult(ctx, verifyErr, pkgLayout.IsSigned(), enforceSignatureVerification)
 }
 
@@ -2606,7 +2606,13 @@ func validateUniqueVarNames(model PackageResourceModel, resp *resource.ValidateC
 
 // validateSignatureVerificationAttributes validates the signature_verification block.
 func validateSignatureVerificationAttributes(ctx context.Context, model PackageResourceModel, resp *resource.ValidateConfigResponse) {
-	if model.SignatureVerification.IsNull() || model.SignatureVerification.IsUnknown() {
+	if model.SignatureVerification.IsUnknown() {
+		return
+	}
+
+	if model.SignatureVerification.IsNull() {
+		resp.Diagnostics.AddAttributeError(path.Root("signature_verification"), "Missing signature verification material",
+			"`verify = true` requires `public_key` or `keyless`. Set `verify = false` to skip signature verification.")
 		return
 	}
 
@@ -2614,6 +2620,13 @@ func validateSignatureVerificationAttributes(ctx context.Context, model PackageR
 	resp.Diagnostics.Append(model.SignatureVerification.As(ctx, &sig, basetypes.ObjectAsOptions{})...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+
+	verificationRequired := !sig.Verify.IsUnknown() && (sig.Verify.IsNull() || sig.Verify.ValueBool())
+	missingPublicKey := !sig.PublicKey.IsUnknown() && sig.PublicKey.ValueString() == ""
+	if verificationRequired && missingPublicKey && sig.Keyless.IsNull() {
+		resp.Diagnostics.AddAttributeError(path.Root("signature_verification"), "Missing signature verification material",
+			"`verify = true` requires `public_key` or `keyless`. Set `verify = false` to skip signature verification.")
 	}
 
 	if sig.Keyless.IsNull() || sig.Keyless.IsUnknown() {
@@ -3129,7 +3142,9 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 		return packagePlanCheckResult{}
 	}
 
-	needsSigVerification := getEffectiveSignatureVerification(ctx, plan)
+	signatureConfig, signatureConfigErr := plan.SignatureVerification.ToTerraformValue(ctx)
+	needsSigVerification := getEffectiveSignatureVerification(ctx, plan) &&
+		signatureConfigErr == nil && signatureConfig.IsFullyKnown()
 	var requestedOptionals []string
 	// Unknown values are explicitly configured but cannot be validated until apply,
 	// when upsert receives their resolved component names.

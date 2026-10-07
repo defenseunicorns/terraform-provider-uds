@@ -18,6 +18,10 @@ import {
 
 resource "uds_package" "init" {
   source = "oci://ghcr.io/zarf-dev/packages/init:v0.87.0"
+
+  signature_verification = {
+    verify = false
+  }
 }
 
 # With a namespace override, the import ID is the namespace and package name:

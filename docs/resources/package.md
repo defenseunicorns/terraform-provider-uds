@@ -64,6 +64,10 @@ resource "uds_package" "podinfo" {
   architecture = var.architecture
   namespace    = "podinfo"
 
+  signature_verification = {
+    verify = false
+  }
+
   values = {
     logLevel = "debug"
     service = {
@@ -119,6 +123,10 @@ resource "uds_package" "nginx" {
   source       = "oci://ghcr.io/defenseunicorns/packages/uds/nginx:${local.uds_nginx_version}-${local.uds_package_flavor}"
   architecture = var.architecture
 
+  signature_verification = {
+    verify = false
+  }
+
   values = {
     nginx = {
       replicaCount = 3
@@ -163,7 +171,7 @@ resource "uds_package" "init_with_git_server" {
 - `optional_components` (Set of String) [Alpha] Set of optional package component names to install. Case-sensitive. Mutually exclusive with `component` blocks — specifying both is a validation error. When omitted or set to an empty list, only required package components are installed.
 - `sensitive_values` (Dynamic, Sensitive) [Alpha] Sensitive Zarf package values to apply at deploy time. Packages with a values schema are validated against that schema. Values are redacted from Terraform/OpenTofu output. Cannot be used with component blocks.
 - `sensitive_vars` (Attributes Set) Sensitive UDS package variables to set. (see [below for nested schema](#nestedatt--sensitive_vars))
-- `signature_verification` (Attributes) Signature verification configuration. Omit to use defaults (verification enabled, no key). (see [below for nested schema](#nestedatt--signature_verification))
+- `signature_verification` (Attributes) Signature verification configuration. Verification defaults to enabled and requires `public_key` or `keyless`. (see [below for nested schema](#nestedatt--signature_verification))
 - `timeouts` (Attributes) (see [below for nested schema](#nestedatt--timeouts))
 - `values` (Dynamic) [Alpha] Zarf package values to apply at deploy time. Packages with a values schema are validated against that schema. Cannot be used with component blocks.
 - `vars` (Attributes Set) UDS package variables to set. (see [below for nested schema](#nestedatt--vars))
@@ -237,7 +245,7 @@ Optional:
 
 - `keyless` (Attributes) Keyless (Sigstore/OIDC) signature verification configuration. Mutually exclusive with `public_key`. (see [below for nested schema](#nestedatt--signature_verification--keyless))
 - `public_key` (String) Raw public key value to validate against a key-signed UDS package. Mutually exclusive with `keyless`.
-- `verify` (Boolean) When true, verify the signature of a signed UDS package. Unsigned packages are rejected if `public_key` or `keyless` is configured, otherwise verification is skipped with a warning. When false, skip package signature verification.
+- `verify` (Boolean) When true, require a signed UDS package and verify its signature using `public_key` or `keyless`. When false, skip package signature verification.
 
 <a id="nestedatt--signature_verification--keyless"></a>
 ### Nested Schema for `signature_verification.keyless`
@@ -334,6 +342,10 @@ import {
 
 resource "uds_package" "init" {
   source = "oci://ghcr.io/zarf-dev/packages/init:v0.87.0"
+
+  signature_verification = {
+    verify = false
+  }
 }
 
 # With a namespace override, the import ID is the namespace and package name:
