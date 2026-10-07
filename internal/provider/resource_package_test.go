@@ -2637,13 +2637,18 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 		modelOpts         []PackageResourceModelDataOption
 		loadPackageError  error
 		packageSigned     bool
+		verifySignature   packageSignatureVerifier
 		expectLoadErr     bool
 		expectSigErr      bool
 		expectLoadPackage bool
 	}{
 		{
-			name:              "verify=true with load success passes",
-			modelOpts:         []PackageResourceModelDataOption{WithPublicKey("some-key")},
+			name:          "verify=true with load success passes",
+			modelOpts:     []PackageResourceModelDataOption{WithPublicKey("some-key")},
+			packageSigned: true,
+			verifySignature: func(context.Context, *layout.PackageLayout, zarfSigning.VerifyBlobOptions) error {
+				return nil
+			},
 			loadPackageError:  nil,
 			expectLoadErr:     false,
 			expectSigErr:      false,
@@ -2715,6 +2720,7 @@ func TestPackageResource_RunPackagePlanChecks_SignatureVerification(t *testing.T
 			}
 
 			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+			packageResource.verifyPackageSignatureFunc = tc.verifySignature
 			model := NewTestPackageResourceModel(tc.modelOpts...)
 			result := packageResource.runPackagePlanChecks(context.Background(), model)
 
@@ -2742,6 +2748,7 @@ func TestPackageResource_RunPackagePlanChecks_ErrorRouting(t *testing.T) {
 		name             string
 		modelOpts        []PackageResourceModelDataOption
 		loadPackageError error
+		verifySignature  packageSignatureVerifier
 		expectLoadErr    bool
 		expectSigErr     bool
 		expectOptErr     bool
@@ -2770,6 +2777,9 @@ func TestPackageResource_RunPackagePlanChecks_ErrorRouting(t *testing.T) {
 		},
 		{
 			name: "invalid optional_components routes to optErr not sigErr",
+			verifySignature: func(context.Context, *layout.PackageLayout, zarfSigning.VerifyBlobOptions) error {
+				return nil
+			},
 			modelOpts: []PackageResourceModelDataOption{
 				WithPublicKey("some-key"),
 				WithOptionalComponents([]string{"nonexistent-component"}),
@@ -2786,6 +2796,9 @@ func TestPackageResource_RunPackagePlanChecks_ErrorRouting(t *testing.T) {
 			mockPackager := &MockPackager{}
 			if tc.loadPackageError == nil {
 				result := newValidLoadPackageResult(t)
+				if tc.verifySignature != nil {
+					result.Layout = markTestPackageSigned(t, result.Layout)
+				}
 				mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(result.Layout, result.Error)
 			} else {
 				result := newErrorLoadPackageResult(tc.loadPackageError)
@@ -2793,6 +2806,7 @@ func TestPackageResource_RunPackagePlanChecks_ErrorRouting(t *testing.T) {
 			}
 
 			packageResource := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, mockPackager, nil, nil).(*PackageResource)
+			packageResource.verifyPackageSignatureFunc = tc.verifySignature
 			model := NewTestPackageResourceModel(tc.modelOpts...)
 			result := packageResource.runPackagePlanChecks(context.Background(), model)
 
