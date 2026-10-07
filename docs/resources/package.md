@@ -237,7 +237,7 @@ Optional:
 
 - `keyless` (Attributes) Keyless (Sigstore/OIDC) signature verification configuration. Mutually exclusive with `public_key`. (see [below for nested schema](#nestedatt--signature_verification--keyless))
 - `public_key` (String) Raw public key value to validate against a key-signed UDS package. Mutually exclusive with `keyless`.
-- `verify` (Boolean) When true, verify the signature of a signed UDS package. When false, skip package signature verification.
+- `verify` (Boolean) When true, verify the signature of a signed UDS package. When false, skip package signature verification. Unsigned packages error if `public_key` or `keyless` is configured.
 
 <a id="nestedatt--signature_verification--keyless"></a>
 ### Nested Schema for `signature_verification.keyless`

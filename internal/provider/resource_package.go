@@ -320,7 +320,7 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				Default:             objectdefault.StaticValue(defaultSignatureVerification),
 				Attributes: map[string]schema.Attribute{
 					"verify": schema.BoolAttribute{
-						MarkdownDescription: "When true, verify the signature of a signed UDS package. When false, skip package signature verification.",
+						MarkdownDescription: "When true, verify the signature of a signed UDS package. When false, skip package signature verification. Unsigned packages error if `public_key` or `keyless` is configured.",
 						Optional:            true,
 						Computed:            true,
 						Default:             booldefault.StaticBool(true),
@@ -1177,6 +1177,10 @@ func (r *PackageResource) verifyPackageSignature(ctx context.Context, model Pack
 	verifyBlobOpts, err := buildVerifyBlobOptions(ctx, model, tmpDir)
 	if err != nil {
 		return err
+	}
+
+	if verifyBlobOpts != nil && !pkgLayout.IsSigned() {
+		return errors.New("package is unsigned but signature verification material is configured")
 	}
 
 	verifyOpts := zarfSigning.DefaultVerifyBlobOptions()

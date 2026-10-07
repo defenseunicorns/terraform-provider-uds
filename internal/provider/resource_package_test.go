@@ -2975,6 +2975,23 @@ func TestPackageResource_VerifyPackageSignature_SkipsWhenVerificationDisabled(t 
 	assert.NoError(t, err)
 }
 
+func TestPackageResource_VerifyPackageSignature_RejectsUnsignedWithVerificationMaterial(t *testing.T) {
+	for name, verification := range map[string]PackageResourceModelDataOption{
+		"public key": WithPublicKey("test-public-key"),
+		"keyless":    WithKeylessVerification("test@example.com", "https://token.actions.githubusercontent.com"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			resource := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
+			pkgLayout := newTestPackageLayout(t, v1alpha1.ZarfPackage{})
+			model := NewTestPackageResourceModel(verification)
+
+			err := resource.verifyPackageSignature(context.Background(), model, pkgLayout)
+
+			require.ErrorContains(t, err, "package is unsigned but signature verification material is configured")
+		})
+	}
+}
+
 func TestPackageResource_VerifyPackageSignature_CallsVerifierWithPublicKey(t *testing.T) {
 	packageResource := NewPackageResource(nil, nil, nil, nil).(*PackageResource)
 	var called bool
