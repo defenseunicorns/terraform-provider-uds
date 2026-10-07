@@ -320,7 +320,7 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				Default:             objectdefault.StaticValue(defaultSignatureVerification),
 				Attributes: map[string]schema.Attribute{
 					"verify": schema.BoolAttribute{
-						MarkdownDescription: "When true, verify the signature of a signed UDS package. When false, skip package signature verification. Unsigned packages error if `public_key` or `keyless` is configured.",
+						MarkdownDescription: "When true, verify the signature of a signed UDS package. Unsigned packages are rejected if `public_key` or `keyless` is configured, otherwise verification is skipped with a warning. When false, skip package signature verification.",
 						Optional:            true,
 						Computed:            true,
 						Default:             booldefault.StaticBool(true),
