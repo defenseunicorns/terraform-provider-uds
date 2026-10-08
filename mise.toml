@@ -3,6 +3,7 @@
 
 [tools]
 go = "1.27.1"
+node = "24.21.0"
 hk = "2.4.0"
 golangci-lint = "2.14.0"
 "aqua:google/addlicense" = "1.2.0"
