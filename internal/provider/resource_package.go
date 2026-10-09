@@ -41,6 +41,7 @@ import (
 	udsPackager "github.com/defenseunicorns/terraform-provider-uds/internal/packager"
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 
+	zarfAPI "github.com/zarf-dev/zarf/src/api"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	"github.com/zarf-dev/zarf/src/pkg/ocischeme"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
@@ -1231,7 +1232,7 @@ func getEffectiveSignatureVerification(ctx context.Context, model PackageResourc
 	return sig.Verify.ValueBool()
 }
 
-func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string, identity deployedPackageIdentity) error {
+func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string, identity deployedPackageIdentity, pkg zarfAPI.Package) error {
 	if len(componentsToRemove) == 0 {
 		return nil
 	}
@@ -1248,32 +1249,12 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 		return fmt.Errorf("could not connect to cluster: %w", err)
 	}
 
-	// get a reference to the ZarfPackage
-	packageSource, err := getPackageSource(plan, *r.providerConfig)
-	if err != nil {
-		return fmt.Errorf("could not get package source: %w", err)
-	}
-	remoteOptions, err := r.getPackageSourceRemoteOptions(ctx, packageSource)
-	if err != nil {
-		return err
-	}
-	loadOpts := zarfPackager.LoadOptions{
-		Architecture:  getArchitecture(plan, *r.providerConfig),
-		Filter:        r.packageFilter.ForRemove(componentsToRemove),
-		CachePath:     r.providerConfig.ZarfCachePath,
-		RemoteOptions: remoteOptions,
-	}
-	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
-	if err != nil {
-		return fmt.Errorf("could not load package: %w", err)
-	}
 	if err := verifyCanonicalName(pkg.Metadata.Name, identity); err != nil {
 		return err
 	}
 
 	// Check if any of the components provided are 'required' and remove them from the list of components we are removing
 	// NOTE: Just because a component block is removed from the resource spec doesn't mean it wasn't deployed. Zarf components that are marked as 'required' should not be removed
-	foundRequired := false
 	newComponentsToRemove := []string{}
 	requiredComponents := make(map[string]bool, len(pkg.Components))
 	for _, component := range pkg.Components {
@@ -1282,32 +1263,18 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	for _, componentName := range componentsToRemove {
 		if requiredComponents[componentName] {
 			// we are trying to remove a required component, don't do that...
-			foundRequired = true
 			continue
 		}
 		newComponentsToRemove = append(newComponentsToRemove, componentName)
 	}
 
-	// Fetch a new zarfPackage from the cluster, with a new filter of components
-	if foundRequired {
-		if len(newComponentsToRemove) == 0 {
-			// All requested components were required; nothing safe to remove.
-			return nil
-		}
-		loadOpts := zarfPackager.LoadOptions{
-			Architecture:  getArchitecture(plan, *r.providerConfig),
-			Filter:        r.packageFilter.ForRemove(newComponentsToRemove),
-			CachePath:     r.providerConfig.ZarfCachePath,
-			RemoteOptions: remoteOptions,
-		}
-
-		pkg, err = r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
-		if err != nil {
-			return fmt.Errorf("could not load package: %w", err)
-		}
-		if err := verifyCanonicalName(pkg.Metadata.Name, identity); err != nil {
-			return err
-		}
+	if len(newComponentsToRemove) == 0 {
+		return nil
+	}
+	// Filter a copy of the verified definition; never fetch the mutable source again.
+	pkg, err = zarfFilters.Apply(pkg, r.packageFilter.ForRemove(newComponentsToRemove))
+	if err != nil {
+		return fmt.Errorf("could not filter components for removal: %w", err)
 	}
 	for _, component := range newComponentsToRemove {
 		logging.ComponentSelected(ctx, component)
@@ -1472,7 +1439,7 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	if found {
 		return plan, fmt.Errorf("%w: package with namespace '%s' and name '%s'", errDuplicatePackage, plan.Namespace.ValueString(), packageName)
 	}
-	return r.upsertLoadedPackage(ctx, plan, pkgLayout)
+	return r.upsertVerifiedPackage(ctx, plan, pkgLayout)
 }
 
 func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel, identity deployedPackageIdentity) (PackageResourceModel, error) {
@@ -1494,6 +1461,27 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 	if err != nil || definition.Metadata.Name != identity.Name {
 		return plan, identityErr
 	}
+	if plan.OptionalComponents.IsUnknown() {
+		return plan, fmt.Errorf("optional_components must be known before apply")
+	}
+	ctx = r.withOCISchemeNegotiator(ctx)
+	// Use one verified source layout for both removal preflight and deployment.
+	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
+	if err != nil {
+		return plan, err
+	}
+	defer func() {
+		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
+			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
+		}
+	}()
+	canonicalName := pkgLayout.AsV1alpha1().Metadata.Name
+	if err := verifyCanonicalName(canonicalName, identity); err != nil {
+		return plan, err
+	}
+	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
+		return plan, err
+	}
 
 	// Generate list of components to remove before the update.
 	// Combines legacy component-block removals with optional_components removals.
@@ -1509,59 +1497,21 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 		}
 	}
 	if len(componentsToRemove) > 0 {
-		if err := r.removeComponents(ctx, plan, componentsToRemove, identity); err != nil {
-			return plan, err
-		}
-	}
-
-	return r.upsertExisting(ctx, plan, identity)
-}
-
-// upsert loads and cleans up the package layout before deploying it.
-func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
-	return r.upsertWithIdentity(ctx, plan, nil)
-}
-
-func (r *PackageResource) upsertExisting(ctx context.Context, plan PackageResourceModel, identity deployedPackageIdentity) (PackageResourceModel, error) {
-	return r.upsertWithIdentity(ctx, plan, &identity)
-}
-
-func (r *PackageResource) upsertWithIdentity(ctx context.Context, plan PackageResourceModel, identity *deployedPackageIdentity) (PackageResourceModel, error) {
-	ctx = r.withOCISchemeNegotiator(ctx)
-	if plan.OptionalComponents.IsUnknown() {
-		return plan, fmt.Errorf("optional_components must be known before apply")
-	}
-	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
-	if err != nil {
-		return plan, err
-	}
-	defer func() {
-		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
-			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
-		}
-	}()
-	canonicalName := pkgLayout.AsV1alpha1().Metadata.Name
-	if identity != nil {
-		if err := verifyCanonicalName(canonicalName, *identity); err != nil {
+		if err := r.removeComponents(ctx, plan, componentsToRemove, identity, pkgLayout.Definition()); err != nil {
 			return plan, err
 		}
 	}
 	plan.Name = types.StringValue(canonicalName)
-	ctx = logging.WithPackageContext(ctx, "", plan.Name.ValueString(), plan.Namespace.ValueString())
-	return r.upsertLoadedPackage(ctx, plan, pkgLayout)
+	ctx = logging.WithPackageContext(ctx, "", canonicalName, plan.Namespace.ValueString())
+	return r.upsertVerifiedPackage(ctx, plan, pkgLayout)
 }
 
-// upsertLoadedPackage deploys an already-loaded package layout. The caller owns
-// loading and cleanup of the package layout.
-func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageResourceModel, pkgLayout *layout.PackageLayout) (PackageResourceModel, error) {
+// upsertVerifiedPackage deploys a layout already verified by the caller.
+func (r *PackageResource) upsertVerifiedPackage(ctx context.Context, plan PackageResourceModel, pkgLayout *layout.PackageLayout) (PackageResourceModel, error) {
 	ctx = r.withOCISchemeNegotiator(ctx)
 	if plan.OptionalComponents.IsUnknown() {
 		return plan, fmt.Errorf("optional_components must be known before apply")
 	}
-	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
-		return plan, err
-	}
-
 	optionalComponents, err := getOptionalComponentsForDeploy(ctx, plan, pkgLayout)
 	if err != nil {
 		return plan, err
