@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.6.0...v0.7.0) (2026-10-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* Signature verification is enabled by default and now requires a public key or keyless verification policy. Unsigned packages fail verification during plan/apply unless verify=false is explicitly configured. This primarily affects unsigned packages; signed packages already failed verification without verification material.
+
+### Bug Fixes
+
+* ensure signature verification fails on unsigned packages ([#368](https://github.com/defenseunicorns/terraform-provider-uds/issues/368)) ([c6b2d24](https://github.com/defenseunicorns/terraform-provider-uds/commit/c6b2d2432b67a17fc9dec81221031f3a21d753fb))
+
 ## [0.6.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.5.4...v0.6.0) (2026-10-05)
 
 
