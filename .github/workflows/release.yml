@@ -62,18 +62,18 @@ jobs:
           persist-credentials: false
 
       - name: Setup mise
-        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
           # renovate: datasource=github-releases depName=jdx/mise versioning=semver
-          version: 2026.9.18
+          version: 2026.10.6
           install: true
           cache: false
 
       - name: Install syft
-        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           # renovate: datasource=github-tags depName=anchore/syft versioning=semver
-          syft-version: v1.52.0
+          syft-version: v1.54.1
 
       - name: Import GPG key
         shell: bash
