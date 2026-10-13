@@ -18,7 +18,8 @@ Release Please automatically:
 1. When the release PR is merged, it creates and pushes a version tag (e.g., `v0.1.0`)
 1. The tag push triggers the existing release workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml))
 
-> **Note:** The UDS Tofu Provider is currently in pre-1.0 (`v0.x.y`) development.
+> [!NOTE]
+> The UDS Tofu Provider is currently in pre-1.0 (`v0.x.y`) development.
 > While the provider remains in `v0.x`, breaking changes increment the **minor** version.
 > A `1.0.0` release will be created intentionally once the provider API is considered stable.
 
@@ -45,6 +46,7 @@ The UDS Tofu provider targets a release at least every two weeks. Final timing i
   - [ ] Add a high-level summary of changes
   - [ ] Document any required upgrade steps or breaking changes
 - [ ] Verify the GoReleaser workflow completed successfully and review release assets
+- [ ] Complete the [manual Terraform Registry sync](#terraform-registry-sync) and verify the new release is available
 
 ### Manual Releases (if required)
 
@@ -63,6 +65,22 @@ Manual releases may be necessary for exceptional cases.
   - [ ] Add a high-level summary of changes
   - [ ] Document any required upgrade steps or breaking changes
 - [ ] Verify the GoReleaser workflow completed successfully and review release assets
+- [ ] Complete the [manual Terraform Registry sync](#terraform-registry-sync) and verify the new release is available
+
+### Terraform Registry Sync
+
+After GoReleaser completes successfully, both standard and manual releases currently require a manual sync to publish the new version to the Terraform Registry. This manual step is necessary until automatic syncing via the GitHub App is fixed.
+
+1. Navigate to <https://app.terraform.io/login> and log in.
+1. Navigate to the `defenseunicorns` organization.
+1. Open the **Providers** tab.
+1. Open the three-dot menu on the right side of `defenseunicorns/uds` and select **Resync Provider**.
+1. After a short delay, a popup appears listing the tagged versions and their associated commits from GitHub. Click the blue **Resync** button at the bottom of the popup to begin syncing.
+1. Wait a few minutes for syncing to complete, then close the popup and log out.
+1. Verify that the new release appears at <https://registry.terraform.io/providers/defenseunicorns/uds/latest>.
+
+> [!NOTE]
+> The Terraform Registry may take another 5–10 minutes to show the new release after syncing completes.
 
 ## Handling Release Issues
 
@@ -76,8 +94,8 @@ Do not delete a broken release. Instead, clearly mark it and publish a correctiv
   2. Edit the release notes and add the following warning at the top:
 
      ```md
-     >[!WARNING]
-     >PLEASE USE A NEWER VERSION (there are known issues with this release)
+     > [!WARNING]
+     > PLEASE USE A NEWER VERSION (there are known issues with this release)
      ```
 
   3. Publish a new release that resolves the issue(s)
