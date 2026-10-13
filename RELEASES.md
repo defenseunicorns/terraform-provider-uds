@@ -45,6 +45,7 @@ The UDS Tofu provider targets a release at least every two weeks. Final timing i
   - [ ] Add a high-level summary of changes
   - [ ] Document any required upgrade steps or breaking changes
 - [ ] Verify the GoReleaser workflow completed successfully and review release assets
+- [ ] Complete the [manual Terraform Registry sync](#terraform-registry-sync) and verify the new release is available
 
 ### Manual Releases (if required)
 
@@ -63,6 +64,21 @@ Manual releases may be necessary for exceptional cases.
   - [ ] Add a high-level summary of changes
   - [ ] Document any required upgrade steps or breaking changes
 - [ ] Verify the GoReleaser workflow completed successfully and review release assets
+- [ ] Complete the [manual Terraform Registry sync](#terraform-registry-sync) and verify the new release is available
+
+### Terraform Registry Sync
+
+After GoReleaser completes successfully, both standard and manual releases currently require a manual sync to publish the new version to the Terraform Registry. This manual step is necessary until automatic syncing via the GitHub App is fixed.
+
+1. Navigate to <https://app.terraform.io/login> and log in.
+1. Navigate to the `defenseunicorns` organization.
+1. Open the **Providers** tab.
+1. Open the three-dot menu on the right side of `defenseunicorns/uds` and select **Resync Provider**.
+1. After a short delay, a popup appears listing the tagged versions and their associated commits from GitHub. Click the blue **Resync** button at the bottom of the popup to begin syncing.
+1. Wait a few minutes for syncing to complete, then close the popup and log out.
+1. Verify that the new release appears at <https://registry.terraform.io/providers/defenseunicorns/uds/latest>.
+
+> **Note:** The Terraform Registry may take another 5–10 minutes to show the new release after syncing completes.
 
 ## Handling Release Issues
 
