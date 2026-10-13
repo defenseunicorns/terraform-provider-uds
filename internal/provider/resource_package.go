@@ -99,6 +99,10 @@ func (e *canonicalSourceError) Error() string {
 	return "could not load source package metadata needed to verify its package-defined name"
 }
 
+type packageLoadError struct{}
+
+func (e *packageLoadError) Error() string { return "could not load package for update" }
+
 // deploymentAttemptedError marks failures after packager.Deploy was invoked
 // without changing the error text shown to users.
 type deploymentAttemptedError struct {
@@ -841,8 +845,11 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	if err != nil {
 		var optErr *optionalComponentsValidationError
 		var canonicalErr *canonicalNameMismatchError
+		var loadErr *packageLoadError
 		if errors.As(err, &canonicalErr) {
 			resp.Diagnostics.AddAttributeError(path.Root("source"), canonicalIdentitySummary(err), canonicalIdentityDetail(err))
+		} else if errors.As(err, &loadErr) {
+			resp.Diagnostics.AddAttributeError(path.Root("source"), "Failed to load package for update", "The package could not be loaded for update. No package mutation was performed. Check package and source settings, connectivity, and local cache access before retrying.")
 		} else if errors.As(err, &optErr) {
 			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", optErr.Error())
 		} else {
@@ -1468,7 +1475,7 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 	// Use one verified source layout for both removal preflight and deployment.
 	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
 	if err != nil {
-		return plan, err
+		return plan, &packageLoadError{}
 	}
 	defer func() {
 		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {

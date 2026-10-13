@@ -1735,6 +1735,42 @@ func TestPackageResource_UpdateRejectsCanonicalNameChangedBeforeDeploy(t *testin
 	filter.AssertNotCalled(t, "ForDeploy", mock.Anything)
 }
 
+func TestPackageResource_UpdateSourceReloadFailureDoesNotExposeSecrets(t *testing.T) {
+	const sentinelSecret = "sentinel-source-token-do-not-disclose"
+	canonicalLayout := newTestPackageLayout(t, v1alpha1.ZarfPackage{
+		Metadata: v1alpha1.ZarfMetadata{Name: "test-pkg"},
+	})
+	deployed := zarfState.DeployedPackage{
+		Name: "test-pkg",
+		Data: v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{Name: "test-pkg"}},
+	}
+	cluster := &MockCluster{}
+	cluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{
+		Clientset: fake.NewSimpleClientset(newPackageStateSecret(t, deployed)),
+	}, nil).Once()
+	packager := &MockPackager{}
+	packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(canonicalLayout, nil).Once()
+	packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).
+		Return((*layout.PackageLayout)(nil), errors.New(sentinelSecret)).Once()
+	filter := &MockPackageComponentFilter{}
+	resource := NewPackageResource(nil, packager, filter, cluster).(*PackageResource)
+	state := NewTestPackageResourceModel(WithTimeout("30m"), WithDeployedState())
+	plan := state
+	plan.Source = types.StringValue("oci://ghcr.io/defenseunicorns/packages/test:updated")
+
+	resp := runUpdateLifecycleTest(t, resource, plan, state)
+
+	require.Len(t, resp.Diagnostics.Errors(), 1)
+	assert.Equal(t, "Failed to load package for update", resp.Diagnostics.Errors()[0].Summary())
+	assert.NotContains(t, resp.Diagnostics.Errors()[0].Detail(), sentinelSecret)
+	assert.True(t, resp.State.Raw.IsNull(), "failed Update must leave prior state intact")
+	packager.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
+	packager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+	filter.AssertNotCalled(t, "ForRemove", mock.Anything)
+	filter.AssertNotCalled(t, "ForDeploy", mock.Anything)
+	packager.AssertExpectations(t)
+}
+
 func TestPackageResource_CreateDuplicatePackageDoesNotAdoptState(t *testing.T) {
 	packageLayout := newValidLoadPackageResult(t).Layout
 	deployedPackage := newLifecycleDeployedPackage(packageLayout)
