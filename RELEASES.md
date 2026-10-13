@@ -18,7 +18,8 @@ Release Please automatically:
 1. When the release PR is merged, it creates and pushes a version tag (e.g., `v0.1.0`)
 1. The tag push triggers the existing release workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml))
 
-> **Note:** The UDS Tofu Provider is currently in pre-1.0 (`v0.x.y`) development.
+> [!NOTE]
+> The UDS Tofu Provider is currently in pre-1.0 (`v0.x.y`) development.
 > While the provider remains in `v0.x`, breaking changes increment the **minor** version.
 > A `1.0.0` release will be created intentionally once the provider API is considered stable.
 
@@ -78,7 +79,8 @@ After GoReleaser completes successfully, both standard and manual releases curre
 1. Wait a few minutes for syncing to complete, then close the popup and log out.
 1. Verify that the new release appears at <https://registry.terraform.io/providers/defenseunicorns/uds/latest>.
 
-> **Note:** The Terraform Registry may take another 5–10 minutes to show the new release after syncing completes.
+> [!NOTE]
+> The Terraform Registry may take another 5–10 minutes to show the new release after syncing completes.
 
 ## Handling Release Issues
 
@@ -92,8 +94,8 @@ Do not delete a broken release. Instead, clearly mark it and publish a correctiv
   2. Edit the release notes and add the following warning at the top:
 
      ```md
-     >[!WARNING]
-     >PLEASE USE A NEWER VERSION (there are known issues with this release)
+     > [!WARNING]
+     > PLEASE USE A NEWER VERSION (there are known issues with this release)
      ```
 
   3. Publish a new release that resolves the issue(s)
