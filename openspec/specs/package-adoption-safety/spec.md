@@ -102,7 +102,7 @@ An explicitly allowlisted state-only update MUST preserve prior deployment-deriv
 - **THEN** the provider blocks deletion rather than risk removing a different package
 
 ### Requirement: Actionable adoption diagnostics and migration guidance
-Package-defined-name mismatch diagnostics MUST identify the deployed name, package-defined source name, namespace override, source attribute, and required external migration action, and MUST NOT suggest configuring the computed-only `name` attribute. Diagnostics MUST NOT expose source credentials, sensitive source content, or raw package, registry, transport, or cluster error details that have not been established as safe.
+Package-defined-name mismatch diagnostics MUST identify the deployed name, package-defined source name, namespace override, source attribute, and required external migration action, and MUST NOT suggest configuring the computed-only `name` attribute. Diagnostics from deployed-identity verification and canonical source-name comparison MUST NOT expose source credentials, sensitive source content, or raw package, registry, transport, or cluster error details that have not been established as safe.
 
 Public documentation MUST distinguish non-destructive Terraform state removal from workload deletion and MUST explain why UDS CLI Legacy aliased deployments are unsupported. It MUST provide a guarded, operator-run migration workflow for potentially eligible ordinary-chart and raw-manifest packages. The workflow MUST require operators to inventory and back up relevant Terraform, Zarf, Helm, and Kubernetes state; reconstruct deployment inputs; classify every installed release or component; compare package-defined rendering and identity with the live deployment; apply explicit stop conditions; perform an eligible package-defined deployment externally; verify the handoff across state layers; remove only the exact verified stale alias Zarf Secret; and import and review the package-defined provider resource. It MUST require both the selected deployment path and the final provider configuration to reproduce the workload's required inputs.
 
@@ -112,9 +112,9 @@ The documentation MUST explain that takeover can claim exact Helm-rendered Kuber
 - **WHEN** the provider detects that the deployed name differs from the package-defined name
 - **THEN** the diagnostic explains that management is unsupported because later Zarf operations would target a different identity and directs the user toward external migration
 
-#### Scenario: Validation dependency returns unsafe details
-- **WHEN** package, registry, transport, or cluster validation fails with an error containing credentials or sensitive source content
-- **THEN** the provider returns a categorized actionable diagnostic that does not disclose the sensitive content
+#### Scenario: Adoption identity check encounters unsafe dependency details
+- **WHEN** deployed-identity verification or canonical source-name comparison fails because package, registry, transport, or cluster access returns an error containing credentials or sensitive source content
+- **THEN** the provider returns an adoption-identity diagnostic that does not disclose the sensitive content
 
 #### Scenario: User abandons a provisional import
 - **WHEN** a user needs to preserve the deployed workload after a provisional import is rejected
