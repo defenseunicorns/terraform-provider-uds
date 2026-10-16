@@ -17,7 +17,7 @@ import {
 }
 
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.87.0"
+  source = "oci://ghcr.io/zarf-dev/packages/init:v0.88.0"
 
   signature_verification = {
     keyless = {
