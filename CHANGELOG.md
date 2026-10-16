@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.7.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.6.0...v0.7.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* Signature verification is enabled by default and now requires a public key or keyless verification policy. Unsigned packages fail verification during plan/apply unless verify=false is explicitly configured. This primarily affects unsigned packages; signed packages already failed verification without verification material.
+
+### Bug Fixes
+
+* concurrent uds_package deployments race the shared zarf cache ([4c14af0](https://github.com/defenseunicorns/terraform-provider-uds/commit/4c14af04368096c0f564c1a90c23737d95f96e1a))
+* ensure signature verification fails on unsigned packages ([#368](https://github.com/defenseunicorns/terraform-provider-uds/issues/368)) ([c6b2d24](https://github.com/defenseunicorns/terraform-provider-uds/commit/c6b2d2432b67a17fc9dec81221031f3a21d753fb))
+* verify package signatures before removing components during update ([#369](https://github.com/defenseunicorns/terraform-provider-uds/issues/369)) ([618f13d](https://github.com/defenseunicorns/terraform-provider-uds/commit/618f13dae22c36e940060c0ba63fed6a8156c239))
+
+
+### Miscellaneous
+
+* **deps:** update application dependencies to v0.4.1 [security] ([#373](https://github.com/defenseunicorns/terraform-provider-uds/issues/373)) ([5ccec67](https://github.com/defenseunicorns/terraform-provider-uds/commit/5ccec67946aad71646521abac1cb913646b39b62))
+* **deps:** update application-deps ([#372](https://github.com/defenseunicorns/terraform-provider-uds/issues/372)) ([a9871f5](https://github.com/defenseunicorns/terraform-provider-uds/commit/a9871f520b5c34f14a638d03f2e77cc995292f1c))
+* **deps:** update zarf to v0.88.0- [#377](https://github.com/defenseunicorns/terraform-provider-uds/issues/377) ([4c14af0](https://github.com/defenseunicorns/terraform-provider-uds/commit/4c14af04368096c0f564c1a90c23737d95f96e1a))
+
 ## [0.6.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.5.4...v0.6.0) (2026-10-05)
 
 
