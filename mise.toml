@@ -7,7 +7,7 @@ hk = "2.6.0"
 golangci-lint = "2.14.0"
 "aqua:google/addlicense" = "1.2.0"
 opentofu = "1.13.1"
-terraform = "1.16.5"
+terraform = "1.16.6"
 k3d = "5.9.0"
 "aqua:defenseunicorns/uds-cli" = "0.39.0"
 
