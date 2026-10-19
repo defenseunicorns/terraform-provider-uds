@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.7.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.6.0...v0.7.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* Signature verification is enabled by default and now requires a public key or keyless verification policy. Unsigned packages fail verification during plan/apply unless verify=false is explicitly configured. This primarily affects unsigned packages; signed packages already failed verification without verification material.
+
+### Bug Fixes
+
+* concurrent uds_package deployments race the shared zarf cache ([4c14af0](https://github.com/defenseunicorns/terraform-provider-uds/commit/4c14af04368096c0f564c1a90c23737d95f96e1a))
+* ensure signature verification fails on unsigned packages ([#368](https://github.com/defenseunicorns/terraform-provider-uds/issues/368)) ([c6b2d24](https://github.com/defenseunicorns/terraform-provider-uds/commit/c6b2d2432b67a17fc9dec81221031f3a21d753fb))
+* verify package signatures before removing components during update ([#369](https://github.com/defenseunicorns/terraform-provider-uds/issues/369)) ([618f13d](https://github.com/defenseunicorns/terraform-provider-uds/commit/618f13dae22c36e940060c0ba63fed6a8156c239))
+
+
+### Miscellaneous
+
+* **deps:** update application dependencies to v0.4.1 [security] ([#373](https://github.com/defenseunicorns/terraform-provider-uds/issues/373)) ([5ccec67](https://github.com/defenseunicorns/terraform-provider-uds/commit/5ccec67946aad71646521abac1cb913646b39b62))
+* **deps:** update application-deps ([#372](https://github.com/defenseunicorns/terraform-provider-uds/issues/372)) ([a9871f5](https://github.com/defenseunicorns/terraform-provider-uds/commit/a9871f520b5c34f14a638d03f2e77cc995292f1c))
+* **deps:** update zarf to v0.88.0- [#377](https://github.com/defenseunicorns/terraform-provider-uds/issues/377) ([4c14af0](https://github.com/defenseunicorns/terraform-provider-uds/commit/4c14af04368096c0f564c1a90c23737d95f96e1a))
+
+## [0.6.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.5.4...v0.6.0) (2026-10-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* uds_package no longer attempts to manage existing package deployments whose deployed name differs from the configured source package's canonical metadata.name. Previously deployed packages who's name's were overridden, for example by uds-cli, cannot be imported by the provider and must be migrated externally before they can be managed under their canonical identity.
+
+### Bug Fixes
+
+* reject import/management of packages deployed with overridden package name ([#343](https://github.com/defenseunicorns/terraform-provider-uds/issues/343)) ([08be99e](https://github.com/defenseunicorns/terraform-provider-uds/commit/08be99e8bcc3bd1f525e67622f7c11ec7d8878c5))
+
+
+### Miscellaneous
+
+* add cleaner signature verification example ([#366](https://github.com/defenseunicorns/terraform-provider-uds/issues/366)) ([7b1506f](https://github.com/defenseunicorns/terraform-provider-uds/commit/7b1506fbf07cb7d90709758a53b4ae7ff709c831))
+* **deps:** update application-deps ([#354](https://github.com/defenseunicorns/terraform-provider-uds/issues/354)) ([fe1a92d](https://github.com/defenseunicorns/terraform-provider-uds/commit/fe1a92d5a88cd2ba53397b758f9f3fb87582d49a))
+* **deps:** update application-deps to v0.37.1 ([#360](https://github.com/defenseunicorns/terraform-provider-uds/issues/360)) ([19b0a1c](https://github.com/defenseunicorns/terraform-provider-uds/commit/19b0a1cda55b8280f5db857b9383755929819351))
+* **deps:** update support-deps ([#352](https://github.com/defenseunicorns/terraform-provider-uds/issues/352)) ([94cef75](https://github.com/defenseunicorns/terraform-provider-uds/commit/94cef75dfd0e40515937eb76544f2a14c208bd19))
+* **deps:** update support-deps ([#357](https://github.com/defenseunicorns/terraform-provider-uds/issues/357)) ([395064c](https://github.com/defenseunicorns/terraform-provider-uds/commit/395064c139770eb19b2c53f88b511c32be5a9706))
+* **deps:** update support-deps ([#359](https://github.com/defenseunicorns/terraform-provider-uds/issues/359)) ([c4b6476](https://github.com/defenseunicorns/terraform-provider-uds/commit/c4b6476712d8fcbf5faa0e79283acd92e38d1ced))
+* **deps:** update support-deps ([#362](https://github.com/defenseunicorns/terraform-provider-uds/issues/362)) ([9c6658d](https://github.com/defenseunicorns/terraform-provider-uds/commit/9c6658d0f66e854b199aabfee67bbd72442ddebf))
+* **deps:** update support-deps ([#363](https://github.com/defenseunicorns/terraform-provider-uds/issues/363)) ([3696091](https://github.com/defenseunicorns/terraform-provider-uds/commit/369609149ff08062f788d87a9bac230d9d3fe039))
+* **deps:** update zarf to v0.87.0 ([#364](https://github.com/defenseunicorns/terraform-provider-uds/issues/364)) ([dca1898](https://github.com/defenseunicorns/terraform-provider-uds/commit/dca18984fe4cc3145ac0c604cfc5790f008263ef))
+* improve developer task ergonomics ([#355](https://github.com/defenseunicorns/terraform-provider-uds/issues/355)) ([6b44ec3](https://github.com/defenseunicorns/terraform-provider-uds/commit/6b44ec350b66975e38350e6d913410a37734ae00))
+* switch to airgap version of uds-k3d ([#358](https://github.com/defenseunicorns/terraform-provider-uds/issues/358)) ([edd5a2c](https://github.com/defenseunicorns/terraform-provider-uds/commit/edd5a2c359ecd41d3694f9657690052aeee23fa4))
+
 ## [0.5.4](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.5.3...v0.5.4) (2026-09-18)
 
 

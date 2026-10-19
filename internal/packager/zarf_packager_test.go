@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	zarfAPI "github.com/zarf-dev/zarf/src/api"
+	zarfConvert "github.com/zarf-dev/zarf/src/api/convert"
 	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
 	"github.com/zarf-dev/zarf/src/pkg/cluster"
@@ -43,6 +44,23 @@ func TestZarfPackagerDeployDelegatesWithLoggerContextAndReturnsResult(t *testing
 	require.True(t, called)
 }
 
+func TestPackageComponentFilterDeployWithoutSelectionsRetainsOnlyRequiredComponents(t *testing.T) {
+	pkg := zarfAPI.Package{Components: []zarfAPI.Component{
+		{Name: "optional-default", Optional: true, Default: true},
+		{Name: "required-chart", Charts: []zarfAPI.Chart{{Name: "app", Namespace: "app"}}},
+		{Name: "optional", Optional: true},
+		{Name: "required-action", Actions: zarfAPI.ComponentActions{OnDeploy: zarfAPI.ActionSet{
+			Before: []zarfAPI.Action{{Cmd: "configure"}},
+		}}},
+	}}
+
+	components, err := NewPackageComponentFilter().ForDeploy(nil).Apply(pkg)
+
+	require.NoError(t, err)
+	require.Equal(t, []zarfAPI.Component{pkg.Components[1], pkg.Components[3]}, components,
+		"retain required components in package order with their deployment content intact")
+}
+
 func TestZarfPackagerDeployWrapsCapturedOutputOnError(t *testing.T) {
 	sentinel := errors.New("deploy failed")
 	p := newTestZarfPackager(testZarfPackagerOptions{
@@ -60,11 +78,11 @@ func TestZarfPackagerDeployWrapsCapturedOutputOnError(t *testing.T) {
 }
 
 func TestZarfPackagerRemoveDelegatesArgumentsWithLoggerContext(t *testing.T) {
-	pkg := zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{Name: "sentinel"}})
+	pkg := zarfConvert.PackageFromV1alpha1(v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{Name: "sentinel"}})
 	options := zPackager.RemoveOptions{}
 	called := false
 	p := newTestZarfPackager(testZarfPackagerOptions{
-		removePackage: func(ctx context.Context, gotPackage zarfAPI.PackageDefinition, gotOptions zPackager.RemoveOptions) error {
+		removePackage: func(ctx context.Context, gotPackage zarfAPI.Package, gotOptions zPackager.RemoveOptions) error {
 			called = true
 			require.True(t, logger.From(ctx).Enabled(ctx, slog.LevelInfo))
 			require.Equal(t, pkg, gotPackage)
@@ -81,13 +99,13 @@ func TestZarfPackagerRemoveDelegatesArgumentsWithLoggerContext(t *testing.T) {
 func TestZarfPackagerRemoveWrapsCapturedOutputOnError(t *testing.T) {
 	sentinel := errors.New("remove failed")
 	p := newTestZarfPackager(testZarfPackagerOptions{
-		removePackage: func(ctx context.Context, _ zarfAPI.PackageDefinition, _ zPackager.RemoveOptions) error {
+		removePackage: func(ctx context.Context, _ zarfAPI.Package, _ zPackager.RemoveOptions) error {
 			logger.From(ctx).Error("remove Zarf command output")
 			return sentinel
 		},
 	})
 
-	err := p.Remove(context.Background(), zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{}), zPackager.RemoveOptions{})
+	err := p.Remove(context.Background(), zarfConvert.PackageFromV1alpha1(v1alpha1.ZarfPackage{}), zPackager.RemoveOptions{})
 
 	require.ErrorIs(t, err, sentinel)
 	require.ErrorContains(t, err, "captured Zarf output:")
@@ -136,10 +154,10 @@ func TestZarfPackagerGetPackageDelegatesWithLoggerContextAndReturnsPackage(t *te
 	const namespace = "sentinel-namespace"
 	options := zPackager.LoadOptions{}
 	clusterValue := (*cluster.Cluster)(nil)
-	want := zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{Name: "sentinel"}})
+	want := zarfConvert.PackageFromV1alpha1(v1alpha1.ZarfPackage{Metadata: v1alpha1.ZarfMetadata{Name: "sentinel"}})
 	called := false
 	p := newTestZarfPackager(testZarfPackagerOptions{
-		getPackage: func(ctx context.Context, gotCluster *cluster.Cluster, gotSource string, gotNamespace string, gotOptions zPackager.LoadOptions) (zarfAPI.PackageDefinition, error) {
+		getPackage: func(ctx context.Context, gotCluster *cluster.Cluster, gotSource string, gotNamespace string, gotOptions zPackager.LoadOptions) (zarfAPI.Package, error) {
 			called = true
 			require.True(t, logger.From(ctx).Enabled(ctx, slog.LevelInfo))
 			require.Equal(t, clusterValue, gotCluster)
@@ -167,9 +185,9 @@ func TestNewPackagerInitializesDelegates(t *testing.T) {
 func TestZarfPackagerGetPackageWrapsCapturedOutputOnError(t *testing.T) {
 	sentinel := errors.New("get package failed")
 	p := newTestZarfPackager(testZarfPackagerOptions{
-		getPackage: func(ctx context.Context, _ *cluster.Cluster, _ string, _ string, _ zPackager.LoadOptions) (zarfAPI.PackageDefinition, error) {
+		getPackage: func(ctx context.Context, _ *cluster.Cluster, _ string, _ string, _ zPackager.LoadOptions) (zarfAPI.Package, error) {
 			logger.From(ctx).Error("get package Zarf command output")
-			return zarfAPI.NewPackageDefinitionFromV1alpha1(v1alpha1.ZarfPackage{}), sentinel
+			return zarfConvert.PackageFromV1alpha1(v1alpha1.ZarfPackage{}), sentinel
 		},
 	})
 

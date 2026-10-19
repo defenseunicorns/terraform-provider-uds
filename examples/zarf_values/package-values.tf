@@ -8,6 +8,10 @@ resource "uds_package" "podinfo" {
   architecture = var.architecture
   namespace    = "podinfo"
 
+  signature_verification = {
+    verify = false
+  }
+
   values = {
     logLevel = "debug"
     service = {
@@ -62,6 +66,10 @@ resource "uds_package" "nginx" {
 
   source       = "oci://ghcr.io/defenseunicorns/packages/uds/nginx:${local.uds_nginx_version}-${local.uds_package_flavor}"
   architecture = var.architecture
+
+  signature_verification = {
+    verify = false
+  }
 
   values = {
     nginx = {

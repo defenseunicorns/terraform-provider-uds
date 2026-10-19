@@ -315,13 +315,13 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				Computed:            true,
 			},
 			"signature_verification": schema.SingleNestedAttribute{
-				MarkdownDescription: "Signature verification configuration. Omit to use defaults (verification enabled, no key).",
+				MarkdownDescription: "Signature verification configuration. Verification is enabled by default and requires `public_key` or `keyless`. Set `verify` to `false` to skip verification.",
 				Optional:            true,
 				Computed:            true,
 				Default:             objectdefault.StaticValue(defaultSignatureVerification),
 				Attributes: map[string]schema.Attribute{
 					"verify": schema.BoolAttribute{
-						MarkdownDescription: "When true, verify the signature of a signed UDS package. When false, skip package signature verification.",
+						MarkdownDescription: "When true, require a signed UDS package and verify its signature using `public_key` or `keyless`. When false, skip package signature verification.",
 						Optional:            true,
 						Computed:            true,
 						Default:             booldefault.StaticBool(true),
@@ -924,6 +924,11 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		resp.Diagnostics.AddError("Deployed package identity could not be verified", identityErrorDetail(err))
 		return
 	}
+	definition, err := identity.Package.Definition()
+	if err != nil {
+		resp.Diagnostics.AddError("Deployed package definition could not be loaded", "The deployed package does not contain a readable package definition.")
+		return
+	}
 	clusterCtx, clusterCancel := withClusterTimeout(timeoutCtx)
 	defer clusterCancel()
 	c, err := r.cluster.NewWithWait(clusterCtx)
@@ -945,7 +950,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		Cluster:           c,
 		Timeout:           zarfTimeout,
 	}
-	if err := r.packager.Remove(timeoutCtx, zarfAPI.NewPackageDefinitionFromV1alpha1(identity.Package.Data), removeOpt); err != nil {
+	if err := r.packager.Remove(timeoutCtx, definition, removeOpt); err != nil {
 		resp.Diagnostics.AddError(
 			"Error removing package",
 			lifecycleErrorDetail(timeoutCtx, "delete", err),
@@ -1175,15 +1180,19 @@ func (r *PackageResource) verifyPackageSignature(ctx context.Context, model Pack
 		return err
 	}
 
-	verifyOpts := zarfSigning.DefaultVerifyBlobOptions()
-	if verifyBlobOpts != nil {
-		verifyOpts = *verifyBlobOpts
+	if verifyBlobOpts == nil {
+		return errors.New("`verify = true` requires `public_key` or `keyless`; set `verify = false` to skip signature verification")
 	}
+
+	if !pkgLayout.IsSigned() {
+		return errors.New("package is unsigned but signature verification material is configured")
+	}
+
 	verifyPackageSignatureFunc := r.verifyPackageSignatureFunc
 	if verifyPackageSignatureFunc == nil {
 		verifyPackageSignatureFunc = defaultPackageSignatureVerifier
 	}
-	verifyErr := verifyPackageSignatureFunc(ctx, pkgLayout, verifyOpts)
+	verifyErr := verifyPackageSignatureFunc(ctx, pkgLayout, *verifyBlobOpts)
 	return handleVerifyResult(ctx, verifyErr, pkgLayout.IsSigned(), enforceSignatureVerification)
 }
 
@@ -1223,7 +1232,7 @@ func getEffectiveSignatureVerification(ctx context.Context, model PackageResourc
 	return sig.Verify.ValueBool()
 }
 
-func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string, identity deployedPackageIdentity) error {
+func (r *PackageResource) removeComponents(ctx context.Context, plan PackageResourceModel, componentsToRemove []string, identity deployedPackageIdentity, pkg zarfAPI.Package) error {
 	if len(componentsToRemove) == 0 {
 		return nil
 	}
@@ -1240,63 +1249,32 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 		return fmt.Errorf("could not connect to cluster: %w", err)
 	}
 
-	// get a reference to the ZarfPackage
-	packageSource, err := getPackageSource(plan, *r.providerConfig)
-	if err != nil {
-		return fmt.Errorf("could not get package source: %w", err)
-	}
-	remoteOptions, err := r.getPackageSourceRemoteOptions(ctx, packageSource)
-	if err != nil {
-		return err
-	}
-	loadOpts := zarfPackager.LoadOptions{
-		Architecture:  getArchitecture(plan, *r.providerConfig),
-		Filter:        r.packageFilter.ForRemove(componentsToRemove),
-		CachePath:     r.providerConfig.ZarfCachePath,
-		RemoteOptions: remoteOptions,
-	}
-	pkg, err := r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
-	if err != nil {
-		return fmt.Errorf("could not load package: %w", err)
-	}
-	if err := verifyCanonicalName(pkg.AsV1alpha1().Metadata.Name, identity); err != nil {
+	if err := verifyCanonicalName(pkg.Metadata.Name, identity); err != nil {
 		return err
 	}
 
 	// Check if any of the components provided are 'required' and remove them from the list of components we are removing
 	// NOTE: Just because a component block is removed from the resource spec doesn't mean it wasn't deployed. Zarf components that are marked as 'required' should not be removed
-	foundRequired := false
 	newComponentsToRemove := []string{}
+	requiredComponents := make(map[string]bool, len(pkg.Components))
+	for _, component := range pkg.Components {
+		requiredComponents[component.Name] = !component.Optional
+	}
 	for _, componentName := range componentsToRemove {
-		zComponent, found := findPackageComponent(pkg.AsV1alpha1().Components, componentName)
-		if found && zComponent.Required != nil && *zComponent.Required {
+		if requiredComponents[componentName] {
 			// we are trying to remove a required component, don't do that...
-			foundRequired = true
 			continue
 		}
 		newComponentsToRemove = append(newComponentsToRemove, componentName)
 	}
 
-	// Fetch a new zarfPackage from the cluster, with a new filter of components
-	if foundRequired {
-		if len(newComponentsToRemove) == 0 {
-			// All requested components were required; nothing safe to remove.
-			return nil
-		}
-		loadOpts := zarfPackager.LoadOptions{
-			Architecture:  getArchitecture(plan, *r.providerConfig),
-			Filter:        r.packageFilter.ForRemove(newComponentsToRemove),
-			CachePath:     r.providerConfig.ZarfCachePath,
-			RemoteOptions: remoteOptions,
-		}
-
-		pkg, err = r.packager.GetPackageFromSourceOrCluster(ctx, zarfCluster, packageSource, namespaceOverride, loadOpts)
-		if err != nil {
-			return fmt.Errorf("could not load package: %w", err)
-		}
-		if err := verifyCanonicalName(pkg.AsV1alpha1().Metadata.Name, identity); err != nil {
-			return err
-		}
+	if len(newComponentsToRemove) == 0 {
+		return nil
+	}
+	// Filter a copy of the verified definition; never fetch the mutable source again.
+	pkg, err = zarfFilters.Apply(pkg, r.packageFilter.ForRemove(newComponentsToRemove))
+	if err != nil {
+		return fmt.Errorf("could not filter components for removal: %w", err)
 	}
 	for _, component := range newComponentsToRemove {
 		logging.ComponentSelected(ctx, component)
@@ -1357,7 +1335,11 @@ func (r *PackageResource) lookupVerifiedDeployedPackage(ctx context.Context, id 
 	if !found {
 		return deployedPackageIdentity{}, &packageAbsentError{}
 	}
-	if pkg.Name != name || pkg.NamespaceOverride != namespace || pkg.Data.Metadata.Name != pkg.Name {
+	definition, err := pkg.Definition()
+	if err != nil {
+		return deployedPackageIdentity{}, &remoteIdentityError{reason: "the deployed package does not contain a readable package definition"}
+	}
+	if pkg.Name != name || pkg.NamespaceOverride != namespace || definition.Metadata.Name != pkg.Name {
 		return deployedPackageIdentity{}, &remoteIdentityError{reason: "the deployed package returned by the cluster does not match the identity recorded in state"}
 	}
 	return deployedPackageIdentity{ID: id, Name: name, Namespace: namespace, Package: pkg}, nil
@@ -1457,15 +1439,48 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	if found {
 		return plan, fmt.Errorf("%w: package with namespace '%s' and name '%s'", errDuplicatePackage, plan.Namespace.ValueString(), packageName)
 	}
-	return r.upsertLoadedPackage(ctx, plan, pkgLayout)
+	return r.upsertVerifiedPackage(ctx, plan, pkgLayout)
 }
 
 func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageResourceModel, oldPlan PackageResourceModel, identity deployedPackageIdentity) (PackageResourceModel, error) {
+	identityErr := &remoteIdentityError{reason: "verified deployed package identity is missing or inconsistent at the update mutation boundary"}
+
+	// The recorded ID must describe the verified name and namespace.
 	namespace, name, err := parsePackageID(identity.ID)
-	if err != nil || identity.Name != name || identity.Namespace != namespace ||
-		identity.Package.Name != identity.Name || identity.Package.NamespaceOverride != identity.Namespace ||
-		identity.Package.Data.Metadata.Name != identity.Name {
-		return plan, &remoteIdentityError{reason: "verified deployed package identity is missing or inconsistent at the update mutation boundary"}
+	if err != nil || identity.Name != name || identity.Namespace != namespace {
+		return plan, identityErr
+	}
+
+	// The deployed package must match that same identity.
+	if identity.Package.Name != identity.Name || identity.Package.NamespaceOverride != identity.Namespace {
+		return plan, identityErr
+	}
+
+	// Its versioned definition must be readable and agree on the package name.
+	definition, err := identity.Package.Definition()
+	if err != nil || definition.Metadata.Name != identity.Name {
+		return plan, identityErr
+	}
+	if plan.OptionalComponents.IsUnknown() {
+		return plan, fmt.Errorf("optional_components must be known before apply")
+	}
+	ctx = r.withOCISchemeNegotiator(ctx)
+	// Use one verified source layout for both removal preflight and deployment.
+	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
+	if err != nil {
+		return plan, err
+	}
+	defer func() {
+		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
+			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
+		}
+	}()
+	canonicalName := pkgLayout.AsV1alpha1().Metadata.Name
+	if err := verifyCanonicalName(canonicalName, identity); err != nil {
+		return plan, err
+	}
+	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
+		return plan, err
 	}
 
 	// Generate list of components to remove before the update.
@@ -1482,59 +1497,21 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 		}
 	}
 	if len(componentsToRemove) > 0 {
-		if err := r.removeComponents(ctx, plan, componentsToRemove, identity); err != nil {
-			return plan, err
-		}
-	}
-
-	return r.upsertExisting(ctx, plan, identity)
-}
-
-// upsert loads and cleans up the package layout before deploying it.
-func (r *PackageResource) upsert(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
-	return r.upsertWithIdentity(ctx, plan, nil)
-}
-
-func (r *PackageResource) upsertExisting(ctx context.Context, plan PackageResourceModel, identity deployedPackageIdentity) (PackageResourceModel, error) {
-	return r.upsertWithIdentity(ctx, plan, &identity)
-}
-
-func (r *PackageResource) upsertWithIdentity(ctx context.Context, plan PackageResourceModel, identity *deployedPackageIdentity) (PackageResourceModel, error) {
-	ctx = r.withOCISchemeNegotiator(ctx)
-	if plan.OptionalComponents.IsUnknown() {
-		return plan, fmt.Errorf("optional_components must be known before apply")
-	}
-	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
-	if err != nil {
-		return plan, err
-	}
-	defer func() {
-		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
-			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
-		}
-	}()
-	canonicalName := pkgLayout.AsV1alpha1().Metadata.Name
-	if identity != nil {
-		if err := verifyCanonicalName(canonicalName, *identity); err != nil {
+		if err := r.removeComponents(ctx, plan, componentsToRemove, identity, pkgLayout.Definition()); err != nil {
 			return plan, err
 		}
 	}
 	plan.Name = types.StringValue(canonicalName)
-	ctx = logging.WithPackageContext(ctx, "", plan.Name.ValueString(), plan.Namespace.ValueString())
-	return r.upsertLoadedPackage(ctx, plan, pkgLayout)
+	ctx = logging.WithPackageContext(ctx, "", canonicalName, plan.Namespace.ValueString())
+	return r.upsertVerifiedPackage(ctx, plan, pkgLayout)
 }
 
-// upsertLoadedPackage deploys an already-loaded package layout. The caller owns
-// loading and cleanup of the package layout.
-func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageResourceModel, pkgLayout *layout.PackageLayout) (PackageResourceModel, error) {
+// upsertVerifiedPackage deploys a layout already verified by the caller.
+func (r *PackageResource) upsertVerifiedPackage(ctx context.Context, plan PackageResourceModel, pkgLayout *layout.PackageLayout) (PackageResourceModel, error) {
 	ctx = r.withOCISchemeNegotiator(ctx)
 	if plan.OptionalComponents.IsUnknown() {
 		return plan, fmt.Errorf("optional_components must be known before apply")
 	}
-	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
-		return plan, err
-	}
-
 	optionalComponents, err := getOptionalComponentsForDeploy(ctx, plan, pkgLayout)
 	if err != nil {
 		return plan, err
@@ -1585,7 +1562,7 @@ func (r *PackageResource) upsertLoadedPackage(ctx context.Context, plan PackageR
 
 	originalPkgComponents := pkgLayout.AsV1alpha1().Components
 	filter := r.packageFilter.ForDeploy(optionalComponents)
-	pkgLayout.PackageDefinition, err = zarfFilters.Apply(pkgLayout.PackageDefinition, filter)
+	err = pkgLayout.Filter(filter)
 	if err != nil {
 		return plan, err
 	}
@@ -2579,7 +2556,13 @@ func validateUniqueVarNames(model PackageResourceModel, resp *resource.ValidateC
 
 // validateSignatureVerificationAttributes validates the signature_verification block.
 func validateSignatureVerificationAttributes(ctx context.Context, model PackageResourceModel, resp *resource.ValidateConfigResponse) {
-	if model.SignatureVerification.IsNull() || model.SignatureVerification.IsUnknown() {
+	if model.SignatureVerification.IsUnknown() {
+		return
+	}
+
+	if model.SignatureVerification.IsNull() {
+		resp.Diagnostics.AddAttributeError(path.Root("signature_verification"), "Missing signature verification material",
+			"`verify = true` requires `public_key` or `keyless`. Set `verify = false` to skip signature verification.")
 		return
 	}
 
@@ -2587,6 +2570,13 @@ func validateSignatureVerificationAttributes(ctx context.Context, model PackageR
 	resp.Diagnostics.Append(model.SignatureVerification.As(ctx, &sig, basetypes.ObjectAsOptions{})...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+
+	verificationRequired := !sig.Verify.IsUnknown() && (sig.Verify.IsNull() || sig.Verify.ValueBool())
+	missingPublicKey := !sig.PublicKey.IsUnknown() && sig.PublicKey.ValueString() == ""
+	if verificationRequired && missingPublicKey && sig.Keyless.IsNull() {
+		resp.Diagnostics.AddAttributeError(path.Root("signature_verification"), "Missing signature verification material",
+			"`verify = true` requires `public_key` or `keyless`. Set `verify = false` to skip signature verification.")
 	}
 
 	if sig.Keyless.IsNull() || sig.Keyless.IsUnknown() {
@@ -3102,7 +3092,9 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 		return packagePlanCheckResult{}
 	}
 
-	needsSigVerification := getEffectiveSignatureVerification(ctx, plan)
+	signatureConfig, signatureConfigErr := plan.SignatureVerification.ToTerraformValue(ctx)
+	needsSigVerification := getEffectiveSignatureVerification(ctx, plan) &&
+		signatureConfigErr == nil && signatureConfig.IsFullyKnown()
 	var requestedOptionals []string
 	// Unknown values are explicitly configured but cannot be validated until apply,
 	// when upsert receives their resolved component names.
