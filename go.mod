@@ -1,6 +1,6 @@
 module github.com/defenseunicorns/terraform-provider-uds
 
-go 1.26.9
+go 1.26.10
 
 tool (
 	github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs
