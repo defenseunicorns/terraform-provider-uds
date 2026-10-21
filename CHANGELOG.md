@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.7.1](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.7.0...v0.7.1) (2026-10-21)
+
+
+### Miscellaneous
+
+* **ci:** validate Renovate configuration ([#367](https://github.com/defenseunicorns/terraform-provider-uds/issues/367)) ([0e8ce01](https://github.com/defenseunicorns/terraform-provider-uds/commit/0e8ce0183faa21b1b9c83c5ac2c65b58db36d0bf))
+* **deps:** update application-deps ([#379](https://github.com/defenseunicorns/terraform-provider-uds/issues/379)) ([42f62e9](https://github.com/defenseunicorns/terraform-provider-uds/commit/42f62e94d6d0e4bc3db41559f6156c097ebf882c))
+* **deps:** update support-deps ([#378](https://github.com/defenseunicorns/terraform-provider-uds/issues/378)) ([5c7b328](https://github.com/defenseunicorns/terraform-provider-uds/commit/5c7b328994a4ddd620875bdead087776ff537e8e))
+* update go to address CVE-2026-111943  [#381](https://github.com/defenseunicorns/terraform-provider-uds/issues/381) ([87d4171](https://github.com/defenseunicorns/terraform-provider-uds/commit/87d417191222d8c31568f7b687ea2e50af5a85a2))
+
 ## [0.7.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.6.0...v0.7.0) (2026-10-16)
 
 
