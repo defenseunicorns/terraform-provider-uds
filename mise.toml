@@ -3,12 +3,12 @@
 
 [tools]
 go = "1.27.3"
-node = "24.21.0"
-hk = "2.6.0"
-golangci-lint = "2.14.0"
+node = "24.22.1"
+hk = "2.7.0"
+golangci-lint = "2.15.0"
 "aqua:google/addlicense" = "1.2.0"
 opentofu = "1.13.1"
-terraform = "1.16.5"
+terraform = "1.16.6"
 k3d = "5.9.0"
 "aqua:defenseunicorns/uds-cli" = "0.39.0"
 
