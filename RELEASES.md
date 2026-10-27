@@ -46,7 +46,8 @@ The UDS Tofu provider targets a release at least every two weeks. Final timing i
   - [ ] Add a high-level summary of changes
   - [ ] Document any required upgrade steps or breaking changes
 - [ ] Verify the GoReleaser workflow completed successfully and review release assets
-- [ ] Complete the [manual Terraform Registry sync](#terraform-registry-sync) and verify the new release is available
+- [ ] Verify the new release is available in the Terraform Registry; [sync manually if necessary](#terraform-registry-sync)
+  - Allow 5–10 minutes after GoReleaser completes before checking; syncing is not immediate.
 
 ### Manual Releases (if required)
 
@@ -65,11 +66,17 @@ Manual releases may be necessary for exceptional cases.
   - [ ] Add a high-level summary of changes
   - [ ] Document any required upgrade steps or breaking changes
 - [ ] Verify the GoReleaser workflow completed successfully and review release assets
-- [ ] Complete the [manual Terraform Registry sync](#terraform-registry-sync) and verify the new release is available
+- [ ] Verify the new release is available in the Terraform Registry; [sync manually if necessary](#terraform-registry-sync)
+  - Allow 5–10 minutes after GoReleaser completes before checking; syncing is not immediate.
 
 ### Terraform Registry Sync
 
-After GoReleaser completes successfully, both standard and manual releases currently require a manual sync to publish the new version to the Terraform Registry. This manual step is necessary until automatic syncing via the GitHub App is fixed.
+After GoReleaser completes successfully, both standard and manual releases sync automatically to the Terraform Registry via the GitHub App. Verify that the new release appears at <https://registry.terraform.io/providers/defenseunicorns/uds/latest>.
+
+> [!NOTE]
+> [HashiCorp documents automatic syncing](https://developer.hashicorp.com/terraform/registry/providers/publishing#webhooks) but does not specify a publishing time guarantee. The 5–10 minute wait above is a suggested initial wait, not a guaranteed completion time.
+
+If the new release does not appear after allowing 5–10 minutes for syncing, manually resync the provider:
 
 1. Navigate to <https://app.terraform.io/login> and log in.
 1. Navigate to the `defenseunicorns` organization.
