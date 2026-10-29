@@ -42,7 +42,6 @@ import (
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 
 	zarfAPI "github.com/zarf-dev/zarf/src/api"
-	"github.com/zarf-dev/zarf/src/api/v1alpha1"
 	"github.com/zarf-dev/zarf/src/pkg/ocischeme"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	zarfFilters "github.com/zarf-dev/zarf/src/pkg/packager/filters"
@@ -1364,7 +1363,7 @@ func (r *PackageResource) verifyCanonicalPackageName(ctx context.Context, model 
 	if err != nil {
 		return &canonicalSourceError{}
 	}
-	return verifyCanonicalName(pkgLayout.AsV1alpha1().Metadata.Name, identity)
+	return verifyCanonicalName(pkgLayout.Definition().Metadata.Name, identity)
 }
 
 func verifyCanonicalName(canonicalName string, identity deployedPackageIdentity) error {
@@ -1412,7 +1411,7 @@ func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceM
 	if err != nil {
 		return plan, err
 	}
-	plan.Name = types.StringValue(pkgLayout.AsV1alpha1().Metadata.Name)
+	plan.Name = types.StringValue(pkgLayout.Definition().Metadata.Name)
 	ctx = logging.WithPackageContext(ctx, "", plan.Name.ValueString(), plan.Namespace.ValueString())
 	defer func() {
 		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
@@ -1475,7 +1474,7 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
 		}
 	}()
-	canonicalName := pkgLayout.AsV1alpha1().Metadata.Name
+	canonicalName := pkgLayout.Definition().Metadata.Name
 	if err := verifyCanonicalName(canonicalName, identity); err != nil {
 		return plan, err
 	}
@@ -1560,7 +1559,7 @@ func (r *PackageResource) upsertVerifiedPackage(ctx context.Context, plan Packag
 		ForceConflicts: r.providerConfig.ForceHelmSSAConflicts,
 	}
 
-	originalPkgComponents := pkgLayout.AsV1alpha1().Components
+	originalPkgComponents := pkgLayout.Definition().Components
 	filter := r.packageFilter.ForDeploy(optionalComponents)
 	err = pkgLayout.Filter(filter)
 	if err != nil {
@@ -1574,7 +1573,7 @@ func (r *PackageResource) upsertVerifiedPackage(ctx context.Context, plan Packag
 	deployOpts.Timeout = zarfTimeout
 
 	logging.PackageStarted(ctx, getArchitecture(plan, *r.providerConfig), optionalComponentsForLogging(ctx, plan))
-	for _, component := range pkgLayout.AsV1alpha1().Components {
+	for _, component := range pkgLayout.Definition().Components {
 		logging.ComponentSelected(ctx, component.Name)
 	}
 	deployResult, err := r.packager.Deploy(ctx, pkgLayout, deployOpts)
@@ -2148,13 +2147,13 @@ func getOptionalComponentsForDeploy(ctx context.Context, model PackageResourceMo
 	// Alpha: if optional_components is set, use it directly; otherwise fall back to component blocks.
 	// TODO: remove branch when component block is removed; always use optional_components.
 	if !model.OptionalComponents.IsNull() {
-		return getOptionalComponentsFromAttribute(ctx, model.OptionalComponents, pkgLayout.AsV1alpha1().Components)
+		return getOptionalComponentsFromAttribute(ctx, model.OptionalComponents, pkgLayout.Definition().Components)
 	}
 
-	return getComponentBlockOptionalComponentsForDeploy(ctx, model.Components, pkgLayout.AsV1alpha1().Components)
+	return getComponentBlockOptionalComponentsForDeploy(ctx, model.Components, pkgLayout.Definition().Components)
 }
 
-func getOptionalComponentsFromAttribute(ctx context.Context, optionalComponentsSet types.Set, pkgComponents []v1alpha1.ZarfComponent) ([]string, error) {
+func getOptionalComponentsFromAttribute(ctx context.Context, optionalComponentsSet types.Set, pkgComponents []zarfAPI.Component) ([]string, error) {
 	if optionalComponentsSet.IsUnknown() {
 		return nil, fmt.Errorf("optional_components must be known")
 	}
@@ -2175,7 +2174,7 @@ func getOptionalComponentsFromAttribute(ctx context.Context, optionalComponentsS
 // selected through legacy component blocks. Required component names are ignored
 // because Zarf deploy includes required components automatically.
 // TODO: remove when component block is removed
-func getComponentBlockOptionalComponentsForDeploy(ctx context.Context, componentsSet types.Set, pkgComponents []v1alpha1.ZarfComponent) ([]string, error) {
+func getComponentBlockOptionalComponentsForDeploy(ctx context.Context, componentsSet types.Set, pkgComponents []zarfAPI.Component) ([]string, error) {
 	if componentsSet.IsUnknown() {
 		return nil, fmt.Errorf("component blocks must be known")
 	}
@@ -2195,7 +2194,7 @@ func getComponentBlockOptionalComponentsForDeploy(ctx context.Context, component
 			componentErrors = append(componentErrors, fmt.Errorf("unknown package component %s", component.Name.ValueString()))
 			continue
 		}
-		if pkgComponent.Required == nil || !*pkgComponent.Required {
+		if pkgComponent.Optional {
 			optionalComponents = append(optionalComponents, component.Name.ValueString())
 		}
 	}
@@ -2471,13 +2470,13 @@ func getPackageOverrideName(pkg PackageResourceModel) string {
 	return tarballName
 }
 
-func findPackageComponent(components []v1alpha1.ZarfComponent, name string) (v1alpha1.ZarfComponent, bool) {
+func findPackageComponent(components []zarfAPI.Component, name string) (zarfAPI.Component, bool) {
 	for _, c := range components {
 		if c.Name == name {
 			return c, true
 		}
 	}
-	return v1alpha1.ZarfComponent{}, false // Not found
+	return zarfAPI.Component{}, false // Not found
 }
 
 func computePackageID(namespace string, pkgName string) string {
@@ -2789,9 +2788,9 @@ func newPackageMetadata(name, description, version, status string, generation in
 
 func populatePackageMetadataFromLayout(data *PackageResourceModel, pkgLayout *layout.PackageLayout) error {
 	metadata, err := newPackageMetadata(
-		pkgLayout.AsV1alpha1().Metadata.Name,
-		pkgLayout.AsV1alpha1().Metadata.Description,
-		pkgLayout.AsV1alpha1().Metadata.Version,
+		pkgLayout.Definition().Metadata.Name,
+		pkgLayout.Definition().Metadata.Description,
+		pkgLayout.Definition().Metadata.Version,
 		string(zarfState.ComponentStatusSucceeded),
 		0,
 		pkgLayout.Digest(),
@@ -2804,7 +2803,7 @@ func populatePackageMetadataFromLayout(data *PackageResourceModel, pkgLayout *la
 }
 
 func (r *PackageResource) populatePackageModelFromLayout(data *PackageResourceModel, pkgLayout *layout.PackageLayout) {
-	pkg := pkgLayout.AsV1alpha1()
+	pkg := pkgLayout.Definition()
 	data.ID = types.StringValue(computePackageID(data.Namespace.ValueString(), pkg.Metadata.Name))
 	data.Name = types.StringValue(pkg.Metadata.Name)
 	data.Version = types.StringValue(pkg.Metadata.Version)
@@ -2852,19 +2851,25 @@ func deployedPackageStatus(pkg zarfState.DeployedPackage) string {
 }
 
 func populateStateFromDeployedPackage(data *PackageResourceModel, pkg zarfState.DeployedPackage) diag.Diagnostics {
+	var diags diag.Diagnostics
+	definition, err := pkg.Definition()
+	if err != nil {
+		diags.AddError("Error getting package definition", err.Error())
+		return diags
+	}
+
 	data.Name = types.StringValue(pkg.Name)
-	data.Version = types.StringValue(pkg.Data.Metadata.Version)
-	data.Kind = types.StringValue(string(pkg.Data.Kind))
-	data.Architecture = types.StringValue(pkg.Data.Metadata.Architecture)
+	data.Version = types.StringValue(definition.Metadata.Version)
+	data.Kind = types.StringValue(string(definition.Kind))
+	data.Architecture = types.StringValue(definition.Metadata.Architecture)
 	if pkg.NamespaceOverride != "" {
 		data.Namespace = types.StringValue(pkg.NamespaceOverride)
 	}
 
-	var diags diag.Diagnostics
 	metadata, err := newPackageMetadata(
 		pkg.Name,
-		pkg.Data.Metadata.Description,
-		pkg.Data.Metadata.Version,
+		definition.Metadata.Description,
+		definition.Metadata.Version,
 		deployedPackageStatus(pkg),
 		int64(pkg.Generation),
 		pkg.Digest,
@@ -2980,11 +2985,11 @@ func buildConnectStringsSet(connectStrings map[string]string) (types.Set, error)
 
 // deployedOptionalComponents returns deployed component names that are not required
 // in the package definition. Used for bi-directional drift detection in Read.
-func deployedOptionalComponents(deployedComponents []zarfState.DeployedComponent, pkgComponents []v1alpha1.ZarfComponent) []string {
+func deployedOptionalComponents(deployedComponents []zarfState.DeployedComponent, pkgComponents []zarfAPI.Component) []string {
 	optional := make([]string, 0)
 	for _, dc := range deployedComponents {
 		pkgComponent, found := findPackageComponent(pkgComponents, dc.Name)
-		if found && (pkgComponent.Required == nil || !*pkgComponent.Required) {
+		if found && (pkgComponent.Optional) {
 			optional = append(optional, dc.Name)
 		}
 	}
@@ -2997,7 +3002,16 @@ func refreshOptionalComponentsFromDeployedPackage(deployedPackage zarfState.Depl
 	if current.IsNull() {
 		return current, nil
 	}
-	optionals := deployedOptionalComponents(deployedPackage.DeployedComponents, deployedPackage.Data.Components)
+	definition, err := deployedPackage.Definition()
+	if err != nil {
+		var diags diag.Diagnostics
+		diags.AddError(
+			"Unable to read deployed package definition",
+			fmt.Sprintf("Could not decode the deployed package definition: %s", err),
+		)
+		return current, diags
+	}
+	optionals := deployedOptionalComponents(deployedPackage.DeployedComponents, definition.Components)
 	optionalVals := make([]attr.Value, len(optionals))
 	for i, name := range optionals {
 		optionalVals[i] = types.StringValue(name)
@@ -3131,7 +3145,7 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 	}
 
 	if canValidateOptionalComponents {
-		if err := validateOptionalComponentsAgainstPackage(requestedOptionals, pkgLayout.AsV1alpha1().Components); err != nil {
+		if err := validateOptionalComponentsAgainstPackage(requestedOptionals, pkgLayout.Definition().Components); err != nil {
 			return packagePlanCheckResult{OptComponentsErr: err}
 		}
 	}
@@ -3141,10 +3155,10 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 			return packagePlanCheckResult{ValuesErr: err}
 		}
 	}
-	if priorIdentity != nil && pkgLayout.AsV1alpha1().Metadata.Name != priorIdentity.Name {
+	if priorIdentity != nil && pkgLayout.Definition().Metadata.Name != priorIdentity.Name {
 		return packagePlanCheckResult{CanonicalNameErr: &canonicalNameMismatchError{
 			deployedName:  priorIdentity.Name,
-			canonicalName: pkgLayout.AsV1alpha1().Metadata.Name,
+			canonicalName: pkgLayout.Definition().Metadata.Name,
 			namespace:     priorIdentity.Namespace,
 		}}
 	}
@@ -3159,10 +3173,10 @@ type optionalComponentsValidationError struct{ msg string }
 func (e *optionalComponentsValidationError) Error() string { return e.msg }
 
 // packageOptionalComponentNames returns names of non-required package components, sorted.
-func packageOptionalComponentNames(pkgComponents []v1alpha1.ZarfComponent) []string {
+func packageOptionalComponentNames(pkgComponents []zarfAPI.Component) []string {
 	names := make([]string, 0)
 	for _, c := range pkgComponents {
-		if !c.IsRequired() {
+		if c.Optional {
 			names = append(names, c.Name)
 		}
 	}
@@ -3172,7 +3186,7 @@ func packageOptionalComponentNames(pkgComponents []v1alpha1.ZarfComponent) []str
 
 // validateOptionalComponentsAgainstPackage checks that all requested names are valid optional
 // components in the package. Returns an error listing invalid names and available optional names.
-func validateOptionalComponentsAgainstPackage(requested []string, pkgComponents []v1alpha1.ZarfComponent) error {
+func validateOptionalComponentsAgainstPackage(requested []string, pkgComponents []zarfAPI.Component) error {
 	available := packageOptionalComponentNames(pkgComponents)
 	availableSet := make(map[string]struct{}, len(available))
 	for _, name := range available {
