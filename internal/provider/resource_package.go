@@ -494,11 +494,11 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				Sensitive:           true,
 			},
 			"values": schema.DynamicAttribute{
-				MarkdownDescription: "[Alpha] Zarf package values to apply at deploy time. Packages with a values schema are validated against that schema. Cannot be used with component blocks.",
+				MarkdownDescription: "[Alpha] Zarf package values to apply during deployment and removal. Packages with a values schema are validated against that schema during deployment. Cannot be used with component blocks.",
 				Optional:            true,
 			},
 			"sensitive_values": schema.DynamicAttribute{
-				MarkdownDescription: "[Alpha] Sensitive Zarf package values to apply at deploy time. Packages with a values schema are validated against that schema. Values are redacted from Terraform/OpenTofu output. Cannot be used with component blocks.",
+				MarkdownDescription: "[Alpha] Sensitive Zarf package values to apply during deployment and removal. Packages with a values schema are validated against that schema during deployment. Values are redacted from Terraform/OpenTofu output. Cannot be used with component blocks.",
 				Optional:            true,
 				Sensitive:           true,
 			},
@@ -928,6 +928,11 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		resp.Diagnostics.AddError("Deployed package definition could not be loaded", "The deployed package does not contain a readable package definition.")
 		return
 	}
+	removeValues, err := packageValuesFromModel(data, "removal")
+	if err != nil {
+		resp.Diagnostics.AddError("Package removal values are invalid", err.Error())
+		return
+	}
 	clusterCtx, clusterCancel := withClusterTimeout(timeoutCtx)
 	defer clusterCancel()
 	c, err := r.cluster.NewWithWait(clusterCtx)
@@ -948,6 +953,7 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		NamespaceOverride: identity.Namespace,
 		Cluster:           c,
 		Timeout:           zarfTimeout,
+		Values:            removeValues,
 	}
 	if err := r.packager.Remove(timeoutCtx, definition, removeOpt); err != nil {
 		resp.Diagnostics.AddError(
@@ -1240,14 +1246,6 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 
 	namespaceOverride := plan.Namespace.ValueString()
 
-	// get a reference to the k8s cluster
-	clusterCtx, cancel := withClusterTimeout(ctx)
-	defer cancel()
-	zarfCluster, err := r.cluster.NewWithWait(clusterCtx)
-	if err != nil {
-		return fmt.Errorf("could not connect to cluster: %w", err)
-	}
-
 	if err := verifyCanonicalName(pkg.Metadata.Name, identity); err != nil {
 		return err
 	}
@@ -1270,11 +1268,23 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 	if len(newComponentsToRemove) == 0 {
 		return nil
 	}
+	removeValues, err := packageValuesFromModel(plan, "removal")
+	if err != nil {
+		return err
+	}
 	// Filter a copy of the verified definition; never fetch the mutable source again.
 	pkg, err = zarfFilters.Apply(pkg, r.packageFilter.ForRemove(newComponentsToRemove))
 	if err != nil {
 		return fmt.Errorf("could not filter components for removal: %w", err)
 	}
+
+	clusterCtx, cancel := withClusterTimeout(ctx)
+	defer cancel()
+	zarfCluster, err := r.cluster.NewWithWait(clusterCtx)
+	if err != nil {
+		return fmt.Errorf("could not connect to cluster: %w", err)
+	}
+
 	for _, component := range newComponentsToRemove {
 		logging.ComponentSelected(ctx, component)
 	}
@@ -1287,6 +1297,7 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 		Cluster:           zarfCluster,
 		Timeout:           zarfTimeout,
 		NamespaceOverride: namespaceOverride,
+		Values:            removeValues,
 	}
 	if err := r.packager.Remove(ctx, pkg, removeOpt); err != nil {
 		return fmt.Errorf("could not remove components from package: %w", err)
@@ -1528,15 +1539,7 @@ func (r *PackageResource) upsertVerifiedPackage(ctx context.Context, plan Packag
 	if err != nil {
 		return plan, err
 	}
-	values, err := dynamicToValues("values", plan.Values)
-	if err != nil {
-		return plan, fmt.Errorf("invalid package values for apply: %w", err)
-	}
-	sensitiveValues, err := dynamicToValues("sensitive_values", plan.SensitiveValues)
-	if err != nil {
-		return plan, fmt.Errorf("invalid sensitive package values for apply: %w", err)
-	}
-	deployValues, err := mergePackageValues(values, sensitiveValues)
+	deployValues, err := packageValuesFromModel(plan, "apply")
 	if err != nil {
 		return plan, err
 	}
@@ -1944,6 +1947,18 @@ func mergePackageValues(values zarfValue.Values, sensitiveValues zarfValue.Value
 	}
 
 	return deepMergePackageValues(values, sensitiveValues), nil
+}
+
+func packageValuesFromModel(model PackageResourceModel, operation string) (zarfValue.Values, error) {
+	values, err := dynamicToValues("values", model.Values)
+	if err != nil {
+		return nil, fmt.Errorf("invalid package values for %s: %w", operation, err)
+	}
+	sensitiveValues, err := dynamicToValues("sensitive_values", model.SensitiveValues)
+	if err != nil {
+		return nil, fmt.Errorf("invalid sensitive package values for %s: %w", operation, err)
+	}
+	return mergePackageValues(values, sensitiveValues)
 }
 
 // validateConfiguredPackageValueConflicts checks local conflicts between

@@ -541,6 +541,14 @@ func WithSensitiveValues(values types.Dynamic) PackageResourceModelDataOption {
 	}
 }
 
+func testDynamicStringValues(values map[string]string) types.Dynamic {
+	elements := make(map[string]attr.Value, len(values))
+	for name, value := range values {
+		elements[name] = types.StringValue(value)
+	}
+	return types.DynamicValue(types.MapValueMust(types.StringType, elements))
+}
+
 // NewTestPackageResourceModel uses unsigned fixtures, so verification is disabled unless explicitly configured.
 func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) PackageResourceModel {
 	model := PackageResourceModel{
@@ -3487,15 +3495,42 @@ func TestPackageResource_RemoveComponentsMixedRequestPreservesRequiredComponents
 	cluster := &MockCluster{}
 	cluster.On("NewWithWait", mock.Anything).Return((*zarfCluster.Cluster)(nil), nil).Once()
 	packager := &MockPackager{}
-	packager.On("Remove", mock.Anything, optionalOnly, mock.Anything).Return(nil).Once()
+	packager.On("Remove", mock.Anything, optionalOnly, mock.Anything).
+		Run(func(args mock.Arguments) {
+			opts := args.Get(2).(zarfPackager.RemoveOptions)
+			require.Equal(t, zarfValue.Values{"domain": "example.test", "token": "secret"}, opts.Values)
+		}).Return(nil).Once()
 	r := NewPackageResource(nil, packager, filter, cluster).(*PackageResource)
+	plan := NewTestPackageResourceModel(
+		WithValues(testDynamicStringValues(map[string]string{"domain": "example.test"})),
+		WithSensitiveValues(testDynamicStringValues(map[string]string{"token": "secret"})),
+	)
 
-	err := r.removeComponents(testCtx(t), NewTestPackageResourceModel(), []string{"required", "optional"}, testPackageIdentity(""), pkg)
+	err := r.removeComponents(testCtx(t), plan, []string{"required", "optional"}, testPackageIdentity(""), pkg)
 
 	require.NoError(t, err)
 	filter.AssertExpectations(t)
 	packager.AssertExpectations(t)
 	cluster.AssertExpectations(t)
+}
+
+func TestPackageResource_RemoveComponentsRejectsUnknownValuesBeforeClusterConnection(t *testing.T) {
+	pkg := zarfAPI.Package{
+		Metadata:   zarfAPI.PackageMetadata{Name: "test-package"},
+		Components: []zarfAPI.Component{{Name: "optional", Optional: true}},
+	}
+	cluster := &MockCluster{}
+	packager := &MockPackager{}
+	filter := &MockPackageComponentFilter{}
+	r := NewPackageResource(nil, packager, filter, cluster).(*PackageResource)
+	plan := NewTestPackageResourceModel(WithValues(types.DynamicUnknown()))
+
+	err := r.removeComponents(testCtx(t), plan, []string{"optional"}, testPackageIdentity(""), pkg)
+
+	require.ErrorContains(t, err, "invalid package values for removal: values must be known")
+	packager.AssertNotCalled(t, "Remove")
+	filter.AssertNotCalled(t, "ForRemove")
+	cluster.AssertNotCalled(t, "NewWithWait")
 }
 
 func TestPackageResource_CreateFailure_LogEventAndDiagnostic(t *testing.T) {
@@ -4635,8 +4670,12 @@ func TestDeployAsNewOrUpdate_RemovesOnlyVerifiedContent(t *testing.T) {
 	packager := &MockPackager{}
 	packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(verifiedLayout, nil).Once()
 	var removed zarfAPI.Package
+	var removalValues zarfValue.Values
 	packager.On("Remove", mock.Anything, mock.Anything, mock.Anything).
-		Run(func(args mock.Arguments) { removed = args.Get(1).(zarfAPI.Package) }).Return(nil).Once()
+		Run(func(args mock.Arguments) {
+			removed = args.Get(1).(zarfAPI.Package)
+			removalValues = args.Get(2).(zarfPackager.RemoveOptions).Values
+		}).Return(nil).Once()
 	var deployedNames []string
 	packager.On("Deploy", mock.Anything, mock.Anything, mock.Anything).
 		Run(func(args mock.Arguments) {
@@ -4652,14 +4691,25 @@ func TestDeployAsNewOrUpdate_RemovesOnlyVerifiedContent(t *testing.T) {
 		return nil
 	}
 	expectedOptional := verifiedLayout.Definition().Components[1]
-	oldPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{"optional"}), WithPublicKey("test-public-key"))
-	newPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{}), WithPublicKey("test-public-key"))
+	oldPlan := NewTestPackageResourceModel(
+		WithOptionalComponents([]string{"optional"}),
+		WithPublicKey("test-public-key"),
+		WithValues(testDynamicStringValues(map[string]string{"release": "old"})),
+		WithSensitiveValues(testDynamicStringValues(map[string]string{"token": "old-secret"})),
+	)
+	newPlan := NewTestPackageResourceModel(
+		WithOptionalComponents([]string{}),
+		WithPublicKey("test-public-key"),
+		WithValues(testDynamicStringValues(map[string]string{"release": "new"})),
+		WithSensitiveValues(testDynamicStringValues(map[string]string{"token": "new-secret"})),
+	)
 	identity := testPackageIdentity("")
 
 	// Deselecting the optional component removes it before deploying the required one.
 	_, err := r.deployAsNewOrUpdate(testCtx(t), newPlan, oldPlan, identity)
 	require.NoError(t, err)
 	assert.Equal(t, []zarfAPI.Component{expectedOptional}, removed.Components)
+	assert.Equal(t, zarfValue.Values{"release": "new", "token": "new-secret"}, removalValues, "removal must use values from the verified planned package revision")
 	assert.Equal(t, []string{"required"}, deployedNames, "removal filtering must not mutate the deployment layout")
 	packager.AssertExpectations(t)
 }
@@ -8974,13 +9024,39 @@ func TestPackageResource_DeletePreservesDeployedBetaDefinition(t *testing.T) {
 			len(pkg.Components[0].Actions.OnRemove.Before) == 1 &&
 			pkg.Components[0].Actions.OnRemove.Before[0].EnableTemplating &&
 			len(pkg.Components[0].Actions.OnRemove.Before[0].SetValues) == 1
-	}), mock.Anything).Return(nil).Once()
+	}), mock.Anything).Run(func(args mock.Arguments) {
+		opts := args.Get(2).(zarfPackager.RemoveOptions)
+		require.Equal(t, zarfValue.Values{"domain": "example.test", "token": "secret"}, opts.Values)
+	}).Return(nil).Once()
 	r := NewPackageResource(nil, packager, nil, cluster).(*PackageResource)
-	state := buildTestState(t, r, NewTestPackageResourceModel(WithDeployedState()))
+	state := buildTestState(t, r, NewTestPackageResourceModel(
+		WithDeployedState(),
+		WithValues(testDynamicStringValues(map[string]string{"domain": "example.test"})),
+		WithSensitiveValues(testDynamicStringValues(map[string]string{"token": "secret"})),
+	))
 	var resp resource.DeleteResponse
 	r.Delete(context.Background(), resource.DeleteRequest{State: state}, &resp)
 	require.False(t, resp.Diagnostics.HasError(), "%v", resp.Diagnostics)
 	packager.AssertExpectations(t)
+}
+
+func TestPackageResource_DeleteRejectsUnknownValuesBeforeRemove(t *testing.T) {
+	definition := zarfAPI.Package{Metadata: zarfAPI.PackageMetadata{Name: "test-pkg"}}
+	deployed := withPackageDefinition(zarfState.DeployedPackage{Name: definition.Metadata.Name}, definition)
+	client := &zarfCluster.Cluster{Clientset: fake.NewSimpleClientset(newPackageStateSecret(t, deployed))}
+	cluster := &MockCluster{}
+	cluster.On("NewWithWait", mock.Anything).Return(client, nil).Once()
+	packager := &MockPackager{}
+	r := NewPackageResource(nil, packager, nil, cluster).(*PackageResource)
+	state := buildTestState(t, r, NewTestPackageResourceModel(WithDeployedState(), WithValues(types.DynamicUnknown())))
+
+	var resp resource.DeleteResponse
+	r.Delete(context.Background(), resource.DeleteRequest{State: state}, &resp)
+
+	require.True(t, resp.Diagnostics.HasError())
+	assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "invalid package values for removal: values must be known")
+	packager.AssertNotCalled(t, "Remove")
+	cluster.AssertExpectations(t)
 }
 
 func TestPackageResource_DeleteLookupAndIdentityFailuresBlockRemoval(t *testing.T) {
