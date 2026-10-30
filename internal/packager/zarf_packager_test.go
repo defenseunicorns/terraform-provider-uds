@@ -12,12 +12,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 	zarfAPI "github.com/zarf-dev/zarf/src/api"
+	"github.com/zarf-dev/zarf/src/api/v1beta1"
 	zarfConfig "github.com/zarf-dev/zarf/src/config"
 	"github.com/zarf-dev/zarf/src/pkg/cluster"
 	"github.com/zarf-dev/zarf/src/pkg/logger"
 	zPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
+	zarfValue "github.com/zarf-dev/zarf/src/pkg/value"
 	"helm.sh/helm/v4/pkg/kube"
 )
 
@@ -92,6 +94,27 @@ func TestZarfPackagerRemoveDelegatesArgumentsWithLoggerContext(t *testing.T) {
 	err := p.Remove(context.Background(), pkg, options)
 	require.NoError(t, err)
 	require.True(t, called)
+}
+
+func TestZarfPackagerRemoveMakesValuesAvailableToTemplatedActions(t *testing.T) {
+	pkg := zarfAPI.Package{
+		APIVersion: v1beta1.APIVersion,
+		Kind:       zarfAPI.ZarfPackageConfig,
+		Metadata:   zarfAPI.PackageMetadata{Name: "values-on-remove"},
+		Components: []zarfAPI.Component{{
+			Name: "cleanup",
+			Actions: zarfAPI.ComponentActions{OnRemove: zarfAPI.ActionSet{Before: []zarfAPI.Action{{
+				Cmd:              `test "{{ .Values.domain }}" = "example.test" && test "{{ .Values.token }}" = "secret"`,
+				EnableTemplating: true,
+			}}}},
+		}},
+	}
+
+	err := NewPackager().Remove(context.Background(), pkg, zPackager.RemoveOptions{
+		Values: zarfValue.Values{"domain": "example.test", "token": "secret"},
+	})
+
+	require.NoError(t, err)
 }
 
 func TestZarfPackagerRemoveWrapsCapturedOutputOnError(t *testing.T) {

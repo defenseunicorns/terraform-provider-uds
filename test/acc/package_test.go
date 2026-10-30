@@ -104,6 +104,39 @@ func buildZarfLifecycleFixture(t *testing.T) string {
 	return packagePath
 }
 
+func buildZarfBetaLifecycleFixture(t *testing.T) string {
+	t.Helper()
+
+	fixtureDir, err := filepath.Abs("fixtures/zarf_beta_lifecycle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputDir := t.TempDir()
+
+	cmd := exec.Command(
+		"uds",
+		"zarf",
+		"package",
+		"create",
+		fixtureDir,
+		"--architecture", runtime.GOARCH,
+		"--confirm",
+		"--features", "v1beta1=true,values=true",
+		"--output", outputDir,
+		"--skip-sbom",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to build beta lifecycle package: %v\n%s", err, output)
+	}
+
+	packagePath := filepath.Join(outputDir, fmt.Sprintf("zarf-package-zarf-beta-lifecycle-%s-0.1.0.tar.zst", runtime.GOARCH))
+	if _, err := os.Stat(packagePath); err != nil {
+		t.Fatalf("expected beta lifecycle package at %s: %v\n%s", packagePath, err, output)
+	}
+	return packagePath
+}
+
 func buildFailedPackageFixture(t *testing.T) string {
 	t.Helper()
 
@@ -848,6 +881,99 @@ func checkZarfLifecycleResourcesDestroyed(_ *terraform.State) error {
 	return nil
 }
 
+func renderZarfBetaLifecyclePackageConfig(packagePath, marker, token string, includeOptional bool) string {
+	optionalComponents := "[]"
+	if includeOptional {
+		optionalComponents = `["optional"]`
+	}
+	return fmt.Sprintf(`
+resource "uds_package" "init" {
+  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
+  architecture = "%s"
+  signature_verification = {
+    keyless = {
+      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
+    }
+  }
+}
+
+resource "uds_package" "beta_lifecycle" {
+  depends_on   = [uds_package.init]
+  source              = %q
+  architecture        = "%s"
+  optional_components = %s
+  values = {
+    marker = %q
+  }
+  sensitive_values = {
+    token = %q
+  }
+
+  signature_verification = {
+    verify = false
+  }
+}
+`, initPackageVersion, runtime.GOARCH, packagePath, runtime.GOARCH, optionalComponents, marker, token)
+}
+
+func checkZarfBetaLifecycleResources(marker string, optionalPresent, removalPresent bool) resource.TestCheckFunc {
+	return func(_ *terraform.State) error {
+		clientset, err := acceptanceKubernetesClient()
+		if err != nil {
+			return err
+		}
+
+		configMaps := clientset.CoreV1().ConfigMaps("default")
+		if _, err := configMaps.Get(context.Background(), "zarf-beta-lifecycle-package-state", metav1.GetOptions{}); err != nil {
+			return fmt.Errorf("failed to get beta lifecycle package-state configmap: %w", err)
+		}
+		for name, present := range map[string]bool{
+			"zarf-beta-lifecycle-action-marker":            true,
+			"zarf-beta-lifecycle-optional-marker":          optionalPresent,
+			"zarf-beta-lifecycle-component-removal-marker": removalPresent,
+		} {
+			configMap, err := configMaps.Get(context.Background(), name, metav1.GetOptions{})
+			if present && err != nil {
+				return fmt.Errorf("failed to get beta lifecycle configmap %s: %w", name, err)
+			}
+			if !present && err == nil {
+				return fmt.Errorf("expected beta lifecycle configmap %s to be absent", name)
+			}
+			if !present && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("failed to check beta lifecycle configmap %s: %w", name, err)
+			}
+			if present && configMap.Data["marker"] != marker {
+				return fmt.Errorf("expected beta lifecycle configmap %s marker %q, got %q", name, marker, configMap.Data["marker"])
+			}
+		}
+		return nil
+	}
+}
+
+func checkZarfBetaLifecycleResourcesDestroyed(_ *terraform.State) error {
+	clientset, err := acceptanceKubernetesClient()
+	if err != nil {
+		return err
+	}
+	configMaps := clientset.CoreV1().ConfigMaps("default")
+	for _, name := range []string{
+		"zarf-beta-lifecycle-action-marker",
+		"zarf-beta-lifecycle-component-removal-marker",
+		"zarf-beta-lifecycle-optional-marker",
+		"zarf-beta-lifecycle-package-state",
+	} {
+		_, err := configMaps.Get(context.Background(), name, metav1.GetOptions{})
+		if err == nil {
+			return fmt.Errorf("expected beta lifecycle configmap %s to be deleted", name)
+		}
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to check beta lifecycle configmap %s cleanup: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func TestAccPackageResourceZarfValues(t *testing.T) {
 	if os.Getenv(resource.EnvTfAcc) == "" {
 		t.Skip("Acceptance tests skipped unless TF_ACC=1")
@@ -929,6 +1055,40 @@ func TestAccPackageResourceZarfLifecycle(t *testing.T) {
 					resource.TestCheckResourceAttr("uds_package.lifecycle", "id", "zarf-lifecycle"),
 					resource.TestCheckResourceAttr("uds_package.lifecycle", "metadata.version", "0.1.0"),
 					checkAppliedZarfLifecycleResources,
+				),
+			},
+		},
+	})
+}
+
+func TestAccPackageResourceZarfBetaLifecycle(t *testing.T) {
+	if os.Getenv(resource.EnvTfAcc) == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC=1")
+	}
+
+	packagePath := buildZarfBetaLifecycleFixture(t)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             checkZarfBetaLifecycleResourcesDestroyed,
+		Steps: []resource.TestStep{
+			{
+				Config: renderZarfBetaLifecyclePackageConfig(packagePath, "initial", "initial-secret", true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("uds_package.beta_lifecycle", "id", "zarf-beta-lifecycle"),
+					resource.TestCheckResourceAttr("uds_package.beta_lifecycle", "metadata.version", "0.1.0"),
+					resource.TestCheckResourceAttr("uds_package.beta_lifecycle", "optional_components.#", "1"),
+					checkZarfBetaLifecycleResources("initial", true, false),
+				),
+			},
+			{
+				Config: renderZarfBetaLifecyclePackageConfig(packagePath, "updated", "updated-secret", false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("uds_package.beta_lifecycle", "id", "zarf-beta-lifecycle"),
+					resource.TestCheckResourceAttr("uds_package.beta_lifecycle", "metadata.version", "0.1.0"),
+					resource.TestCheckResourceAttr("uds_package.beta_lifecycle", "optional_components.#", "0"),
+					checkZarfBetaLifecycleResources("updated", false, true),
 				),
 			},
 		},

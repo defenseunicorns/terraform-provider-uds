@@ -8998,6 +8998,145 @@ func TestPackageResource_DeleteAlreadyAbsentSucceedsWithoutRemove(t *testing.T) 
 	cluster.AssertExpectations(t)
 }
 
+func betaLifecycleTestPackage() zarfAPI.Package {
+	return zarfAPI.Package{
+		APIVersion: v1beta1.APIVersion,
+		Kind:       zarfAPI.ZarfPackageConfig,
+		Metadata:   zarfAPI.PackageMetadata{Name: "beta-package"},
+		Components: []zarfAPI.Component{
+			{Name: "required"},
+			{Name: "optional", Optional: true},
+			{Name: "unselected", Optional: true},
+		},
+	}
+}
+
+func TestPackageResource_BetaPlanningAndComponentSelection(t *testing.T) {
+	pkg := betaLifecycleTestPackage()
+	pkgLayout := newTestPackageLayout(t, pkg)
+	packager := &MockPackager{}
+	packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil).Once()
+	r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, packager, nil, nil).(*PackageResource)
+	model := newCreateLifecycleModel(WithOptionalComponents([]string{"optional"}))
+	plan := buildTestPlan(t, r, model)
+	resp := resource.ModifyPlanResponse{Plan: plan}
+
+	r.ModifyPlan(context.Background(), resource.ModifyPlanRequest{
+		Config: buildTestConfig(t, r, model),
+		Plan:   plan,
+	}, &resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "plan diagnostics: %v", resp.Diagnostics)
+	var planned PackageResourceModel
+	resp.Diagnostics.Append(resp.Plan.Get(context.Background(), &planned)...)
+	require.False(t, resp.Diagnostics.HasError(), "plan decode diagnostics: %v", resp.Diagnostics)
+	require.Equal(t, []string{"optional"}, mustStringSetElements(t, planned.OptionalComponents))
+	selected, err := udsPackager.NewPackageComponentFilter().ForDeploy([]string{"optional"}).Apply(pkg)
+	require.NoError(t, err)
+	require.Equal(t, []zarfAPI.Component{pkg.Components[0], pkg.Components[1]}, selected)
+	packager.AssertExpectations(t)
+}
+
+func TestPackageResource_BetaCreateAndRead(t *testing.T) {
+	pkg := betaLifecycleTestPackage()
+	pkg.Metadata.Version = "1.0.0"
+	pkgLayout := newTestPackageLayout(t, pkg)
+	deployed := newLifecycleDeployedPackage(t, pkgLayout,
+		zarfState.DeployedComponent{Name: "required", Status: zarfState.ComponentStatusSucceeded},
+		zarfState.DeployedComponent{Name: "optional", Status: zarfState.ComponentStatusSucceeded},
+	)
+	deployed.Generation = 1
+	clientset := fake.NewSimpleClientset()
+	cluster := &MockCluster{}
+	cluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{Clientset: clientset}, nil).Times(3)
+	packager := &MockPackager{}
+	packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil).Once()
+	packager.On("Deploy", mock.Anything, pkgLayout, mock.Anything).Run(func(args mock.Arguments) {
+		definition := args.Get(1).(*layout.PackageLayout).Definition()
+		require.Equal(t, v1beta1.APIVersion, definition.GetAPIVersion())
+		require.Equal(t, []zarfAPI.Component{pkg.Components[0], pkg.Components[1]}, definition.Components)
+		_, err := clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(
+			context.Background(), newPackageStateSecret(t, deployed), metav1.CreateOptions{})
+		require.NoError(t, err)
+	}).Return(zarfPackager.DeployResult{DeployedComponents: deployed.DeployedComponents}, nil).Once()
+	r := NewPackageResource(nil, packager, nil, cluster).(*PackageResource)
+
+	createResp := runCreateLifecycleTest(t, r, newCreateLifecycleModel(WithOptionalComponents([]string{"optional"})))
+	require.False(t, createResp.Diagnostics.HasError(), "create diagnostics: %v", createResp.Diagnostics)
+	created := requirePackageState(t, createResp.State)
+	require.Equal(t, []string{"optional"}, mustStringSetElements(t, created.OptionalComponents))
+
+	readResp := resource.ReadResponse{State: createResp.State}
+	r.Read(context.Background(), resource.ReadRequest{State: createResp.State}, &readResp)
+	require.False(t, readResp.Diagnostics.HasError(), "read diagnostics: %v", readResp.Diagnostics)
+	refreshed := requirePackageState(t, readResp.State)
+	require.Equal(t, []string{"optional"}, mustStringSetElements(t, refreshed.OptionalComponents))
+	packager.AssertExpectations(t)
+	cluster.AssertExpectations(t)
+}
+
+func TestPackageResource_BetaUpdateUsesPlannedDefinitionAndValues(t *testing.T) {
+	pkg := betaLifecycleTestPackage()
+	canonicalLayout := newTestPackageLayout(t, pkg)
+	updateLayout := newTestPackageLayout(t, pkg)
+	plannedValues := zarfValue.Values{"release": "new", "token": "new-secret"}
+	existing := newLifecycleDeployedPackage(t, canonicalLayout,
+		zarfState.DeployedComponent{Name: "required"},
+		zarfState.DeployedComponent{Name: "optional"},
+	)
+	updated := newLifecycleDeployedPackage(t, updateLayout,
+		zarfState.DeployedComponent{Name: "required", Status: zarfState.ComponentStatusSucceeded},
+	)
+	updated.Generation = 2
+	clientset := fake.NewSimpleClientset(newPackageStateSecret(t, existing))
+	cluster := &MockCluster{}
+	cluster.On("NewWithWait", mock.Anything).Return(&zarfCluster.Cluster{Clientset: clientset}, nil).Times(3)
+	packager := &MockPackager{}
+	packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(canonicalLayout, nil).Once()
+	packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(updateLayout, nil).Once()
+	packager.On("Remove", mock.Anything, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		definition := args.Get(1).(zarfAPI.Package)
+		opts := args.Get(2).(zarfPackager.RemoveOptions)
+		require.Equal(t, v1beta1.APIVersion, definition.GetAPIVersion())
+		require.Equal(t, []zarfAPI.Component{pkg.Components[1]}, definition.Components)
+		require.Equal(t, plannedValues, opts.Values)
+	}).Return(nil).Once()
+	packager.On("Deploy", mock.Anything, updateLayout, mock.Anything).Run(func(args mock.Arguments) {
+		definition := args.Get(1).(*layout.PackageLayout).Definition()
+		opts := args.Get(2).(zarfPackager.DeployOptions)
+		require.Equal(t, v1beta1.APIVersion, definition.GetAPIVersion())
+		require.Equal(t, []zarfAPI.Component{pkg.Components[0]}, definition.Components)
+		require.Equal(t, plannedValues, opts.Values)
+		require.NoError(t, clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Delete(
+			context.Background(), existing.GetSecretName(), metav1.DeleteOptions{}))
+		_, err := clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(
+			context.Background(), newPackageStateSecret(t, updated), metav1.CreateOptions{})
+		require.NoError(t, err)
+	}).Return(zarfPackager.DeployResult{}, nil).Once()
+	r := NewPackageResource(nil, packager, nil, cluster).(*PackageResource)
+	state := NewTestPackageResourceModel(
+		WithDeployedState(),
+		WithOptionalComponents([]string{"optional"}),
+		WithValues(testDynamicStringValues(map[string]string{"release": "old"})),
+		WithSensitiveValues(testDynamicStringValues(map[string]string{"token": "old-secret"})),
+	)
+	state.ID = types.StringValue(pkg.Metadata.Name)
+	state.Name = types.StringValue(pkg.Metadata.Name)
+	plan := state
+	WithOptionalComponents([]string{})(&plan)
+	WithValues(testDynamicStringValues(map[string]string{"release": "new"}))(&plan)
+	WithSensitiveValues(testDynamicStringValues(map[string]string{"token": "new-secret"}))(&plan)
+
+	resp := runUpdateLifecycleTest(t, r, plan, state)
+	require.False(t, resp.Diagnostics.HasError(), "update diagnostics: %v", resp.Diagnostics)
+	result := requirePackageState(t, resp.State)
+	require.Empty(t, mustStringSetElements(t, result.OptionalComponents))
+	require.True(t, result.Values.Equal(plan.Values))
+	require.True(t, result.SensitiveValues.Equal(plan.SensitiveValues))
+	packager.AssertExpectations(t)
+	cluster.AssertExpectations(t)
+}
+
 func TestPackageResource_DeletePreservesDeployedBetaDefinition(t *testing.T) {
 	definition := zarfAPI.Package{
 		APIVersion: v1beta1.APIVersion,
