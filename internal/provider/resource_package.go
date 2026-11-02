@@ -3062,7 +3062,7 @@ func (r *PackageResource) loadPackageLayoutForInspection(ctx context.Context, mo
 		Filter:               zarfFilters.Empty(),
 		Architecture:         getArchitecture(model, *r.providerConfig),
 		VerificationStrategy: layout.VerifyNever,
-		LayerTypes:           []zarfZoci.LayerType{zarfZoci.MetadataLayers},
+		LayerSelection:       &zarfZoci.LayerSelection{},
 		RemoteOptions:        remoteOptions,
 		CachePath:            r.providerConfig.ZarfCachePath,
 	}

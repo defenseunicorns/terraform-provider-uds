@@ -218,13 +218,11 @@ func (p *udsProvider) Configure(ctx context.Context, req provider.ConfigureReque
 		resp.Diagnostics.AddAttributeError(path.Root("zarf_cache_path"), configErrorSummaryInvalidProviderConfigValue, err.Error())
 		return
 	}
-	zarfConfig.CommonOptions.CachePath = zarfCachePath
-	zarfCachePath, err = zarfConfig.GetAbsCachePath()
+	zarfCachePath, err = zarfConfig.GetAbsHomePath(zarfCachePath)
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(path.Root("zarf_cache_path"), configErrorSummaryInvalidProviderConfigValue, fmt.Sprintf("Could not resolve Zarf cache path: %s", err))
 		return
 	}
-	zarfConfig.CommonOptions.CachePath = zarfCachePath
 
 	providerCfg := udsProviderConfig{
 		LocalPathOverride:           os.Getenv("UDS_LOCAL_PATH_OVERRIDE"),
