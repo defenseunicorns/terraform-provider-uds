@@ -1556,8 +1556,9 @@ func (r *PackageResource) upsertVerifiedPackage(ctx context.Context, plan Packag
 		RegistryInfo: zarfState.RegistryInfo{
 			PushUsername: zarfState.ZarfRegistryPushUser,
 		},
-		IsInteractive:  false,
-		ForceConflicts: r.providerConfig.ForceHelmSSAConflicts,
+		AgentMutationPolicy: zarfState.MutationPolicyAll,
+		IsInteractive:       false,
+		ForceConflicts:      r.providerConfig.ForceHelmSSAConflicts,
 	}
 
 	originalPkgComponents := pkgLayout.AsV1alpha1().Components
