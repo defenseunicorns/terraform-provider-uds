@@ -543,6 +543,35 @@ func TestAccPackageResourcePlanValidation(t *testing.T) {
 	})
 }
 
+func TestAccPackageResourceBetaVariablesPlanValidation(t *testing.T) {
+	packagePath := buildZarfBetaLifecycleFixture(t)
+	config := fmt.Sprintf(`
+resource "uds_package" "beta_variables" {
+  source       = %q
+  architecture = %q
+
+  signature_verification = {
+    verify = false
+  }
+
+  vars = [{
+    name  = "EXAMPLE"
+    value = "value"
+  }]
+}
+`, packagePath, runtime.GOARCH)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{{
+			Config:      config,
+			PlanOnly:    true,
+			ExpectError: regexp.MustCompile(`Zarf v1beta1 packages do not support package variables`),
+		}},
+	})
+}
+
 type zarfValuesTestConfig struct {
 	PackagePath       string
 	InitPackageSource string

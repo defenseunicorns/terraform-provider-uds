@@ -415,7 +415,7 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				},
 			},
 			"vars": schema.SetNestedAttribute{
-				MarkdownDescription: "[Alpha] UDS package variables to set. Zarf v1beta1 packages do not support variables; use values instead.",
+				MarkdownDescription: "UDS package variables to set. Zarf v1beta1 packages do not support variables; use values instead.",
 				Optional:            true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
@@ -437,7 +437,7 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				},
 			},
 			"sensitive_vars": schema.SetNestedAttribute{
-				MarkdownDescription: "[Alpha] Sensitive UDS package variables to set. Zarf v1beta1 packages do not support variables; use sensitive_values instead.",
+				MarkdownDescription: "Sensitive UDS package variables to set. Zarf v1beta1 packages do not support variables; use sensitive_values instead.",
 				Optional:            true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
@@ -1497,6 +1497,9 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 		return plan, err
 	}
 	if err := r.verifyPackageSignature(ctx, plan, pkgLayout); err != nil {
+		return plan, err
+	}
+	if err := validatePackageVariables(plan, pkgLayout.Definition()); err != nil {
 		return plan, err
 	}
 

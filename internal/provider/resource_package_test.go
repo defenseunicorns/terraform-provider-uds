@@ -4771,6 +4771,29 @@ func TestDeployAsNewOrUpdate_OptionalComponentRemoval(t *testing.T) {
 	mockPackager.AssertCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
 }
 
+func TestDeployAsNewOrUpdate_RejectsBetaVariablesBeforeComponentRemoval(t *testing.T) {
+	pkgLayout := newTestPackageLayout(t, zarfAPI.Package{
+		APIVersion: v1beta1.APIVersion,
+		Metadata:   zarfAPI.PackageMetadata{Name: "test-package"},
+		Components: []zarfAPI.Component{{Name: "optional", Optional: true}},
+	})
+	packager := &MockPackager{}
+	packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil).Once()
+	r := NewPackageResource(nil, packager, nil, &MockCluster{}).(*PackageResource)
+	oldPlan := NewTestPackageResourceModel(WithOptionalComponents([]string{"optional"}))
+	newPlan := NewTestPackageResourceModel(
+		WithOptionalComponents([]string{}),
+		WithVars([]VariableModel{{Name: types.StringValue("EXAMPLE"), Value: types.StringValue("value")}}),
+	)
+
+	_, err := r.deployAsNewOrUpdate(testCtx(t), newPlan, oldPlan, testPackageIdentity(""))
+
+	require.ErrorContains(t, err, "Zarf v1beta1 packages do not support package variables")
+	packager.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
+	packager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+	packager.AssertExpectations(t)
+}
+
 func TestDeployAsNewOrUpdate_RemovalFailureSkipsUpsert(t *testing.T) {
 	zarfPkg := zarfAPI.Package{
 		Metadata: zarfAPI.PackageMetadata{Name: "test-package"},
