@@ -9011,6 +9011,62 @@ func betaLifecycleTestPackage() zarfAPI.Package {
 	}
 }
 
+func TestPackageResource_BetaVariablesAreRejectedDuringPlanning(t *testing.T) {
+	variable := VariableModel{Name: types.StringValue("EXAMPLE"), Value: types.StringValue("value")}
+	tests := map[string]PackageResourceModelDataOption{
+		"vars":           WithVars([]VariableModel{variable}),
+		"sensitive_vars": WithSensitiveVars([]VariableModel{variable}),
+	}
+
+	for name, option := range tests {
+		t.Run(name, func(t *testing.T) {
+			pkgLayout := newTestPackageLayout(t, betaLifecycleTestPackage())
+			packager := &MockPackager{}
+			packager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil).Once()
+			r := NewPackageResource(&udsProviderConfig{ValidatePackagesOnPlan: true}, packager, nil, nil).(*PackageResource)
+			model := newCreateLifecycleModel(option)
+			plan := buildTestPlan(t, r, model)
+			resp := resource.ModifyPlanResponse{Plan: plan}
+
+			r.ModifyPlan(context.Background(), resource.ModifyPlanRequest{
+				Config: buildTestConfig(t, r, model),
+				Plan:   plan,
+			}, &resp)
+
+			require.True(t, resp.Diagnostics.HasError())
+			require.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "Zarf v1beta1 packages do not support package variables")
+			require.Contains(t, resp.Diagnostics.Errors()[0].Detail(), name)
+			packager.AssertExpectations(t)
+		})
+	}
+}
+
+func TestPackageResource_BetaVariablesAreRejectedBeforeDeployment(t *testing.T) {
+	pkgLayout := newTestPackageLayout(t, betaLifecycleTestPackage())
+	packager := &MockPackager{}
+	r := NewPackageResource(&udsProviderConfig{}, packager, nil, nil).(*PackageResource)
+	model := newCreateLifecycleModel(WithVars([]VariableModel{{
+		Name:  types.StringValue("EXAMPLE"),
+		Value: types.StringValue("value"),
+	}}))
+
+	_, err := r.upsertVerifiedPackage(testCtx(t), model, pkgLayout)
+
+	require.ErrorContains(t, err, "Zarf v1beta1 packages do not support package variables")
+	var deploymentErr *deploymentAttemptedError
+	assert.False(t, errors.As(err, &deploymentErr))
+	packager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestValidatePackageVariablesAllowsAlphaVariables(t *testing.T) {
+	model := newCreateLifecycleModel(WithVars([]VariableModel{{
+		Name:  types.StringValue("EXAMPLE"),
+		Value: types.StringValue("value"),
+	}}))
+
+	require.NoError(t, validatePackageVariables(model, zarfAPI.Package{}))
+}
+
 func TestPackageResource_BetaPlanningAndComponentSelection(t *testing.T) {
 	pkg := betaLifecycleTestPackage()
 	pkgLayout := newTestPackageLayout(t, pkg)

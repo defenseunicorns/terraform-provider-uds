@@ -42,6 +42,7 @@ import (
 	udsValidator "github.com/defenseunicorns/terraform-provider-uds/internal/provider/validator"
 
 	zarfAPI "github.com/zarf-dev/zarf/src/api"
+	"github.com/zarf-dev/zarf/src/api/v1beta1"
 	"github.com/zarf-dev/zarf/src/pkg/ocischeme"
 	zarfPackager "github.com/zarf-dev/zarf/src/pkg/packager"
 	zarfFilters "github.com/zarf-dev/zarf/src/pkg/packager/filters"
@@ -414,7 +415,7 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				},
 			},
 			"vars": schema.SetNestedAttribute{
-				MarkdownDescription: "UDS package variables to set.",
+				MarkdownDescription: "[Alpha] UDS package variables to set. Zarf v1beta1 packages do not support variables; use values instead.",
 				Optional:            true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
@@ -436,7 +437,7 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				},
 			},
 			"sensitive_vars": schema.SetNestedAttribute{
-				MarkdownDescription: "Sensitive UDS package variables to set.",
+				MarkdownDescription: "[Alpha] Sensitive UDS package variables to set. Zarf v1beta1 packages do not support variables; use sensitive_values instead.",
 				Optional:            true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
@@ -1042,6 +1043,8 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		valueValidationPlan := plan
 		valueValidationPlan.Values = config.Values
 		valueValidationPlan.SensitiveValues = config.SensitiveValues
+		valueValidationPlan.Vars = config.Vars
+		valueValidationPlan.SensitiveVars = config.SensitiveVars
 		checks := r.runPackagePlanChecks(ctx, valueValidationPlan, priorIdentity)
 		if checks.LoadErr != nil {
 			resp.Diagnostics.AddAttributeError(
@@ -1069,6 +1072,10 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		}
 		if checks.ValuesErr != nil {
 			resp.Diagnostics.AddError("Invalid package value", checks.ValuesErr.Error())
+			return
+		}
+		if checks.VariablesErr != nil {
+			resp.Diagnostics.AddError("Package variables are not supported", checks.VariablesErr.Error())
 			return
 		}
 		if checks.CanonicalNameErr != nil {
@@ -1519,6 +1526,9 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 // upsertVerifiedPackage deploys a layout already verified by the caller.
 func (r *PackageResource) upsertVerifiedPackage(ctx context.Context, plan PackageResourceModel, pkgLayout *layout.PackageLayout) (PackageResourceModel, error) {
 	ctx = r.withOCISchemeNegotiator(ctx)
+	if err := validatePackageVariables(plan, pkgLayout.Definition()); err != nil {
+		return plan, err
+	}
 	if plan.OptionalComponents.IsUnknown() {
 		return plan, fmt.Errorf("optional_components must be known before apply")
 	}
@@ -3099,6 +3109,33 @@ func (r *PackageResource) loadPackageLayoutForInspection(ctx context.Context, mo
 	return r.packager.LoadPackage(ctx, packageSource, loadOpt)
 }
 
+func variableSetConfigured(value types.Set) bool {
+	return value.IsUnknown() || (!value.IsNull() && len(value.Elements()) > 0)
+}
+
+func hasConfiguredVariables(model PackageResourceModel) bool {
+	return variableSetConfigured(model.Vars) || variableSetConfigured(model.SensitiveVars)
+}
+
+func validatePackageVariables(model PackageResourceModel, pkg zarfAPI.Package) error {
+	if pkg.GetAPIVersion() != v1beta1.APIVersion || !hasConfiguredVariables(model) {
+		return nil
+	}
+
+	configured := make([]string, 0, 2)
+	if variableSetConfigured(model.Vars) {
+		configured = append(configured, "vars")
+	}
+	if variableSetConfigured(model.SensitiveVars) {
+		configured = append(configured, "sensitive_vars")
+	}
+	return fmt.Errorf(
+		"Zarf %s packages do not support package variables configured through %s; remove these attributes or migrate the package to use values and sensitive_values",
+		strings.TrimPrefix(v1beta1.APIVersion, "zarf.dev/"),
+		strings.Join(configured, " and "),
+	)
+}
+
 // packagePlanCheckResult holds per-check errors from runPackagePlanChecks so each can be
 // attributed to the correct diagnostic path without expanding the function signature.
 type packagePlanCheckResult struct {
@@ -3106,6 +3143,7 @@ type packagePlanCheckResult struct {
 	SigErr           error
 	OptComponentsErr error
 	ValuesErr        error
+	VariablesErr     error
 	CanonicalNameErr error
 }
 
@@ -3133,12 +3171,13 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 		plan.OptionalComponents.ElementsAs(ctx, &requestedOptionals, false)
 	}
 	canValidateSchema := hasConfiguredPackageValues(plan)
+	canValidateVariables := hasConfiguredVariables(plan)
 	var priorIdentity *deployedPackageIdentity
 	if len(priorIdentities) > 0 {
 		priorIdentity = priorIdentities[0]
 	}
 
-	if !needsSigVerification && !canValidateOptionalComponents && !canValidateSchema && priorIdentity == nil {
+	if !needsSigVerification && !canValidateOptionalComponents && !canValidateSchema && !canValidateVariables && priorIdentity == nil {
 		return packagePlanCheckResult{}
 	}
 
@@ -3168,6 +3207,11 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 	if canValidateSchema {
 		if err := r.validatePlannedPackageValuesAgainstSchema(ctx, plan, pkgLayout); err != nil {
 			return packagePlanCheckResult{ValuesErr: err}
+		}
+	}
+	if canValidateVariables {
+		if err := validatePackageVariables(plan, pkgLayout.Definition()); err != nil {
+			return packagePlanCheckResult{VariablesErr: err}
 		}
 	}
 	if priorIdentity != nil && pkgLayout.Definition().Metadata.Name != priorIdentity.Name {
