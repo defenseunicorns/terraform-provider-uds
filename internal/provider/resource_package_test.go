@@ -2832,7 +2832,7 @@ func TestPackageResource_RunPackagePlanChecks_ErrorRouting(t *testing.T) {
 				}
 			}
 			require.True(t, foundLoadPackageCall, "LoadPackage was not called")
-			assert.Equal(t, []zarfZoci.LayerType{zarfZoci.MetadataLayers}, loadOpts.LayerTypes,
+			assert.Equal(t, &zarfZoci.LayerSelection{}, loadOpts.LayerSelection,
 				"inspection load must request metadata layers only")
 		})
 	}
@@ -3885,7 +3885,7 @@ func TestVerifyCanonicalPackageName(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			packager := &MockPackager{}
 			packager.On("LoadPackage", mock.Anything, mock.Anything, mock.MatchedBy(func(opts zarfPackager.LoadOptions) bool {
-				return opts.Architecture == "arm64" && len(opts.LayerTypes) == 1 && opts.LayerTypes[0] == zarfZoci.MetadataLayers
+				return opts.Architecture == "arm64" && assert.ObjectsAreEqual(&zarfZoci.LayerSelection{}, opts.LayerSelection)
 			})).Return(packageLayout, nil).Once()
 			resource := NewPackageResource(nil, packager, nil, nil).(*PackageResource)
 
