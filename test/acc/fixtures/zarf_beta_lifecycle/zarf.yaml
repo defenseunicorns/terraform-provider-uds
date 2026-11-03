@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/zarf-dev/zarf/v0.88.0/src/pkg/schema/zarf-v1beta1-package-schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/zarf-dev/zarf/v0.89.0/src/pkg/schema/zarf-v1beta1-package-schema.json
 # Copyright 2026 Defense Unicorns
 # SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
 
