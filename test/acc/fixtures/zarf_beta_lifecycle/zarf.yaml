@@ -1,0 +1,47 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/zarf-dev/zarf/v0.88.0/src/pkg/schema/zarf-v1beta1-package-schema.json
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+
+apiVersion: zarf.dev/v1beta1
+kind: ZarfPackageConfig
+metadata:
+  name: zarf-beta-lifecycle
+  version: 0.1.0
+  description: Acceptance test package for Zarf v1beta1 lifecycle behavior
+
+components:
+  - name: zarf-beta-lifecycle
+    manifests:
+      - name: zarf-beta-lifecycle-package-state
+        namespace: default
+        files:
+          - manifests/package-state.yaml
+    actions:
+      onDeploy:
+        before:
+          - cmd: test -n "{{ .Values.marker }}" && test -n "{{ .Values.token }}"
+            enableTemplating: true
+        onSuccess:
+          - cmd: kubectl create configmap zarf-beta-lifecycle-action-marker --namespace default --from-literal=marker="{{ .Values.marker }}" --dry-run=client -o yaml | kubectl apply -f -
+            enableTemplating: true
+      onRemove:
+        before:
+          - cmd: test "{{ .Values.marker }}" = "updated" && test "{{ .Values.token }}" = "updated-secret" && kubectl delete configmap zarf-beta-lifecycle-action-marker zarf-beta-lifecycle-component-removal-marker --namespace default --ignore-not-found
+            enableTemplating: true
+
+  - name: optional
+    optional: true
+    manifests:
+      - name: zarf-beta-lifecycle-optional-marker
+        namespace: default
+        files:
+          - manifests/optional-marker.yaml
+    actions:
+      onDeploy:
+        before:
+          - cmd: test "{{ .Values.marker }}" = "initial" && test "{{ .Values.token }}" = "initial-secret"
+            enableTemplating: true
+      onRemove:
+        before:
+          - cmd: test "{{ .Values.marker }}" = "updated" && test "{{ .Values.token }}" = "updated-secret" && kubectl create configmap zarf-beta-lifecycle-component-removal-marker --namespace default --from-literal=marker="{{ .Values.marker }}" --dry-run=client -o yaml | kubectl apply -f -
+            enableTemplating: true
