@@ -3133,7 +3133,7 @@ func validatePackageVariables(model PackageResourceModel, pkg zarfAPI.Package) e
 		configured = append(configured, "sensitive_vars")
 	}
 	return fmt.Errorf(
-		"Zarf %s packages do not support package variables configured through %s; remove these attributes or migrate the package to use values and sensitive_values",
+		"Zarf %s packages do not support %s. These inputs would not be applied. Remove them and configure values or sensitive_values using the package's documented values interface",
 		strings.TrimPrefix(v1beta1.APIVersion, "zarf.dev/"),
 		strings.Join(configured, " and "),
 	)

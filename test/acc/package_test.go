@@ -571,7 +571,7 @@ resource "uds_package" "beta_variables" {
 		Steps: []resource.TestStep{{
 			Config:      config,
 			PlanOnly:    true,
-			ExpectError: regexp.MustCompile(`Zarf v1beta1 packages do not support package variables`),
+			ExpectError: regexp.MustCompile(`Zarf v1beta1 packages do not support vars`),
 		}},
 	})
 }

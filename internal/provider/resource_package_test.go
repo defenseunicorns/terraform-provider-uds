@@ -4788,7 +4788,7 @@ func TestDeployAsNewOrUpdate_RejectsBetaVariablesBeforeComponentRemoval(t *testi
 
 	_, err := r.deployAsNewOrUpdate(testCtx(t), newPlan, oldPlan, testPackageIdentity(""))
 
-	require.ErrorContains(t, err, "Zarf v1beta1 packages do not support package variables")
+	require.ErrorContains(t, err, "Zarf v1beta1 packages do not support vars")
 	packager.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything, mock.Anything)
 	packager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
 	packager.AssertExpectations(t)
@@ -9057,8 +9057,10 @@ func TestPackageResource_BetaVariablesAreRejectedDuringPlanning(t *testing.T) {
 			}, &resp)
 
 			require.True(t, resp.Diagnostics.HasError())
-			require.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "Zarf v1beta1 packages do not support package variables")
-			require.Contains(t, resp.Diagnostics.Errors()[0].Detail(), name)
+			detail := resp.Diagnostics.Errors()[0].Detail()
+			require.Contains(t, detail, "These inputs would not be applied")
+			require.Contains(t, detail, "Remove them and configure values or sensitive_values using the package's documented values interface")
+			require.Contains(t, detail, name)
 			packager.AssertExpectations(t)
 		})
 	}
@@ -9075,7 +9077,7 @@ func TestPackageResource_BetaVariablesAreRejectedBeforeDeployment(t *testing.T) 
 
 	_, err := r.upsertVerifiedPackage(testCtx(t), model, pkgLayout)
 
-	require.ErrorContains(t, err, "Zarf v1beta1 packages do not support package variables")
+	require.ErrorContains(t, err, "Zarf v1beta1 packages do not support vars")
 	var deploymentErr *deploymentAttemptedError
 	assert.False(t, errors.As(err, &deploymentErr))
 	packager.AssertNotCalled(t, "Deploy", mock.Anything, mock.Anything, mock.Anything)
