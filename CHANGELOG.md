@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.7.1...v0.8.0) (2026-11-03)
+
+
+### Features
+
+* support zarf v1beta1 schema ([#388](https://github.com/defenseunicorns/terraform-provider-uds/issues/388)) ([d41fd2c](https://github.com/defenseunicorns/terraform-provider-uds/commit/d41fd2c7ea5123e456560fbcbd02c4a8aec11a03))
+
+
+### Miscellaneous
+
+* **deps:** update application dependencies to v4.1.6 [security] ([#389](https://github.com/defenseunicorns/terraform-provider-uds/issues/389)) ([3dae80f](https://github.com/defenseunicorns/terraform-provider-uds/commit/3dae80f23a6af898977ac1fb8743f370a23e2eec))
+* **deps:** update application-deps ([#383](https://github.com/defenseunicorns/terraform-provider-uds/issues/383)) ([43c02c8](https://github.com/defenseunicorns/terraform-provider-uds/commit/43c02c8030625fd960540a6ab3d145742ef029ae))
+* **deps:** update zarf to v0.89.0 ([#387](https://github.com/defenseunicorns/terraform-provider-uds/issues/387)) ([de557d9](https://github.com/defenseunicorns/terraform-provider-uds/commit/de557d9e57e0ac8ff656952029d7dcdc8e65b9de))
+* **deps:** update zarf yaml schema to v0.89.0 in tests ([f46a234](https://github.com/defenseunicorns/terraform-provider-uds/commit/f46a234d95b2d95bead46478f48b40c18dfba923))
+
 ## [0.7.1](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.7.0...v0.7.1) (2026-10-21)
 
 
