@@ -544,6 +544,10 @@ func TestAccPackageResourcePlanValidation(t *testing.T) {
 }
 
 func TestAccPackageResourceBetaVariablesPlanValidation(t *testing.T) {
+	if os.Getenv(resource.EnvTfAcc) == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC=1")
+	}
+
 	packagePath := buildZarfBetaLifecycleFixture(t)
 	config := fmt.Sprintf(`
 resource "uds_package" "beta_variables" {
