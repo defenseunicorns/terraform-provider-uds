@@ -5,7 +5,7 @@ terraform {
   required_providers {
     uds = {
       source  = "defenseunicorns/uds"
-      version = "~> 0.8.0" # x-release-please-version
+      version = "~> 0.8.1" # x-release-please-version
     }
   }
 }

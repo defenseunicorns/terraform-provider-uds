@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.8.0...v0.8.1) (2026-11-04)
+
+
+### Miscellaneous
+
+* **deps:** update support-deps ([#392](https://github.com/defenseunicorns/terraform-provider-uds/issues/392)) ([6e7d995](https://github.com/defenseunicorns/terraform-provider-uds/commit/6e7d9952ca36796c8019e21ffaf35e79d2961e07))
+
 ## [0.8.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.7.1...v0.8.0) (2026-11-03)
 
 
