@@ -35,10 +35,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           # renovate: datasource=github-releases depName=jdx/mise versioning=semver
-          version: 2026.10.25
+          version: 2026.11.0
           install: true
           cache: true
       - name: Lint
@@ -53,10 +53,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           # renovate: datasource=github-releases depName=jdx/mise versioning=semver
-          version: 2026.10.25
+          version: 2026.11.0
           install: true
           cache: true
 
@@ -81,10 +81,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           # renovate: datasource=github-releases depName=jdx/mise versioning=semver
-          version: 2026.10.25
+          version: 2026.11.0
           install: true
           cache: true
 
