@@ -4,7 +4,7 @@
 [tools]
 go = "1.27.3"
 node = "26.13.0"
-hk = "2.11.0"
+hk = "2.11.1"
 golangci-lint = "2.15.0"
 "aqua:google/addlicense" = "1.2.0"
 opentofu = "1.13.2"
