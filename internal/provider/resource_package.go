@@ -164,6 +164,7 @@ func defaultPackageSignatureVerifier(ctx context.Context, pkgLayout *layout.Pack
 type PackageResourceModel struct {
 	ID                    types.String   `tfsdk:"id"`
 	Source                types.String   `tfsdk:"source"`
+	Build                 types.Object   `tfsdk:"build"`
 	Architecture          types.String   `tfsdk:"architecture"`
 	Timeouts              timeouts.Value `tfsdk:"timeouts"`
 	SignatureVerification types.Object   `tfsdk:"signature_verification"`
@@ -189,6 +190,19 @@ type PackageResourceModel struct {
 	// All variables exported from the package are persisted to this map and
 	// treated as sensitive in state regardless of their original sensitivity.
 	SetVariables types.Map `tfsdk:"set_variables"`
+}
+
+// PackageBuildModel holds user-owned local package build inputs.
+type PackageBuildModel struct {
+	SourceDir   types.String `tfsdk:"source_dir"`
+	Revision    types.String `tfsdk:"revision"`
+	BuildOnPlan types.Bool   `tfsdk:"build_on_plan"`
+}
+
+var packageBuildAttrTypes = map[string]attr.Type{
+	"source_dir":    types.StringType,
+	"revision":      types.StringType,
+	"build_on_plan": types.BoolType,
 }
 
 // ComponentModel represents a UDS package component configuration.
@@ -296,10 +310,30 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				Computed:            true,
 			},
 			"source": schema.StringAttribute{
-				MarkdownDescription: "OCI distribution reference (including oci:// scheme) or local file path (absolute or relative) to the package.",
-				Required:            true,
+				MarkdownDescription: "OCI distribution reference (including oci:// scheme) or local file path (absolute or relative) to the package. Specify exactly one of `source` or `build`.",
+				Optional:            true,
 				Validators: []validator.String{
 					udsValidator.PackageSourceValidator(),
+				},
+			},
+			"build": schema.SingleNestedAttribute{
+				MarkdownDescription: "Build a local Zarf package directory. Specify exactly one of `source` or `build`. Omit `signature_verification` in build mode.",
+				Optional:            true,
+				Attributes: map[string]schema.Attribute{
+					"source_dir": schema.StringAttribute{
+						MarkdownDescription: "Local package directory, absolute or relative. Preserved as configured; accessed only when building.",
+						Required:            true,
+					},
+					"revision": schema.StringAttribute{
+						MarkdownDescription: "Required opaque, user-owned deployment trigger. A changed revision requests a fresh build and redeployment; constants are allowed. The provider does not hash directory contents or require a package version change.",
+						Required:            true,
+					},
+					"build_on_plan": schema.BoolAttribute{
+						MarkdownDescription: "Build and validate on every normal plan when inputs are known, independently of provider plan-validation policy. Defaults to false. Validation artifacts are discarded and do not detect content changes or carry over to apply.",
+						Optional:            true,
+						Computed:            true,
+						Default:             booldefault.StaticBool(false),
+					},
 				},
 			},
 			"architecture": schema.StringAttribute{
@@ -315,7 +349,7 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				Computed:            true,
 			},
 			"signature_verification": schema.SingleNestedAttribute{
-				MarkdownDescription: "Signature verification configuration. Verification is enabled by default and requires `public_key` or `keyless`. Set `verify` to `false` to skip verification.",
+				MarkdownDescription: "Source-mode signature verification configuration. Verification is enabled by default and requires `public_key` or `keyless`. Set `verify` to `false` to skip source verification. Omit this attribute entirely with `build`; local builds bypass implicit verification defaults.",
 				Optional:            true,
 				Computed:            true,
 				Default:             objectdefault.StaticValue(defaultSignatureVerification),
@@ -375,9 +409,9 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 				Read:              true,
 				Update:            true,
 				Delete:            true,
-				CreateDescription: "Timeout for package deployment (default 30 m). Covers cluster connection, package load, and Helm/Zarf execution. If deployment fails after package state may have been recorded, the provider performs a separate recovery lookup for up to 5 m to preserve that state. This recovery window is additional to the configured timeout and remains bounded by the overall operation deadline or cancellation.",
+				CreateDescription: "Timeout for package deployment (default 30 m). Covers local build when configured, cluster connection, package load, and Helm/Zarf execution. The build receives this deadline, but upstream Zarf action cancellation can delay return and temporary-file cleanup beyond it when child processes keep output pipes open. If deployment fails after package state may have been recorded, the provider performs a separate recovery lookup for up to 5 m to preserve that state. This recovery window is additional to the configured timeout and remains bounded by the overall operation deadline or cancellation.",
 				ReadDescription:   "Total read-operation wall-clock timeout (default 5 m). Covers cluster connection and state retrieval.",
-				UpdateDescription: "Timeout for package update (default 30 m). Covers cluster connection, package load, and redeployment. Failed updates return their error within this timeout; no separate failed-operation recovery lookup is performed.",
+				UpdateDescription: "Timeout for package update (default 30 m). Covers local build when configured, cluster connection, package load, and redeployment. The build receives this deadline, but upstream Zarf action cancellation can delay return and temporary-file cleanup beyond it when child processes keep output pipes open. No separate failed-operation recovery lookup is performed.",
 				DeleteDescription: "Total delete-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and removal.",
 			}),
 			"kind": schema.StringAttribute{
@@ -612,6 +646,7 @@ func (r *PackageResource) ValidateConfig(ctx context.Context, req resource.Valid
 		return
 	}
 	validateUniqueVarNames(model, resp)
+	validatePackageInput(model, resp)
 	validateSignatureVerificationAttributes(ctx, model, resp)
 	// TODO: remove when component block is removed
 	validateComponentBlockOptionalComponentsMutualExclusivity(model, resp)
@@ -677,7 +712,10 @@ func (r *PackageResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 	if err != nil {
 		var optErr *optionalComponentsValidationError
-		if errors.As(err, &optErr) {
+		var buildErr *packageBuildError
+		if errors.As(err, &buildErr) {
+			resp.Diagnostics.AddAttributeError(packageInputPath(plan), "Failed to build package", lifecycleErrorDetail(timeoutCtx, "create", err))
+		} else if errors.As(err, &optErr) {
 			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", optErr.Error())
 		} else {
 			var deploymentErr *deploymentAttemptedError
@@ -803,6 +841,7 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	}
 	if stateOnlyUpdate {
 		oldPlan.Timeouts = plan.Timeouts
+		oldPlan.Build = plan.Build
 		resp.Diagnostics.Append(resp.State.Set(operationCtx, oldPlan)...)
 		if !resp.Diagnostics.HasError() {
 			operationCompleted = true
@@ -829,9 +868,11 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 		resp.Diagnostics.AddError("Deployed package identity could not be verified", identityErrorDetail(err))
 		return
 	}
-	if err := r.verifyCanonicalPackageName(timeoutCtx, plan, identity); err != nil {
-		resp.Diagnostics.AddAttributeError(path.Root("source"), canonicalIdentitySummary(err), canonicalIdentityDetail(err))
-		return
+	if !isBuildMode(plan) {
+		if err := r.verifyCanonicalPackageName(timeoutCtx, plan, identity); err != nil {
+			resp.Diagnostics.AddAttributeError(packageInputPath(plan), canonicalIdentitySummary(err), canonicalIdentityDetail(err))
+			return
+		}
 	}
 
 	plan, err = r.deployAsNewOrUpdate(timeoutCtx, plan, oldPlan, identity)
@@ -841,8 +882,11 @@ func (r *PackageResource) Update(ctx context.Context, req resource.UpdateRequest
 	if err != nil {
 		var optErr *optionalComponentsValidationError
 		var canonicalErr *canonicalNameMismatchError
-		if errors.As(err, &canonicalErr) {
-			resp.Diagnostics.AddAttributeError(path.Root("source"), canonicalIdentitySummary(err), canonicalIdentityDetail(err))
+		var buildErr *packageBuildError
+		if errors.As(err, &buildErr) {
+			resp.Diagnostics.AddAttributeError(packageInputPath(plan), "Failed to build package", lifecycleErrorDetail(timeoutCtx, "update", err))
+		} else if errors.As(err, &canonicalErr) {
+			resp.Diagnostics.AddAttributeError(packageInputPath(plan), canonicalIdentitySummary(err), canonicalIdentityDetail(err))
 		} else if errors.As(err, &optErr) {
 			resp.Diagnostics.AddAttributeError(path.Root("optional_components"), "Invalid optional components", optErr.Error())
 		} else {
@@ -1010,7 +1054,13 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		}
 		if stateOnlyUpdate {
 			resp.Diagnostics.Append(preserveComputedState(ctx, req.State, &resp.Plan)...)
-			return
+			if !shouldBuildOnPlan(plan) || resp.Diagnostics.HasError() {
+				return
+			}
+			resp.Diagnostics.Append(resp.Plan.Get(ctx, &plan)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
 		}
 	}
 
@@ -1019,7 +1069,7 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		return
 	}
 
-	if r.providerConfig == nil || r.providerConfig.ValidatePackagesOnPlan {
+	if shouldBuildOnPlan(plan) || (plan.Build.IsNull() && (r.providerConfig == nil || r.providerConfig.ValidatePackagesOnPlan)) {
 		var priorIdentity *deployedPackageIdentity
 		if !req.State.Raw.IsNull() {
 			var state PackageResourceModel
@@ -1048,7 +1098,7 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		checks := r.runPackagePlanChecks(ctx, valueValidationPlan, priorIdentity)
 		if checks.LoadErr != nil {
 			resp.Diagnostics.AddAttributeError(
-				path.Root("source"),
+				packageInputPath(plan),
 				"Failed to load package",
 				checks.LoadErr.Error(),
 			)
@@ -1079,7 +1129,7 @@ func (r *PackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 			return
 		}
 		if checks.CanonicalNameErr != nil {
-			resp.Diagnostics.AddAttributeError(path.Root("source"), canonicalIdentitySummary(checks.CanonicalNameErr), canonicalIdentityDetail(checks.CanonicalNameErr))
+			resp.Diagnostics.AddAttributeError(packageInputPath(plan), canonicalIdentitySummary(checks.CanonicalNameErr), canonicalIdentityDetail(checks.CanonicalNameErr))
 			return
 		}
 	}
@@ -1230,6 +1280,9 @@ func handleVerifyResult(ctx context.Context, err error, isSigned bool, enforce b
 // getEffectiveSignatureVerification returns whether signature verification is enforced.
 // Absent signature_verification block defaults to enforced/enabled.
 func getEffectiveSignatureVerification(ctx context.Context, model PackageResourceModel) bool {
+	if !model.Build.IsNull() && !model.Build.IsUnknown() {
+		return false
+	}
 	// schema default ensures this is never null in practice; guard for safety (e.g. import, tests)
 	if model.SignatureVerification.IsNull() || model.SignatureVerification.IsUnknown() {
 		return true
@@ -1425,14 +1478,14 @@ func canonicalIdentityDetail(err error) string {
 // deployAsNew deploys a package only when its name and namespace are not already present.
 func (r *PackageResource) deployAsNew(ctx context.Context, plan PackageResourceModel) (PackageResourceModel, error) {
 	// Load the package to establish identity before checking for an existing deployment.
-	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
+	pkgLayout, cleanup, err := r.acquirePackageLayout(ctx, plan)
 	if err != nil {
 		return plan, err
 	}
 	plan.Name = types.StringValue(pkgLayout.Definition().Metadata.Name)
 	ctx = logging.WithPackageContext(ctx, "", plan.Name.ValueString(), plan.Namespace.ValueString())
 	defer func() {
-		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
+		if cleanupErr := cleanup(); cleanupErr != nil {
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
 		}
 	}()
@@ -1483,12 +1536,12 @@ func (r *PackageResource) deployAsNewOrUpdate(ctx context.Context, plan PackageR
 	}
 	ctx = r.withOCISchemeNegotiator(ctx)
 	// Use one verified source layout for both removal preflight and deployment.
-	pkgLayout, err := r.loadPackageLayoutFromSource(ctx, plan)
+	pkgLayout, cleanup, err := r.acquirePackageLayout(ctx, plan)
 	if err != nil {
 		return plan, err
 	}
 	defer func() {
-		if cleanupErr := pkgLayout.Cleanup(); cleanupErr != nil {
+		if cleanupErr := cleanup(); cleanupErr != nil {
 			tflog.Warn(ctx, "failed to cleanup package layout", map[string]any{"error": cleanupErr.Error()})
 		}
 	}()
@@ -2324,6 +2377,10 @@ func isStateOnlyUpdate(plan tfsdk.Plan, state tfsdk.State) (bool, error) {
 			return false, fmt.Errorf("unexpected update path: %s", diff.Path)
 		}
 		attributeName := string(name)
+		if attributeName == "build" && len(steps) == 2 && steps[1] == tftypes.AttributeName("build_on_plan") {
+			foundStateOnlyChange = true
+			continue
+		}
 		if _, ok := stateOnlyAttributes[attributeName]; ok {
 			foundStateOnlyChange = true
 			continue
@@ -2584,6 +2641,16 @@ func validateUniqueVarNames(model PackageResourceModel, resp *resource.ValidateC
 
 // validateSignatureVerificationAttributes validates the signature_verification block.
 func validateSignatureVerificationAttributes(ctx context.Context, model PackageResourceModel, resp *resource.ValidateConfigResponse) {
+	// An unknown build may resolve to null, selecting source mode instead.
+	if model.Build.IsUnknown() {
+		return
+	}
+	if !model.Build.IsNull() {
+		if !model.SignatureVerification.IsNull() && !model.SignatureVerification.IsUnknown() {
+			resp.Diagnostics.AddAttributeError(path.Root("signature_verification"), "Conflicting build signature configuration", "Omit `signature_verification` when configuring `build`, including `verify = false`. Local builds are unsigned.")
+		}
+		return
+	}
 	if model.SignatureVerification.IsUnknown() {
 		return
 	}
@@ -3156,7 +3223,11 @@ type packagePlanCheckResult struct {
 // package defaults.
 // Skipped when source is unknown, packager/providerConfig are nil, or no checks are needed.
 func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan PackageResourceModel, priorIdentities ...*deployedPackageIdentity) packagePlanCheckResult {
-	if plan.Source.IsUnknown() || plan.Source.IsNull() {
+	buildMode := isBuildMode(plan)
+	if buildMode && !shouldBuildOnPlan(plan) {
+		return packagePlanCheckResult{}
+	}
+	if !buildMode && (plan.Source.IsUnknown() || plan.Source.IsNull()) {
 		return packagePlanCheckResult{}
 	}
 	if r.packager == nil || r.providerConfig == nil {
@@ -3181,16 +3252,30 @@ func (r *PackageResource) runPackagePlanChecks(ctx context.Context, plan Package
 		priorIdentity = priorIdentities[0]
 	}
 
-	if !needsSigVerification && !canValidateOptionalComponents && !canValidateSchema && !canValidateVariables && priorIdentity == nil {
+	if !buildMode && !needsSigVerification && !canValidateOptionalComponents && !canValidateSchema && !canValidateVariables && priorIdentity == nil {
 		return packagePlanCheckResult{}
 	}
 
-	pkgLayout, err := r.loadPackageLayoutForInspection(ctx, plan)
-	if pkgLayout != nil {
-		defer pkgLayout.Cleanup()
+	var pkgLayout *layout.PackageLayout
+	var err error
+	if buildMode {
+		var cleanup func() error
+		pkgLayout, cleanup, err = r.acquirePackageLayout(ctx, plan)
+		if err == nil {
+			defer func() {
+				if cleanupErr := cleanup(); cleanupErr != nil {
+					tflog.Warn(ctx, "failed to cleanup plan build", map[string]any{"error": cleanupErr.Error()})
+				}
+			}()
+		}
+	} else {
+		pkgLayout, err = r.loadPackageLayoutForInspection(ctx, plan)
+		if pkgLayout != nil {
+			defer pkgLayout.Cleanup()
+		}
 	}
 	if err != nil {
-		if priorIdentity != nil {
+		if priorIdentity != nil && !buildMode {
 			return packagePlanCheckResult{CanonicalNameErr: &canonicalSourceError{}}
 		}
 		return packagePlanCheckResult{LoadErr: err}

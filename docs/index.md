@@ -9,6 +9,16 @@ description: |-
 
 Manage [UDS](https://docs.defenseunicorns.com/) resources with OpenTofu.
 
+Use the [`uds_package` resource](https://registry.terraform.io/providers/defenseunicorns/uds/latest/docs/resources/package)
+to deploy existing packages from OCI registries or local archives with `source`,
+or build and deploy local package directories with `build`. Local builds are a
+convenience for small, environment-specific packages alongside OpenTofu configuration:
+you track input changes through an explicit revision. They do not provide automatic
+change detection, retained release artifacts, or a replacement for Zarf/CI release
+pipelines. See the
+[local package build example](https://github.com/defenseunicorns/terraform-provider-uds/tree/main/examples/package_build)
+for a complete runnable configuration.
+
 ~> This provider is an alpha release. Its interfaces and behavior may change between releases, including breaking changes.
 
 ## Example Usage
@@ -46,5 +56,5 @@ provider "uds" {
 - `force_helm_ssa_conflicts` (Boolean) Force Helm to take ownership of conflicting fields during Server-Side Apply operations during package deployment. Use when external tools (kubectl, HPAs, etc.) have modified resources. Defaults to `false`. Can also be configured with the `UDS_FORCE_HELM_SSA_CONFLICTS` environment variable.
 - `insecure_force_http` (Boolean) Allow plain HTTP for OCI package sources and force plain HTTP for external Zarf registry pushes. Package sources continue to use HTTPS when available, while Zarf-managed registries use the transport recorded in cluster state. Defaults to `false`. Can also be configured with the `UDS_INSECURE_FORCE_HTTP` environment variable.
 - `insecure_skip_tls_verification` (Boolean) Skip TLS certificate verification for HTTPS package sources and external Zarf registry pushes. Zarf-managed mTLS registries continue to use their managed trust configuration. Defaults to `false`. Can also be configured with the `UDS_INSECURE_SKIP_TLS_VERIFICATION` environment variable.
-- `validate_packages_on_plan` (Boolean) Whether to validate UDS packages during planning. When enabled, the provider may load packages during plan to catch package-dependent configuration errors early, such as invalid optional component names or signature verification failures. Disable this to avoid plan-time package downloads or expensive validation. These checks are still enforced during apply. Defaults to `true`. Can also be configured with the `UDS_VALIDATE_PACKAGES_ON_PLAN` environment variable.
+- `validate_packages_on_plan` (Boolean) Whether to validate source-mode UDS packages during planning. When enabled, the provider may load packages during plan to catch package-dependent configuration errors early, such as invalid optional component names or signature verification failures. Disable this to avoid source-mode plan-time package downloads or expensive validation. Build mode independently uses `build.build_on_plan`: false by default; true builds on every normal plan with known inputs even when this provider setting is false. Apply still enforces package-dependent checks. Defaults to `true`. Can also be configured with the `UDS_VALIDATE_PACKAGES_ON_PLAN` environment variable.
 - `zarf_cache_path` (String) Filesystem path to the local Zarf cache directory. Defaults to `~/.zarf-cache`. Can also be configured with the `UDS_ZARF_CACHE_PATH` environment variable.

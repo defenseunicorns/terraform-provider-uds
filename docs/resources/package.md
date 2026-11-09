@@ -156,22 +156,85 @@ resource "uds_package" "init_with_git_server" {
 }
 ```
 
+### Local Package Builds
+
+Use `build` for small, environment-specific packages kept alongside your OpenTofu configuration—for example, a “glue” package containing manifests and configuration for an environment. It provides a native build-and-deploy workflow without prerequisite build scripts or `local-exec`. The provider handles building and deploying; you decide when package inputs have changed.
+
+This is a deployment convenience, not an artifact build or release system:
+
+- **Explicit change tracking:** files and remote dependencies can change without triggering deployment. Reflect relevant changes in `build.revision`; it is your trigger, not a content digest or Zarf package version. A package version such as `dev` can remain unchanged.
+- **Fresh, temporary builds:** deployment-affecting updates, including values, architecture, and optional components, rebuild even when package content is unchanged. Archives are temporary, not retained or reusable release artifacts.
+- **Optional plan validation:** builds are disabled during planning by default, so build-dependent validation waits until apply. Enabling `build_on_plan` can build during both plan and apply; it does not enable automatic change detection or artifact reuse.
+- **Runner prerequisites:** provide registry credentials, network access, temporary disk, and host commands required by package `onCreate` actions. Flavor selection and additional provider-configured create-time templating are not supported.
+
+Use normal Zarf/CI workflows for artifact testing, retention, OCI publication, signing, and reuse across deployments. Deploy those artifacts with `source` when release provenance matters; `build` cannot be combined with `signature_verification`.
+
+The [local package build example](https://github.com/defenseunicorns/terraform-provider-uds/tree/main/examples/package_build) contains a complete runnable Podinfo configuration, including Zarf init, deployment values, and a manual revision trigger.
+
+Specify exactly one of `source` or `build`. In build mode omit `signature_verification`, including `verify = false`. Revision is an opaque, required user-owned trigger; a constant/manual revision is valid and no package-version bump is required.
+
+```terraform
+# Alternative to the source-mode examples: omit source and signature_verification.
+resource "uds_package" "local" {
+  build = {
+    source_dir = "${path.module}/package"
+    revision   = "manual-1" # Required; change this to request redeployment.
+  }
+}
+```
+
+Create and deployment-affecting updates build fresh archives in temporary storage outside the source directory. Changes only to `build_on_plan` or timeouts are state-only at apply. Refresh/delete never require the local directory. Source/build transitions preserve identity only when the new package-defined name matches the verified deployment. Confirmed remote absence permits recreation on the next normal apply even with unchanged revision; lookup/identity failures do not.
+
+`build_on_plan` defaults to false. When true, every normal plan with known build inputs builds and validates, including unchanged resources, independently of provider `validate_packages_on_plan`. Unknown build inputs defer execution; unknown deployment-value leaves defer only dependent checks. Validation metadata does not schedule deployment. Plan artifacts are discarded and apply builds separately when deployment is scheduled. Refresh-only operations and saved no-op apply execution do not build; an unsaved-plan `tofu apply` normally includes a normal planning phase that still honors the opt-in.
+
+Plan builds may run package actions and fetch dependencies. Supply required registry credentials, network access, temporary disk, potentially significant time, and host commands used by `onCreate` actions. The provider does not install missing commands or sandbox action side effects. Existing Zarf logging/error wrapping is retained; package command output may reach logs or diagnostics. Resource variables/values, including sensitive variants, are not build inputs. Alpha packages retain deployment variables; beta packages reject them and use values instead. Values remain available during deployment and removal.
+
+Builds receive the operation's cancellation context and create/update deadline, but these are not hard limits on subprocess lifetime. A known [upstream Zarf limitation](https://github.com/zarf-dev/zarf/issues/1461) allows action child processes holding output pipes open to delay the build's return and temporary-file cleanup after cancellation or timeout.
+
+Flavor selection and provider-configured create-time templating interfaces are deferred. Prefer signed OCI release pipelines when provenance matters. See the [build guide](https://github.com/defenseunicorns/terraform-provider-uds/blob/main/examples/resources/uds_package/BUILD.md) for operational and migration details.
+
+Alternatively, author a revision hash for the inputs you want to track. This example covers only its listed files and architecture; the provider does not infer completeness.
+
+```terraform
+locals {
+  package_dir          = "${path.module}/package"
+  package_architecture = "amd64"
+  package_files        = sort(tolist(fileset(local.package_dir, "**")))
+  package_revision = sha256(jsonencode({
+    files = {
+      for file in local.package_files :
+      file => filesha256("${local.package_dir}/${file}")
+    }
+    architecture = local.package_architecture
+  }))
+}
+
+# Alternative to a manual revision. This hash covers only the listed inputs;
+# include any other inputs that should request deployment in your own expression.
+resource "uds_package" "hashed" {
+  architecture = local.package_architecture
+  build = {
+    source_dir    = local.package_dir
+    revision      = local.package_revision
+    build_on_plan = true
+  }
+}
+```
+
 <!-- schema generated by tfplugindocs -->
 ## Schema
-
-### Required
-
-- `source` (String) OCI distribution reference (including oci:// scheme) or local file path (absolute or relative) to the package.
 
 ### Optional
 
 - `architecture` (String) System architecture of the target cluster. Defaults to the provider default architecture.
+- `build` (Attributes) Build a local Zarf package directory. Specify exactly one of `source` or `build`. Omit `signature_verification` in build mode. (see [below for nested schema](#nestedatt--build))
 - `component` (Block Set, Deprecated) [Deprecated] Legacy component selection and override configuration. Use `optional_components` to select optional components. Mutually exclusive with `optional_components`. (see [below for nested schema](#nestedblock--component))
 - `namespace` (String) [Alpha] Namespace in which to deploy the UDS package.
 - `optional_components` (Set of String) [Alpha] Set of optional package component names to install. Case-sensitive. Mutually exclusive with `component` blocks — specifying both is a validation error. When omitted or set to an empty list, only required package components are installed.
 - `sensitive_values` (Dynamic, Sensitive) [Alpha] Sensitive Zarf package values to apply during deployment and removal. Packages with a values schema are validated against that schema during deployment. Values are redacted from Terraform/OpenTofu output. Cannot be used with component blocks.
 - `sensitive_vars` (Attributes Set) Sensitive UDS package variables to set. Zarf v1beta1 packages do not support variables; use sensitive_values instead. (see [below for nested schema](#nestedatt--sensitive_vars))
-- `signature_verification` (Attributes) Signature verification configuration. Verification is enabled by default and requires `public_key` or `keyless`. Set `verify` to `false` to skip verification. (see [below for nested schema](#nestedatt--signature_verification))
+- `signature_verification` (Attributes) Source-mode signature verification configuration. Verification is enabled by default and requires `public_key` or `keyless`. Set `verify` to `false` to skip source verification. Omit this attribute entirely with `build`; local builds bypass implicit verification defaults. (see [below for nested schema](#nestedatt--signature_verification))
+- `source` (String) OCI distribution reference (including oci:// scheme) or local file path (absolute or relative) to the package. Specify exactly one of `source` or `build`.
 - `timeouts` (Attributes) (see [below for nested schema](#nestedatt--timeouts))
 - `values` (Dynamic) [Alpha] Zarf package values to apply during deployment and removal. Packages with a values schema are validated against that schema during deployment. Cannot be used with component blocks.
 - `vars` (Attributes Set) UDS package variables to set. Zarf v1beta1 packages do not support variables; use values instead. (see [below for nested schema](#nestedatt--vars))
@@ -185,6 +248,19 @@ resource "uds_package" "init_with_git_server" {
 - `name` (String) Name of the UDS Package.
 - `set_variables` (Map of String, Sensitive) Computed map of zarf variables set for this package.
 - `version` (String) Version of the deployed UDS package.
+
+<a id="nestedatt--build"></a>
+### Nested Schema for `build`
+
+Required:
+
+- `revision` (String) Required opaque, user-owned deployment trigger. A changed revision requests a fresh build and redeployment; constants are allowed. The provider does not hash directory contents or require a package version change.
+- `source_dir` (String) Local package directory, absolute or relative. Preserved as configured; accessed only when building.
+
+Optional:
+
+- `build_on_plan` (Boolean) Build and validate on every normal plan when inputs are known, independently of provider plan-validation policy. Defaults to false. Validation artifacts are discarded and do not detect content changes or carry over to apply.
+
 
 <a id="nestedblock--component"></a>
 ### Nested Schema for `component`
@@ -267,10 +343,10 @@ Optional:
 
 Optional:
 
-- `create` (String) Timeout for package deployment (default 30 m). Covers cluster connection, package load, and Helm/Zarf execution. If deployment fails after package state may have been recorded, the provider performs a separate recovery lookup for up to 5 m to preserve that state. This recovery window is additional to the configured timeout and remains bounded by the overall operation deadline or cancellation.
+- `create` (String) Timeout for package deployment (default 30 m). Covers local build when configured, cluster connection, package load, and Helm/Zarf execution. The build receives this deadline, but upstream Zarf action cancellation can delay return and temporary-file cleanup beyond it when child processes keep output pipes open. If deployment fails after package state may have been recorded, the provider performs a separate recovery lookup for up to 5 m to preserve that state. This recovery window is additional to the configured timeout and remains bounded by the overall operation deadline or cancellation.
 - `delete` (String) Total delete-operation wall-clock timeout (default 30 m). Covers cluster connection, package load, and removal.
 - `read` (String) Total read-operation wall-clock timeout (default 5 m). Covers cluster connection and state retrieval.
-- `update` (String) Timeout for package update (default 30 m). Covers cluster connection, package load, and redeployment. Failed updates return their error within this timeout; no separate failed-operation recovery lookup is performed.
+- `update` (String) Timeout for package update (default 30 m). Covers local build when configured, cluster connection, package load, and redeployment. The build receives this deadline, but upstream Zarf action cancellation can delay return and temporary-file cleanup beyond it when child processes keep output pipes open. No separate failed-operation recovery lookup is performed.
 
 
 <a id="nestedatt--vars"></a>

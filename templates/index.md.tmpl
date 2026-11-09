@@ -9,6 +9,16 @@ description: |-
 
 Manage [UDS](https://docs.defenseunicorns.com/) resources with OpenTofu.
 
+Use the [`uds_package` resource](https://registry.terraform.io/providers/defenseunicorns/uds/latest/docs/resources/package)
+to deploy existing packages from OCI registries or local archives with `source`,
+or build and deploy local package directories with `build`. Local builds are a
+convenience for small, environment-specific packages alongside OpenTofu configuration:
+you track input changes through an explicit revision. They do not provide automatic
+change detection, retained release artifacts, or a replacement for Zarf/CI release
+pipelines. See the
+[local package build example](https://github.com/defenseunicorns/terraform-provider-uds/tree/main/examples/package_build)
+for a complete runnable configuration.
+
 ~> This provider is an alpha release. Its interfaces and behavior may change between releases, including breaking changes.
 
 ## Example Usage

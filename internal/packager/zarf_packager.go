@@ -23,6 +23,7 @@ import (
 
 // Packager provides operations for managing Zarf packages.
 type Packager interface {
+	Create(ctx context.Context, sourceDir, outputDir string, opts zPackager.CreateOptions) (string, error)
 	Deploy(ctx context.Context, pkgLayout *layout.PackageLayout, opts zPackager.DeployOptions) (zPackager.DeployResult, error)
 	Remove(ctx context.Context, pkg zarfAPI.Package, opts zPackager.RemoveOptions) error
 	LoadPackage(ctx context.Context, source string, opts zPackager.LoadOptions) (_ *layout.PackageLayout, err error)
@@ -30,11 +31,13 @@ type Packager interface {
 }
 
 type loadPackageFunc func(context.Context, string, zPackager.LoadOptions) (*layout.PackageLayout, error)
+type createFunc func(context.Context, string, string, zPackager.CreateOptions) (string, error)
 type deployFunc func(context.Context, *layout.PackageLayout, zPackager.DeployOptions) (zPackager.DeployResult, error)
 type getPackageFunc func(context.Context, *cluster.Cluster, string, string, zPackager.LoadOptions) (zarfAPI.Package, error)
 type removeFunc func(context.Context, zarfAPI.Package, zPackager.RemoveOptions) error
 
 type zarfPackager struct {
+	createPackage createFunc
 	loadPackage   loadPackageFunc
 	deployPackage deployFunc
 	getPackage    getPackageFunc
@@ -46,11 +49,22 @@ var zarfConfigOnce sync.Once
 // NewPackager creates a new instance of the Packager interface.
 func NewPackager() Packager {
 	return &zarfPackager{
+		createPackage: zPackager.Create,
 		loadPackage:   zPackager.LoadPackage,
 		deployPackage: zPackager.Deploy,
 		getPackage:    zPackager.GetPackageFromSourceOrCluster,
 		removePackage: zPackager.Remove,
 	}
+}
+
+func (p *zarfPackager) Create(ctx context.Context, sourceDir, outputDir string, opts zPackager.CreateOptions) (string, error) {
+	p.ensureZarfConfigured()
+	zarfCtx := logging.WithZarfLogger(ctx)
+	archive, err := p.createPackage(zarfCtx, sourceDir, outputDir, opts)
+	if err != nil {
+		return archive, logging.WrapZarfError(zarfCtx, err)
+	}
+	return archive, nil
 }
 
 func (p *zarfPackager) Deploy(ctx context.Context, pkgLayout *layout.PackageLayout, opts zPackager.DeployOptions) (zPackager.DeployResult, error) {

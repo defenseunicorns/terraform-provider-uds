@@ -17,7 +17,7 @@ require (
 	github.com/hashicorp/terraform-plugin-log v0.11.0
 	github.com/hashicorp/terraform-plugin-testing v1.16.0
 	github.com/stretchr/testify v1.12.1
-	github.com/zarf-dev/zarf v0.89.0
+	github.com/zarf-dev/zarf v0.89.1-0.20261103205608-049d85579fc5
 	helm.sh/helm/v4 v4.3.1
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
@@ -245,7 +245,7 @@ require (
 	github.com/fluxcd/cli-utils v1.2.2 // indirect
 	github.com/fluxcd/pkg/apis/acl v0.10.0 // indirect
 	github.com/fluxcd/pkg/apis/meta v1.31.0 // indirect
-	github.com/fluxcd/source-controller/api v1.9.5 // indirect
+	github.com/fluxcd/source-controller/api v1.9.6 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/fvbommel/sortorder v1.2.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.2 // indirect

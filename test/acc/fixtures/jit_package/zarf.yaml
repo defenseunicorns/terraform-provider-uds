@@ -1,0 +1,19 @@
+# Copyright 2026 Defense Unicorns
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Defense-Unicorns-Commercial
+apiVersion: zarf.dev/v1beta1
+kind: ZarfPackageConfig
+metadata:
+  name: uds-jit-lifecycle
+  version: 0.1.0
+components:
+  - name: marker
+    manifests:
+      - name: marker
+        namespace: default
+        files:
+          - marker.yaml
+        enableTemplating: true
+    actions:
+      onCreate:
+        before:
+          - cmd: echo build >> build-count

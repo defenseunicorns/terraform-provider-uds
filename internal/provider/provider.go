@@ -101,7 +101,7 @@ func (p *udsProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *
 			},
 			"validate_packages_on_plan": schema.BoolAttribute{
 				Optional:            true,
-				MarkdownDescription: "Whether to validate UDS packages during planning. When enabled, the provider may load packages during plan to catch package-dependent configuration errors early, such as invalid optional component names or signature verification failures. Disable this to avoid plan-time package downloads or expensive validation. These checks are still enforced during apply. Defaults to `true`. Can also be configured with the `UDS_VALIDATE_PACKAGES_ON_PLAN` environment variable.",
+				MarkdownDescription: "Whether to validate source-mode UDS packages during planning. When enabled, the provider may load packages during plan to catch package-dependent configuration errors early, such as invalid optional component names or signature verification failures. Disable this to avoid source-mode plan-time package downloads or expensive validation. Build mode independently uses `build.build_on_plan`: false by default; true builds on every normal plan with known inputs even when this provider setting is false. Apply still enforces package-dependent checks. Defaults to `true`. Can also be configured with the `UDS_VALIDATE_PACKAGES_ON_PLAN` environment variable.",
 			},
 		},
 	}

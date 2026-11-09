@@ -28,7 +28,7 @@ None. The current OpenSpec capability inventory is empty; existing archive/OCI c
 ## Impact
 
 - Resource schema, model, validation, planning, update classification, and package-layout acquisition in `internal/provider/resource_package.go`.
-- Zarf build integration and logging in `internal/packager/zarf_packager.go`, using per-operation architecture options from upstream PR #5498. Temporarily pin the Go pseudo-version for Zarf commit `049d85579fc52159cb642a2633954cd3313d0f8d` (main as of November 3, 2026), then move to a tagged release containing that commit when available.
+- Zarf build integration and logging in `internal/packager/zarf_packager.go`, using per-operation architecture options from upstream PR #5498. Temporarily pin the Go pseudo-version for Zarf commit `049d85579fc52159cb642a2633954cd3313d0f8d` (main as of November 3, 2026) for development only; replace it with a tagged release containing that commit and rerun verification before this change is complete.
 - Preserve the provider's Zarf v0.89.0 compatibility baseline: version-neutral package definitions, alpha/beta input validation, and values passed during removal. Reuse existing value-schema and beta-variable validation for plan-time built packages.
 - Unit coverage, OpenTofu acceptance fixtures, examples, and generated resource/provider documentation.
 
