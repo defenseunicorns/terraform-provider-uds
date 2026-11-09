@@ -2,6 +2,9 @@
 
 Manage [UDS](https://docs.defenseunicorns.com/) resources with OpenTofu. Currently, the provider supports deploying and managing [UDS packages](https://docs.defenseunicorns.com/core/how-to-guides/packaging-applications/overview/).
 
+Deploy an existing package from an OCI registry or local archive with `source`, or
+build and deploy a local package directory with `build`.
+
 > [!WARNING]
 > This provider is an alpha release. Its interfaces and behavior may change between
 > releases, including breaking changes.
@@ -51,6 +54,17 @@ tofu plan
 tofu apply
 ```
 
+### Local Package Builds
+
+Use `uds_package.build` to build a local package directory during deployment.
+This workflow is intended for small, environment-specific packages alongside your
+OpenTofu configuration, not artifact publishing or release management.
+You track input changes through an explicit revision; file edits and dependency
+changes are not detected automatically. Optional `build_on_plan` validation also
+builds during normal planning, without retaining an artifact for apply.
+See the [runnable package build example](./examples/package_build/) for a complete
+configuration and usage instructions.
+
 ### Logging
 
 Provider and Zarf output is emitted through OpenTofu's provider log stream rather than written directly to stdout. The following settings control that provider/OpenTofu log stream only:
@@ -67,6 +81,7 @@ Failed non-muted Zarf output is included in the normal Terraform diagnostic rega
 - [Provider configuration](./docs/index.md)
 - [`uds_package` resource](./docs/resources/package.md)
 - [Signed package examples](./examples/resources/uds_package/resource.tf)
+- [Local package build example](./examples/package_build/)
 
 ## Development
 
