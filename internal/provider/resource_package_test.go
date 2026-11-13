@@ -1258,6 +1258,8 @@ func TestPackageResource_Deploy_PopulatesDeploymentState(t *testing.T) {
 func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 	tests := []struct {
 		name                 string
+		componentSucceeded   bool
+		packageEvents        []zarfState.PackageEvent
 		deployError          error
 		writePackageState    bool
 		waitForDeployTimeout bool
@@ -1269,6 +1271,17 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 		createTimeout        string
 		expectedErrors       []string
 	}{
+		{
+			name:               "failed success hook recovers identity with failed package status",
+			deployError:        errors.New("unable to run component success action"),
+			componentSucceeded: true,
+			packageEvents:      []zarfState.PackageEvent{{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeFailed}},
+			writePackageState:  true,
+			expectState:        true,
+			digest:             "sha256:hook-failed",
+			generation:         2,
+			expectedErrors:     []string{"unable to run component success action"},
+		},
 		{
 			name:                 "deployment failure recovers package state",
 			deployError:          errors.New("deployment failed"),
@@ -1310,6 +1323,10 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 			)
 			deployedPackage.Digest = tc.digest
 			deployedPackage.Generation = tc.generation
+			deployedPackage.Events = tc.packageEvents
+			if tc.componentSucceeded {
+				deployedPackage.DeployedComponents[0].Status = zarfState.ComponentStatusSucceeded
+			}
 
 			emptyCluster := newFakeCluster()
 			recoveryClientset := fake.NewSimpleClientset()
@@ -8399,6 +8416,75 @@ func TestDeployedPackageStatus(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.expected, deployedPackageStatus(tc.pkg))
+		})
+	}
+}
+
+func TestDeployedPackageStatusLifecycleEvents(t *testing.T) {
+	tests := []struct {
+		name     string
+		events   []zarfState.PackageEvent
+		last     zarfState.ComponentEvent
+		expected string
+	}{
+		{
+			name:     "failed alpha success hook overrides successful component",
+			events:   []zarfState.PackageEvent{{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeFailed}},
+			expected: "Failed",
+		},
+		{
+			name:     "unfinished deployment is not successful after final state write fails",
+			events:   []zarfState.PackageEvent{{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeInProgress}},
+			expected: "Deploying",
+		},
+		{
+			name:     "failed partial removal overrides remaining successful components",
+			events:   []zarfState.PackageEvent{{Type: zarfState.EventTypeRemove, Outcome: zarfState.EventOutcomeFailed}},
+			expected: "Failed",
+		},
+		{
+			name:     "in progress removal uses existing unknown status",
+			events:   []zarfState.PackageEvent{{Type: zarfState.EventTypeRemove, Outcome: zarfState.EventOutcomeInProgress}},
+			expected: "Unknown",
+		},
+		{
+			name:     "cancelled deployment is unsuccessful",
+			events:   []zarfState.PackageEvent{{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeCancelled}},
+			expected: "Failed",
+		},
+		{
+			name: "retry success supersedes previous failure",
+			events: []zarfState.PackageEvent{
+				{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeFailed},
+				{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeSucceeded},
+			},
+			expected: "Succeeded",
+		},
+		{
+			name:     "unknown outcome does not report success",
+			events:   []zarfState.PackageEvent{{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeUnknown}},
+			expected: "Unknown",
+		},
+		{
+			name:     "component lifecycle failure overrides legacy success",
+			last:     zarfState.ComponentEvent{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeFailed},
+			expected: "Failed",
+		},
+		{
+			name:     "component removal is not deployment success",
+			last:     zarfState.ComponentEvent{Type: zarfState.EventTypeRemove, Outcome: zarfState.EventOutcomeInProgress},
+			expected: "Unknown",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pkg := zarfState.DeployedPackage{
+				Events: tc.events,
+				DeployedComponents: []zarfState.DeployedComponent{{
+					Name: "app", Status: zarfState.ComponentStatusSucceeded, LastEvent: tc.last,
+				}},
+			}
+			assert.Equal(t, tc.expected, deployedPackageStatus(pkg))
 		})
 	}
 }

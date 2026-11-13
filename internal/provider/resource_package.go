@@ -2843,13 +2843,26 @@ func (r *PackageResource) populatePackageModelFromLayout(data *PackageResourceMo
 	data.Architecture = types.StringValue(getArchitecture(*data, *r.providerConfig))
 }
 
+// TODO: Separate deployment information from package metadata and expose native
+// operation/outcome fields. Preserve existing status semantics until that migration.
 func deployedPackageStatus(pkg zarfState.DeployedPackage) string {
+	// Package failures include hooks and persistence failures that component
+	// statuses alone cannot represent. Only the latest operation is relevant.
+	if event, ok := pkg.LatestEvent(); ok {
+		if status := lifecycleEventStatus(event.Type, event.Outcome); status != string(zarfState.ComponentStatusSucceeded) {
+			return status
+		}
+	}
 	hasRecordedState := false
 	hasDeployingState := false
 	hasUnknownState := false
 	for _, component := range pkg.DeployedComponents {
 		hasRecordedState = true
-		switch component.Status {
+		status := string(component.Status)
+		if component.LastEvent != (zarfState.ComponentEvent{}) {
+			status = lifecycleEventStatus(component.LastEvent.Type, component.LastEvent.Outcome)
+		}
+		switch zarfState.ComponentStatus(status) {
 		case zarfState.ComponentStatusFailed:
 			return string(zarfState.ComponentStatusFailed)
 		case zarfState.ComponentStatusDeploying:
@@ -2877,6 +2890,25 @@ func deployedPackageStatus(pkg zarfState.DeployedPackage) string {
 		return "Unknown"
 	}
 	if hasRecordedState {
+		return string(zarfState.ComponentStatusSucceeded)
+	}
+	return "Unknown"
+}
+
+// lifecycleEventStatus maps v1 events to the existing provider status vocabulary.
+// Removal in progress remains Unknown rather than introducing a new public status.
+func lifecycleEventStatus(operation zarfState.EventType, outcome zarfState.EventOutcome) string {
+	if operation != zarfState.EventTypeDeploy && operation != zarfState.EventTypeRemove {
+		return "Unknown"
+	}
+	switch outcome {
+	case zarfState.EventOutcomeFailed, zarfState.EventOutcomeCancelled:
+		return string(zarfState.ComponentStatusFailed)
+	case zarfState.EventOutcomeInProgress:
+		if operation == zarfState.EventTypeDeploy {
+			return string(zarfState.ComponentStatusDeploying)
+		}
+	case zarfState.EventOutcomeSucceeded:
 		return string(zarfState.ComponentStatusSucceeded)
 	}
 	return "Unknown"
