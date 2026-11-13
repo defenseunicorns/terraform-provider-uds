@@ -1258,6 +1258,9 @@ func TestPackageResource_Deploy_PopulatesDeploymentState(t *testing.T) {
 func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 	tests := []struct {
 		name                 string
+		componentSucceeded   bool
+		packageEvents        []zarfState.PackageEvent
+		expectedStatus       string
 		deployError          error
 		writePackageState    bool
 		waitForDeployTimeout bool
@@ -1269,6 +1272,29 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 		createTimeout        string
 		expectedErrors       []string
 	}{
+		{
+			name:               "state write failure recovers incomplete record without reporting success",
+			deployError:        errors.New("deployment record write failed"),
+			componentSucceeded: true,
+			packageEvents:      []zarfState.PackageEvent{{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeInProgress}},
+			expectedStatus:     "Deploying",
+			writePackageState:  true,
+			expectState:        true,
+			digest:             "sha256:incomplete",
+			generation:         2,
+			expectedErrors:     []string{"deployment record write failed"},
+		},
+		{
+			name:               "failed success hook recovers identity with failed package status",
+			deployError:        errors.New("unable to run component success action"),
+			componentSucceeded: true,
+			packageEvents:      []zarfState.PackageEvent{{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeFailed}},
+			writePackageState:  true,
+			expectState:        true,
+			digest:             "sha256:hook-failed",
+			generation:         2,
+			expectedErrors:     []string{"unable to run component success action"},
+		},
 		{
 			name:                 "deployment failure recovers package state",
 			deployError:          errors.New("deployment failed"),
@@ -1310,6 +1336,10 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 			)
 			deployedPackage.Digest = tc.digest
 			deployedPackage.Generation = tc.generation
+			deployedPackage.Events = tc.packageEvents
+			if tc.componentSucceeded {
+				deployedPackage.DeployedComponents[0].Status = zarfState.ComponentStatusSucceeded
+			}
 
 			emptyCluster := newFakeCluster()
 			recoveryClientset := fake.NewSimpleClientset()
@@ -1378,7 +1408,11 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 			state := requirePackageState(t, resp.State)
 			assert.Equal(t, computePackageID("", "test-package"), state.ID.ValueString())
 			assert.Equal(t, "amd64", state.Architecture.ValueString())
-			assertPackageMetadata(t, state.Metadata, "Failed", int64(tc.generation), tc.digest)
+			expectedStatus := tc.expectedStatus
+			if expectedStatus == "" {
+				expectedStatus = "Failed"
+			}
+			assertPackageMetadata(t, state.Metadata, expectedStatus, int64(tc.generation), tc.digest)
 			assert.Equal(t, types.MapValueMust(types.StringType, map[string]attr.Value{}), state.SetVariables)
 		})
 	}
@@ -1889,14 +1923,14 @@ func TestPackageResource_Deploy_ComponentOverrides(t *testing.T) {
 	tests := []struct {
 		name                    string
 		components              []ComponentModel
-		expectedValuesOverrides map[string]map[string]map[string]any
+		expectedValuesOverrides zarfPackager.ValuesOverrides
 		expectedCallToDeploy    bool
 		expectedErrorContains   string
 	}{
 		{
 			name:                    "package without component overrides deploys with empty values overrides map",
 			components:              []ComponentModel{},
-			expectedValuesOverrides: map[string]map[string]map[string]any{},
+			expectedValuesOverrides: zarfPackager.ValuesOverrides{},
 			expectedCallToDeploy:    true,
 			expectedErrorContains:   "",
 		},
@@ -1919,7 +1953,7 @@ func TestPackageResource_Deploy_ComponentOverrides(t *testing.T) {
 					}),
 				),
 			},
-			expectedValuesOverrides: map[string]map[string]map[string]any{
+			expectedValuesOverrides: zarfPackager.ValuesOverrides{
 				"test-required-component-0": {
 					"chart1": {
 						"replicaCount": 3,
@@ -1952,7 +1986,7 @@ func TestPackageResource_Deploy_ComponentOverrides(t *testing.T) {
 					}),
 				),
 			},
-			expectedValuesOverrides: map[string]map[string]map[string]any{
+			expectedValuesOverrides: zarfPackager.ValuesOverrides{
 				"test-optional-default-component-0": {
 					"chart1": {
 						"replicaCount": 3,
@@ -2013,7 +2047,7 @@ func TestPackageResource_Deploy_ComponentOverrides(t *testing.T) {
 					}),
 				),
 			},
-			expectedValuesOverrides: map[string]map[string]map[string]any{
+			expectedValuesOverrides: zarfPackager.ValuesOverrides{
 				"test-required-component-0": {
 					"chart1": {
 						"replicaCount": 3,
@@ -2076,7 +2110,7 @@ func TestPackageResource_Deploy_ComponentOverrides(t *testing.T) {
 
 			// Verify that Deploy was called with the expected ValuesOverridesMap
 			if tc.expectedCallToDeploy {
-				var actualValuesOverrides map[string]map[string]map[string]any
+				var actualValuesOverrides zarfPackager.ValuesOverrides
 				for _, call := range mockPackager.Calls {
 					if call.Method == "Deploy" && len(call.Arguments) >= 3 {
 						deployOpts := call.Arguments[2].(zarfPackager.DeployOptions)
@@ -5149,7 +5183,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 	tests := []struct {
 		name                  string
 		input                 []ComponentModel
-		expectedMap           map[string]map[string]map[string]any
+		expectedMap           zarfPackager.ValuesOverrides
 		expectedErrorContains string
 	}{
 		{
@@ -5160,7 +5194,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{}),
 				},
 			},
-			expectedMap:           map[string]map[string]map[string]any{},
+			expectedMap:           zarfPackager.ValuesOverrides{},
 			expectedErrorContains: "",
 		},
 		{
@@ -5175,7 +5209,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap:           map[string]map[string]map[string]any{},
+			expectedMap:           zarfPackager.ValuesOverrides{},
 			expectedErrorContains: "",
 		},
 		{
@@ -5193,7 +5227,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1": "component1chart1path1Value",
@@ -5216,7 +5250,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1": map[string]any{
@@ -5247,7 +5281,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1": "component1chart1path1Value",
@@ -5279,7 +5313,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1": map[string]any{
@@ -5309,7 +5343,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"sensitivePath1": "component1chart1sensitivePath1Value",
@@ -5332,7 +5366,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"sensitivePath1": map[string]any{
@@ -5363,7 +5397,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"sensitivePath1": "component1chart1sensitivePath1Value",
@@ -5395,7 +5429,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"sensitivePath1": map[string]any{
@@ -5428,7 +5462,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1":          "component1chart1path1Value",
@@ -5455,7 +5489,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1": map[string]any{
@@ -5495,7 +5529,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1":          "component1chart1path1Value",
@@ -5535,7 +5569,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1": map[string]any{
@@ -5570,7 +5604,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					Overrides: componentChartValuesSliceToSet([]ComponentChartValuesModel{}),
 				},
 			},
-			expectedMap:           map[string]map[string]map[string]any{},
+			expectedMap:           zarfPackager.ValuesOverrides{},
 			expectedErrorContains: "",
 		},
 		{
@@ -5593,7 +5627,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap:           map[string]map[string]map[string]any{},
+			expectedMap:           zarfPackager.ValuesOverrides{},
 			expectedErrorContains: "",
 		},
 		{
@@ -5622,7 +5656,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1": "component1chart1path1Value",
@@ -5661,7 +5695,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1": map[string]any{
@@ -5717,7 +5751,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1": "component1chart1path1Value",
@@ -5775,7 +5809,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1": map[string]any{
@@ -5828,7 +5862,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"sensitivePath1": "component1chart1sensitivePath1Value",
@@ -5867,7 +5901,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"sensitivePath1": map[string]any{
@@ -5923,7 +5957,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"sensitivePath1": "component1chart1sensitivePath1Value",
@@ -5974,7 +6008,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1":          "component1chart1path1Value",
@@ -6021,7 +6055,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1": map[string]any{
@@ -6095,7 +6129,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1":          "component1chart1path1Value",
@@ -6169,7 +6203,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"path1": map[string]any{
@@ -6223,7 +6257,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"replicaCount": 3,
@@ -6246,7 +6280,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"cpuLimit": 1.5,
@@ -6269,7 +6303,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"enabled": true,
@@ -6292,7 +6326,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"debug": false,
@@ -6315,7 +6349,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"port": "8080",
@@ -6341,7 +6375,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"config": map[string]any{
@@ -6369,7 +6403,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"secretPort": 9000,
@@ -6392,7 +6426,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"tlsEnabled": true,
@@ -6415,7 +6449,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"apiKey": "secret123",
@@ -6443,7 +6477,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"replicas":  3,
@@ -6469,7 +6503,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap:           map[string]map[string]map[string]any{},
+			expectedMap:           zarfPackager.ValuesOverrides{},
 			expectedErrorContains: "chart 'chart1' is defined multiple times in component 'component1",
 		},
 		{
@@ -6488,7 +6522,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap:           map[string]map[string]map[string]any{},
+			expectedMap:           zarfPackager.ValuesOverrides{},
 			expectedErrorContains: "path 'path1' is defined multiple times in overrides for chart 'chart1' of component 'component1'",
 		},
 		{
@@ -6507,7 +6541,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap:           map[string]map[string]map[string]any{},
+			expectedMap:           zarfPackager.ValuesOverrides{},
 			expectedErrorContains: "path 'sensitivePath1' is defined multiple times in overrides for chart 'chart1' of component 'component1'",
 		},
 		{
@@ -6528,7 +6562,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap:           map[string]map[string]map[string]any{},
+			expectedMap:           zarfPackager.ValuesOverrides{},
 			expectedErrorContains: "path 'path1' is defined multiple times in overrides for chart 'chart1' of component 'component1'",
 		},
 		{
@@ -6549,7 +6583,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"enabled":  "yes",
@@ -6577,7 +6611,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"replicas": 3,
@@ -6602,7 +6636,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap: map[string]map[string]map[string]any{
+			expectedMap: zarfPackager.ValuesOverrides{
 				"component1": {
 					"chart1": {
 						"bigval": uint64(18446744073709551615),
@@ -6626,7 +6660,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap:           map[string]map[string]map[string]any{},
+			expectedMap:           zarfPackager.ValuesOverrides{},
 			expectedErrorContains: "path 'path1.nestedPath' is defined multiple times in overrides for chart 'chart1' of component 'component1'",
 		},
 		{
@@ -6645,7 +6679,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap:           map[string]map[string]map[string]any{},
+			expectedMap:           zarfPackager.ValuesOverrides{},
 			expectedErrorContains: "path 'sensitivePath1.nestedPath' is defined multiple times in overrides for chart 'chart1' of component 'component1'",
 		},
 		{
@@ -6666,7 +6700,7 @@ func TestFlattenComponentOverrides(t *testing.T) {
 					}),
 				},
 			},
-			expectedMap:           map[string]map[string]map[string]any{},
+			expectedMap:           zarfPackager.ValuesOverrides{},
 			expectedErrorContains: "path 'path1.nestedPath' is defined multiple times in overrides for chart 'chart1' of component 'component1'",
 		},
 	}
@@ -8399,6 +8433,75 @@ func TestDeployedPackageStatus(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.expected, deployedPackageStatus(tc.pkg))
+		})
+	}
+}
+
+func TestDeployedPackageStatusLifecycleEvents(t *testing.T) {
+	tests := []struct {
+		name     string
+		events   []zarfState.PackageEvent
+		last     zarfState.ComponentEvent
+		expected string
+	}{
+		{
+			name:     "failed alpha success hook overrides successful component",
+			events:   []zarfState.PackageEvent{{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeFailed}},
+			expected: "Failed",
+		},
+		{
+			name:     "unfinished deployment is not successful after final state write fails",
+			events:   []zarfState.PackageEvent{{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeInProgress}},
+			expected: "Deploying",
+		},
+		{
+			name:     "failed partial removal overrides remaining successful components",
+			events:   []zarfState.PackageEvent{{Type: zarfState.EventTypeRemove, Outcome: zarfState.EventOutcomeFailed}},
+			expected: "Failed",
+		},
+		{
+			name:     "in progress removal uses existing unknown status",
+			events:   []zarfState.PackageEvent{{Type: zarfState.EventTypeRemove, Outcome: zarfState.EventOutcomeInProgress}},
+			expected: "Unknown",
+		},
+		{
+			name:     "cancelled deployment is unsuccessful",
+			events:   []zarfState.PackageEvent{{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeCancelled}},
+			expected: "Failed",
+		},
+		{
+			name: "retry success supersedes previous failure",
+			events: []zarfState.PackageEvent{
+				{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeFailed},
+				{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeSucceeded},
+			},
+			expected: "Succeeded",
+		},
+		{
+			name:     "unknown outcome does not report success",
+			events:   []zarfState.PackageEvent{{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeUnknown}},
+			expected: "Unknown",
+		},
+		{
+			name:     "component lifecycle failure overrides legacy success",
+			last:     zarfState.ComponentEvent{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeFailed},
+			expected: "Failed",
+		},
+		{
+			name:     "component removal is not deployment success",
+			last:     zarfState.ComponentEvent{Type: zarfState.EventTypeRemove, Outcome: zarfState.EventOutcomeInProgress},
+			expected: "Unknown",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pkg := zarfState.DeployedPackage{
+				Events: tc.events,
+				DeployedComponents: []zarfState.DeployedComponent{{
+					Name: "app", Status: zarfState.ComponentStatusSucceeded, LastEvent: tc.last,
+				}},
+			}
+			assert.Equal(t, tc.expected, deployedPackageStatus(pkg))
 		})
 	}
 }

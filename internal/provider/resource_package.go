@@ -386,7 +386,7 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 			},
 			"metadata": &schema.SingleNestedAttribute{
 				Computed:            true,
-				MarkdownDescription: "Metadata retrieved from the UDS package (zarf.yaml).",
+				MarkdownDescription: "Package metadata and deployment information retrieved from Zarf.",
 				Attributes: map[string]schema.Attribute{
 					"name": &schema.StringAttribute{
 						Computed:            true,
@@ -402,7 +402,7 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 					},
 					"status": &schema.StringAttribute{
 						Computed:            true,
-						MarkdownDescription: "Deployment status of the UDS package.",
+						MarkdownDescription: "Deployment status of the UDS package. Possible values are Succeeded, Failed, Deploying, and Unknown.",
 					},
 					"generation": &schema.Int64Attribute{
 						Computed:            true,
@@ -951,10 +951,12 @@ func (r *PackageResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 	removeOpt := zarfPackager.RemoveOptions{
-		NamespaceOverride: identity.Namespace,
-		Cluster:           c,
-		Timeout:           zarfTimeout,
-		Values:            removeValues,
+		RemoveConfig: zarfPackager.RemoveConfig{
+			NamespaceOverride: identity.Namespace,
+			Values:            removeValues,
+		},
+		Cluster: c,
+		Timeout: zarfTimeout,
 	}
 	if err := r.packager.Remove(timeoutCtx, definition, removeOpt); err != nil {
 		resp.Diagnostics.AddError(
@@ -1301,10 +1303,12 @@ func (r *PackageResource) removeComponents(ctx context.Context, plan PackageReso
 		return fmt.Errorf("insufficient time remaining before component removal: %w", err)
 	}
 	removeOpt := zarfPackager.RemoveOptions{
-		Cluster:           zarfCluster,
-		Timeout:           zarfTimeout,
-		NamespaceOverride: namespaceOverride,
-		Values:            removeValues,
+		RemoveConfig: zarfPackager.RemoveConfig{
+			NamespaceOverride: namespaceOverride,
+			Values:            removeValues,
+		},
+		Cluster: zarfCluster,
+		Timeout: zarfTimeout,
 	}
 	if err := r.packager.Remove(ctx, pkg, removeOpt); err != nil {
 		return fmt.Errorf("could not remove components from package: %w", err)
@@ -1559,12 +1563,11 @@ func (r *PackageResource) upsertVerifiedPackage(ctx context.Context, plan Packag
 
 	// TODO(erickson): Add support for Retries, OCIConcurrency?
 	deployOpts := zarfPackager.DeployOptions{
-		AdoptExistingResources: false,
-		SetVariables:           buildSetVariableMap(plan),
-		Values:                 deployValues,
-		ValuesOverridesMap:     valuesOverridesMap,
-		RemoteOptions:          r.getZarfRegistryRemoteOptions(),
-		NamespaceOverride:      plan.Namespace.ValueString(),
+		SetVariables:       buildSetVariableMap(plan),
+		Values:             deployValues,
+		ValuesOverridesMap: valuesOverridesMap,
+		RemoteOptions:      r.getZarfRegistryRemoteOptions(),
+		NamespaceOverride:  plan.Namespace.ValueString(),
 		GitServer: zarfState.GitServerInfo{
 			PushUsername: zarfState.ZarfGitPushUser,
 		},
@@ -1770,15 +1773,15 @@ func convertPathValuesToOverridesMap(ctx context.Context, pathValues types.Set, 
 }
 
 // TODO: remove when component block is removed
-func flattenComponentOverrides(ctx context.Context, components []ComponentModel) (map[string]map[string]map[string]any, error) {
+func flattenComponentOverrides(ctx context.Context, components []ComponentModel) (zarfPackager.ValuesOverrides, error) {
 	seen := make(map[string]map[string]map[string]bool)
-	result := make(map[string]map[string]map[string]any)
+	result := make(zarfPackager.ValuesOverrides)
 
 	for _, component := range components {
 		componentName := component.Name.ValueString()
 
 		if _, exists := seen[componentName]; exists {
-			return map[string]map[string]map[string]any{}, fmt.Errorf("component '%s' is defined multiple times", componentName)
+			return zarfPackager.ValuesOverrides{}, fmt.Errorf("component '%s' is defined multiple times", componentName)
 		}
 		seen[componentName] = make(map[string]map[string]bool)
 
@@ -1791,7 +1794,7 @@ func flattenComponentOverrides(ctx context.Context, components []ComponentModel)
 		var overrides []ComponentChartValuesModel
 		diags := component.Overrides.ElementsAs(ctx, &overrides, false)
 		if diags.HasError() {
-			return map[string]map[string]map[string]any{}, fmt.Errorf("failed to extract overrides for component '%s': %v", componentName, diags)
+			return zarfPackager.ValuesOverrides{}, fmt.Errorf("failed to extract overrides for component '%s': %v", componentName, diags)
 		}
 
 		// Process each chart values block within the overrides
@@ -1799,7 +1802,7 @@ func flattenComponentOverrides(ctx context.Context, components []ComponentModel)
 			chartName := chart.ChartName.ValueString()
 
 			if _, exists := seen[componentName][chartName]; exists {
-				return map[string]map[string]map[string]any{}, fmt.Errorf("chart '%s' is defined multiple times in component '%s'", chartName, componentName)
+				return zarfPackager.ValuesOverrides{}, fmt.Errorf("chart '%s' is defined multiple times in component '%s'", chartName, componentName)
 			}
 			seen[componentName][chartName] = make(map[string]bool)
 
@@ -1813,21 +1816,21 @@ func flattenComponentOverrides(ctx context.Context, components []ComponentModel)
 
 			// Initialize component and chart maps if they don't exist
 			if _, exists := result[componentName]; !exists {
-				result[componentName] = make(map[string]map[string]any)
+				result[componentName] = make(map[string]zarfValue.Values)
 			}
 			if _, exists := result[componentName][chartName]; !exists {
-				result[componentName][chartName] = make(map[string]any)
+				result[componentName][chartName] = make(zarfValue.Values)
 			}
 			chartMap := result[componentName][chartName]
 
 			// Process chart values (regular key-value pairs)
 			if err := convertPathValuesToOverridesMap(ctx, chart.Values, chartMap, seen[componentName][chartName], componentName, chartName, "values"); err != nil {
-				return map[string]map[string]map[string]any{}, err
+				return zarfPackager.ValuesOverrides{}, err
 			}
 
 			// Process sensitive chart values (sensitive key-value pairs)
 			if err := convertPathValuesToOverridesMap(ctx, chart.SensitiveValues, chartMap, seen[componentName][chartName], componentName, chartName, "sensitive values"); err != nil {
-				return map[string]map[string]map[string]any{}, err
+				return zarfPackager.ValuesOverrides{}, err
 			}
 		}
 	}
@@ -2840,13 +2843,26 @@ func (r *PackageResource) populatePackageModelFromLayout(data *PackageResourceMo
 	data.Architecture = types.StringValue(getArchitecture(*data, *r.providerConfig))
 }
 
+// TODO: Separate deployment information from package metadata and expose native
+// operation/outcome fields. Preserve existing status semantics until that migration.
 func deployedPackageStatus(pkg zarfState.DeployedPackage) string {
+	// Package failures include hooks and persistence failures that component
+	// statuses alone cannot represent. Only the latest operation is relevant.
+	if event, ok := pkg.LatestEvent(); ok {
+		if status := lifecycleEventStatus(event.Type, event.Outcome); status != string(zarfState.ComponentStatusSucceeded) {
+			return status
+		}
+	}
 	hasRecordedState := false
 	hasDeployingState := false
 	hasUnknownState := false
 	for _, component := range pkg.DeployedComponents {
 		hasRecordedState = true
-		switch component.Status {
+		status := string(component.Status)
+		if component.LastEvent != (zarfState.ComponentEvent{}) {
+			status = lifecycleEventStatus(component.LastEvent.Type, component.LastEvent.Outcome)
+		}
+		switch zarfState.ComponentStatus(status) {
 		case zarfState.ComponentStatusFailed:
 			return string(zarfState.ComponentStatusFailed)
 		case zarfState.ComponentStatusDeploying:
@@ -2874,6 +2890,25 @@ func deployedPackageStatus(pkg zarfState.DeployedPackage) string {
 		return "Unknown"
 	}
 	if hasRecordedState {
+		return string(zarfState.ComponentStatusSucceeded)
+	}
+	return "Unknown"
+}
+
+// lifecycleEventStatus maps v1 events to the existing provider status vocabulary.
+// Removal in progress remains Unknown rather than introducing a new public status.
+func lifecycleEventStatus(operation zarfState.EventType, outcome zarfState.EventOutcome) string {
+	if operation != zarfState.EventTypeDeploy && operation != zarfState.EventTypeRemove {
+		return "Unknown"
+	}
+	switch outcome {
+	case zarfState.EventOutcomeFailed, zarfState.EventOutcomeCancelled:
+		return string(zarfState.ComponentStatusFailed)
+	case zarfState.EventOutcomeInProgress:
+		if operation == zarfState.EventTypeDeploy {
+			return string(zarfState.ComponentStatusDeploying)
+		}
+	case zarfState.EventOutcomeSucceeded:
 		return string(zarfState.ComponentStatusSucceeded)
 	}
 	return "Unknown"

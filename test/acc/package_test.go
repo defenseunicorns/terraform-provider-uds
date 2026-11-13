@@ -6,7 +6,6 @@ package acc
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	zarfCluster "github.com/zarf-dev/zarf/src/pkg/cluster"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,6 +29,9 @@ import (
 const (
 	// renovate: datasource=github-tags depName=zarf-dev/zarf
 	initPackageVersion = "v0.89.0"
+
+	// renovate: datasource=github-tags depName=zarf-dev/zarf
+	betaInitPackageVersion = "v1.0.1"
 
 	// renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/core-crds versioning=semver extractVersion=^(?<version>.*)-upstream$
 	udsCoreCRDsPackageVersion = "1.16.0"
@@ -921,11 +924,11 @@ func renderZarfBetaLifecyclePackageConfig(packagePath, marker, token string, inc
 	}
 	return fmt.Sprintf(`
 resource "uds_package" "init" {
-  source       = "oci://ghcr.io/zarf-dev/packages/init:%s"
+  source       = "oci://ghcr.io/zarf-dev/packages/v1beta1/init:%s"
   architecture = "%s"
   signature_verification = {
     keyless = {
-      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/publish-v1beta1-init-package\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
       certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
     }
   }
@@ -947,7 +950,7 @@ resource "uds_package" "beta_lifecycle" {
     verify = false
   }
 }
-`, initPackageVersion, runtime.GOARCH, packagePath, runtime.GOARCH, optionalComponents, marker, token)
+`, betaInitPackageVersion, runtime.GOARCH, packagePath, runtime.GOARCH, optionalComponents, marker, token)
 }
 
 func checkZarfBetaLifecycleResources(marker string, optionalPresent, removalPresent bool) resource.TestCheckFunc {
@@ -1109,17 +1112,29 @@ func TestAccPackageResourceZarfBetaLifecycle(t *testing.T) {
 			{
 				Config: renderZarfBetaLifecyclePackageConfig(packagePath, "initial", "initial-secret", true),
 				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("uds_package.init", "metadata.version", betaInitPackageVersion),
 					resource.TestCheckResourceAttr("uds_package.beta_lifecycle", "id", "zarf-beta-lifecycle"),
 					resource.TestCheckResourceAttr("uds_package.beta_lifecycle", "metadata.version", "0.1.0"),
+					resource.TestCheckResourceAttr("uds_package.beta_lifecycle", "metadata.status", "Succeeded"),
 					resource.TestCheckResourceAttr("uds_package.beta_lifecycle", "optional_components.#", "1"),
 					checkZarfBetaLifecycleResources("initial", true, false),
 				),
+			},
+			{
+				Config:   renderZarfBetaLifecyclePackageConfig(packagePath, "initial", "initial-secret", true),
+				PlanOnly: true,
+			},
+			{
+				ResourceName:  "uds_package.beta_lifecycle",
+				ImportState:   true,
+				ImportStateId: "zarf-beta-lifecycle",
 			},
 			{
 				Config: renderZarfBetaLifecyclePackageConfig(packagePath, "updated", "updated-secret", false),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("uds_package.beta_lifecycle", "id", "zarf-beta-lifecycle"),
 					resource.TestCheckResourceAttr("uds_package.beta_lifecycle", "metadata.version", "0.1.0"),
+					resource.TestCheckResourceAttr("uds_package.beta_lifecycle", "metadata.status", "Succeeded"),
 					resource.TestCheckResourceAttr("uds_package.beta_lifecycle", "optional_components.#", "0"),
 					checkZarfBetaLifecycleResources("updated", false, true),
 				),
@@ -1338,16 +1353,12 @@ func readFailedPackageState() (zarfState.DeployedPackage, error) {
 	if err != nil {
 		return zarfState.DeployedPackage{}, err
 	}
-	deployedPackageRef := zarfState.DeployedPackage{Name: "failed-package", NamespaceOverride: "failed-package"}
-	secret, err := clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Get(context.Background(), deployedPackageRef.GetSecretName(), metav1.GetOptions{})
+	c := &zarfCluster.Cluster{Clientset: clientset}
+	deployedPackage, err := c.GetDeployedPackage(context.Background(), "failed-package", zarfState.WithPackageNamespaceOverride("failed-package"))
 	if err != nil {
-		return zarfState.DeployedPackage{}, fmt.Errorf("failed to get failed package state secret: %w", err)
+		return zarfState.DeployedPackage{}, fmt.Errorf("failed to get failed package deployment record: %w", err)
 	}
-	var deployedPackage zarfState.DeployedPackage
-	if err := json.Unmarshal(secret.Data["data"], &deployedPackage); err != nil {
-		return zarfState.DeployedPackage{}, fmt.Errorf("failed to decode failed package state secret: %w", err)
-	}
-	return deployedPackage, nil
+	return *deployedPackage, nil
 }
 
 func acceptanceKubernetesClient() (*kubernetes.Clientset, error) {

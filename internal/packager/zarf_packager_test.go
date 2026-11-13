@@ -61,6 +61,21 @@ func TestPackageComponentFilterDeployWithoutSelectionsRetainsOnlyRequiredCompone
 		"retain required components in package order with their deployment content intact")
 }
 
+func TestPackageComponentFilterDeployWithSelectionPreservesDefaults(t *testing.T) {
+	pkg := zarfAPI.Package{Components: []zarfAPI.Component{
+		{Name: "required"},
+		{Name: "optional-default", Optional: true, Default: true},
+		{Name: "selected", Optional: true},
+		{Name: "unselected", Optional: true},
+	}}
+
+	components, err := NewPackageComponentFilter().ForDeploy([]string{"selected"}).Apply(pkg)
+
+	require.NoError(t, err)
+	require.Equal(t, pkg.Components[:3], components,
+		"preserve existing selection behavior, including legacy default optionals")
+}
+
 func TestZarfPackagerDeployWrapsCapturedOutputOnError(t *testing.T) {
 	sentinel := errors.New("deploy failed")
 	p := newTestZarfPackager(testZarfPackagerOptions{
@@ -111,7 +126,9 @@ func TestZarfPackagerRemoveMakesValuesAvailableToTemplatedActions(t *testing.T) 
 	}
 
 	err := NewPackager().Remove(context.Background(), pkg, zPackager.RemoveOptions{
-		Values: zarfValue.Values{"domain": "example.test", "token": "secret"},
+		RemoveConfig: zPackager.RemoveConfig{
+			Values: zarfValue.Values{"domain": "example.test", "token": "secret"},
+		},
 	})
 
 	require.NoError(t, err)

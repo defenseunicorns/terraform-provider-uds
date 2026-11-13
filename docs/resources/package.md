@@ -22,11 +22,11 @@ This example verifies the Zarf init package, then deploys another package with s
 
 ```terraform
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.89.0"
+  source = "oci://ghcr.io/zarf-dev/packages/v1beta1/init:v1.0.1"
 
   signature_verification = {
     keyless = {
-      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/publish-v1beta1-init-package\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
       certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
     }
   }
@@ -53,6 +53,8 @@ resource "uds_package" "dos_games" {
 ```
 
 ### Values and Sensitive Values
+
+~> Zarf persists deployment inputs, including sensitive values, in package metadata Secrets. Marking a value sensitive controls Terraform/OpenTofu display; it does not prevent storage or encrypt the value.
 
 The [Zarf values example](https://github.com/defenseunicorns/terraform-provider-uds/tree/main/examples/zarf_values) contains the complete runnable configuration.
 
@@ -144,12 +146,12 @@ Use `optional_components` to select optional components declared by the package.
 
 ```terraform
 resource "uds_package" "init_with_git_server" {
-  source              = "oci://ghcr.io/zarf-dev/packages/init:v0.89.0"
+  source              = "oci://ghcr.io/zarf-dev/packages/v1beta1/init:v1.0.1"
   optional_components = ["git-server"]
 
   signature_verification = {
     keyless = {
-      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/publish-v1beta1-init-package\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
       certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
     }
   }
@@ -181,7 +183,7 @@ resource "uds_package" "init_with_git_server" {
 - `connect_strings` (Attributes Set) Connect strings for connecting to services deployed by the package. (see [below for nested schema](#nestedatt--connect_strings))
 - `id` (String) Identifier for the deployed UDS package.
 - `kind` (String) Kind of UDS package; ZarfInitConfig or ZarfPackageConfig.
-- `metadata` (Attributes) Metadata retrieved from the UDS package (zarf.yaml). (see [below for nested schema](#nestedatt--metadata))
+- `metadata` (Attributes) Package metadata and deployment information retrieved from Zarf. (see [below for nested schema](#nestedatt--metadata))
 - `name` (String) Name of the UDS Package.
 - `set_variables` (Map of String, Sensitive) Computed map of zarf variables set for this package.
 - `version` (String) Version of the deployed UDS package.
@@ -300,7 +302,7 @@ Read-Only:
 - `digest` (String) Digest of the deployed UDS package.
 - `generation` (Number) Deployment generation of the UDS package.
 - `name` (String) Name of the UDS package. Used to identify the deployed UDS package.
-- `status` (String) Deployment status of the UDS package.
+- `status` (String) Deployment status of the UDS package. Possible values are Succeeded, Failed, Deploying, and Unknown.
 - `version` (String) Version of the UDS package, from the zarf.yaml file.
 
 ## Import
@@ -321,7 +323,7 @@ tofu state rm uds_package.example
 
 To manage an aliased deployment with this provider, first migrate it outside Terraform so its deployed name matches the package-defined name in the configured source. Follow the guarded [aliased package migration guide](https://registry.terraform.io/providers/defenseunicorns/uds/latest/docs/guides/aliased-package-migration) to assess the Legacy bundle and direct Zarf paths, confirm that both the migration command and the eventual provider configuration can reproduce required inputs, and import the new deployed identity. Some deployments using Legacy chart overrides and raw manifests require a custom migration. The provider does not automate or guarantee this migration.
 
-After a successful import, the first apply may redeploy the package because Zarf's deployed state does not contain every configured input needed to produce a no-op plan. Deleting the Terraform resource verifies and removes the exact package identity recorded in state. If that package is already absent from the cluster, deletion succeeds without further action.
+After a successful import, the first apply may redeploy the package. The provider does not yet reconstruct configured inputs from Zarf's saved deployment configuration; be sure to configure the deployment inputs needed by the package in your Terraform/OpenTofu resource. Deleting the Terraform resource verifies and removes the exact package identity recorded in state. If that package is already absent from the cluster, deletion succeeds without further action.
 
 In Terraform v1.5.0 and later, the [`import` block](https://developer.hashicorp.com/terraform/language/import) can be used with the `id` attribute, for example:
 
@@ -341,11 +343,11 @@ import {
 }
 
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:v0.89.0"
+  source = "oci://ghcr.io/zarf-dev/packages/v1beta1/init:v1.0.1"
 
   signature_verification = {
     keyless = {
-      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/publish-v1beta1-init-package\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
       certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
     }
   }
