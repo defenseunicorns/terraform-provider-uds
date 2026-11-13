@@ -133,7 +133,7 @@ func (z *zarfPackageComponentFilter) ForDeploy(optionalComponents []string) filt
 		return &requiredOnlyComponentFilter{}
 	}
 	return filters.Combine(
-		filters.ForDeploy(strings.Join(optionalComponents, ","), false),
+		filters.ForDeploy(strings.Join(optionalComponents, ",")),
 	)
 }
 

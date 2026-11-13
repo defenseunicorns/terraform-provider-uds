@@ -6,7 +6,6 @@ package acc
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	zarfCluster "github.com/zarf-dev/zarf/src/pkg/cluster"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1338,16 +1338,12 @@ func readFailedPackageState() (zarfState.DeployedPackage, error) {
 	if err != nil {
 		return zarfState.DeployedPackage{}, err
 	}
-	deployedPackageRef := zarfState.DeployedPackage{Name: "failed-package", NamespaceOverride: "failed-package"}
-	secret, err := clientset.CoreV1().Secrets(zarfState.ZarfNamespaceName).Get(context.Background(), deployedPackageRef.GetSecretName(), metav1.GetOptions{})
+	c := &zarfCluster.Cluster{Clientset: clientset}
+	deployedPackage, err := c.GetDeployedPackage(context.Background(), "failed-package", zarfState.WithPackageNamespaceOverride("failed-package"))
 	if err != nil {
-		return zarfState.DeployedPackage{}, fmt.Errorf("failed to get failed package state secret: %w", err)
+		return zarfState.DeployedPackage{}, fmt.Errorf("failed to get failed package deployment record: %w", err)
 	}
-	var deployedPackage zarfState.DeployedPackage
-	if err := json.Unmarshal(secret.Data["data"], &deployedPackage); err != nil {
-		return zarfState.DeployedPackage{}, fmt.Errorf("failed to decode failed package state secret: %w", err)
-	}
-	return deployedPackage, nil
+	return *deployedPackage, nil
 }
 
 func acceptanceKubernetesClient() (*kubernetes.Clientset, error) {
