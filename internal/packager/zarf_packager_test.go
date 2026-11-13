@@ -17,7 +17,6 @@ import (
 	"github.com/zarf-dev/zarf/src/pkg/cluster"
 	"github.com/zarf-dev/zarf/src/pkg/logger"
 	zPackager "github.com/zarf-dev/zarf/src/pkg/packager"
-	"github.com/zarf-dev/zarf/src/pkg/packager/filters"
 	"github.com/zarf-dev/zarf/src/pkg/packager/layout"
 	zarfState "github.com/zarf-dev/zarf/src/pkg/state"
 	zarfValue "github.com/zarf-dev/zarf/src/pkg/value"
@@ -62,7 +61,7 @@ func TestPackageComponentFilterDeployWithoutSelectionsRetainsOnlyRequiredCompone
 		"retain required components in package order with their deployment content intact")
 }
 
-func TestPackageComponentFilterDeployWithSelectionPreservesDefaultsAndSelectors(t *testing.T) {
+func TestPackageComponentFilterDeployWithSelectionPreservesDefaults(t *testing.T) {
 	pkg := zarfAPI.Package{Components: []zarfAPI.Component{
 		{Name: "required"},
 		{Name: "optional-default", Optional: true, Default: true},
@@ -70,14 +69,11 @@ func TestPackageComponentFilterDeployWithSelectionPreservesDefaultsAndSelectors(
 		{Name: "unselected", Optional: true},
 	}}
 
-	selected, err := filters.Apply(pkg, NewPackageComponentFilter().ForDeploy([]string{"selected"}))
+	components, err := NewPackageComponentFilter().ForDeploy([]string{"selected"}).Apply(pkg)
 
 	require.NoError(t, err)
-	require.Equal(t, pkg.Components[:3], selected.Components,
+	require.Equal(t, pkg.Components[:3], components,
 		"preserve existing selection behavior, including legacy default optionals")
-	selectors, applied := selected.ComponentSelectors()
-	require.True(t, applied)
-	require.Equal(t, []string{"selected"}, selectors)
 }
 
 func TestZarfPackagerDeployWrapsCapturedOutputOnError(t *testing.T) {

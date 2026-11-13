@@ -926,13 +926,6 @@ func renderZarfBetaLifecyclePackageConfig(packagePath, marker, token string, inc
 resource "uds_package" "init" {
   source       = "oci://ghcr.io/zarf-dev/packages/v1beta1/init:%s"
   architecture = "%s"
-  values = {
-    registry = {
-      persistence = {
-        storageClass = "local-path"
-      }
-    }
-  }
   signature_verification = {
     keyless = {
       certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/publish-v1beta1-init-package\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
