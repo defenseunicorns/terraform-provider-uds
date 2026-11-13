@@ -386,7 +386,7 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 			},
 			"metadata": &schema.SingleNestedAttribute{
 				Computed:            true,
-				MarkdownDescription: "Metadata retrieved from the UDS package (zarf.yaml).",
+				MarkdownDescription: "Package metadata and deployment information retrieved from Zarf.",
 				Attributes: map[string]schema.Attribute{
 					"name": &schema.StringAttribute{
 						Computed:            true,
@@ -402,7 +402,7 @@ func (r *PackageResource) Schema(ctx context.Context, _ resource.SchemaRequest, 
 					},
 					"status": &schema.StringAttribute{
 						Computed:            true,
-						MarkdownDescription: "Deployment status of the UDS package.",
+						MarkdownDescription: "Deployment status of the UDS package. Possible values are Succeeded, Failed, Deploying, and Unknown.",
 					},
 					"generation": &schema.Int64Attribute{
 						Computed:            true,

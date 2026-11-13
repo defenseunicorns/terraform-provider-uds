@@ -57,7 +57,7 @@ tofu state rm uds_package.example
 
 To manage an aliased deployment with this provider, first migrate it outside Terraform so its deployed name matches the package-defined name in the configured source. Follow the guarded [aliased package migration guide](https://registry.terraform.io/providers/defenseunicorns/uds/latest/docs/guides/aliased-package-migration) to assess the Legacy bundle and direct Zarf paths, confirm that both the migration command and the eventual provider configuration can reproduce required inputs, and import the new deployed identity. Some deployments using Legacy chart overrides and raw manifests require a custom migration. The provider does not automate or guarantee this migration.
 
-After a successful import, the first apply may redeploy the package because Zarf's deployed state does not contain every configured input needed to produce a no-op plan. Deleting the Terraform resource verifies and removes the exact package identity recorded in state. If that package is already absent from the cluster, deletion succeeds without further action.
+After a successful import, the first apply may redeploy the package. The provider does not yet reconstruct configured inputs from Zarf's saved deployment configuration; be sure to configure the deployment inputs needed by the package in your Terraform/OpenTofu resource. Deleting the Terraform resource verifies and removes the exact package identity recorded in state. If that package is already absent from the cluster, deletion succeeds without further action.
 {{- end }}
 {{- if .HasImportIdentityConfig }}
 
