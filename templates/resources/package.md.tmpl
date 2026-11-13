@@ -25,6 +25,8 @@ This example verifies the Zarf init package, then deploys another package with s
 
 ### Values and Sensitive Values
 
+~> Zarf persists deployment inputs, including sensitive values, in package metadata Secrets. Marking a value sensitive controls Terraform/OpenTofu display; it does not prevent storage or encrypt the value.
+
 The [Zarf values example](https://github.com/defenseunicorns/terraform-provider-uds/tree/main/examples/zarf_values) contains the complete runnable configuration.
 
 {{ tffile "examples/zarf_values/package-values.tf" }}

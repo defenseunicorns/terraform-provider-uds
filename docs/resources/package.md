@@ -54,6 +54,8 @@ resource "uds_package" "dos_games" {
 
 ### Values and Sensitive Values
 
+~> Zarf persists deployment inputs, including sensitive values, in package metadata Secrets. Marking a value sensitive controls Terraform/OpenTofu display; it does not prevent storage or encrypt the value.
+
 The [Zarf values example](https://github.com/defenseunicorns/terraform-provider-uds/tree/main/examples/zarf_values) contains the complete runnable configuration.
 
 ```terraform
