@@ -49,7 +49,9 @@ import (
 	zarfZoci "github.com/zarf-dev/zarf/src/pkg/zoci"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sRuntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8sTesting "k8s.io/client-go/testing"
 
 	"github.com/defenseunicorns/terraform-provider-uds/internal/logging"
 
@@ -1397,6 +1399,61 @@ func TestPackageResource_CreateRecoveryPreservesState(t *testing.T) {
 			assert.Equal(t, "amd64", state.Architecture.ValueString())
 			assertPackageMetadata(t, state.Metadata, "Failed", int64(tc.generation), tc.digest)
 			assert.Equal(t, types.MapValueMust(types.StringType, map[string]attr.Value{}), state.SetVariables)
+		})
+	}
+}
+
+// secretWriteFailurePackager exercises provider recovery using a real Zarf
+// deployment-record write against a fault-injected Kubernetes client.
+type secretWriteFailurePackager struct {
+	*MockPackager
+
+	cluster *zarfCluster.Cluster
+	record  zarfState.DeployedPackage
+}
+
+func (p *secretWriteFailurePackager) Deploy(ctx context.Context, _ *layout.PackageLayout, _ packager.DeployOptions) (packager.DeployResult, error) {
+	return packager.DeployResult{}, p.cluster.StoreDeployedPackage(ctx, p.record)
+}
+
+func TestPackageResource_CreateDeploymentRecordWriteFailure(t *testing.T) {
+	for _, previousRecord := range []bool{false, true} {
+		t.Run(fmt.Sprintf("previous_record=%t", previousRecord), func(t *testing.T) {
+			pkgLayout := newValidLoadPackageResult(t).Layout
+			record := newLifecycleDeployedPackage(t, pkgLayout,
+				zarfState.DeployedComponent{Name: "test-required-component-0", Status: zarfState.ComponentStatusSucceeded},
+			)
+			record.Events = []zarfState.PackageEvent{{Type: zarfState.EventTypeDeploy, Outcome: zarfState.EventOutcomeInProgress}}
+			client := fake.NewClientset()
+			if previousRecord {
+				_, err := client.CoreV1().Secrets(zarfState.ZarfNamespaceName).Create(context.Background(), newPackageStateSecret(t, record), metav1.CreateOptions{})
+				require.NoError(t, err)
+			}
+			client.PrependReactor("patch", "secrets", func(k8sTesting.Action) (bool, k8sRuntime.Object, error) {
+				return true, nil, errors.New("injected deployment record write failure")
+			})
+			cluster := &zarfCluster.Cluster{Clientset: client}
+			mockCluster := &MockCluster{}
+			mockCluster.On("NewWithWait", mock.Anything).Return(newFakeCluster(), nil).Once()
+			mockCluster.On("NewWithWait", mock.Anything).Return(cluster, nil).Once()
+			mockPackager := &MockPackager{}
+			mockPackager.On("LoadPackage", mock.Anything, mock.Anything, mock.Anything).Return(pkgLayout, nil).Once()
+			failingPackager := &secretWriteFailurePackager{MockPackager: mockPackager, cluster: cluster, record: record}
+			r := NewPackageResource(nil, failingPackager, nil, mockCluster).(*PackageResource)
+
+			resp := runCreateLifecycleTest(t, r, newCreateLifecycleModel())
+
+			require.True(t, resp.Diagnostics.HasError())
+			assert.Contains(t, resp.Diagnostics.Errors()[0].Detail(), "injected deployment record write failure")
+			if previousRecord {
+				recovered := requirePackageState(t, resp.State)
+				assert.Equal(t, record.Name, recovered.ID.ValueString())
+				assert.Equal(t, "Deploying", recovered.Metadata.Attributes()["status"].(types.String).ValueString())
+			} else {
+				assertNoPackageState(t, resp.State)
+			}
+			mockPackager.AssertExpectations(t)
+			mockCluster.AssertExpectations(t)
 		})
 	}
 }
