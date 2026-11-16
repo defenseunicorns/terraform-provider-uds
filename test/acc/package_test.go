@@ -34,7 +34,7 @@ const (
 	betaInitPackageVersion = "v1.0.1"
 
 	// renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/core-crds versioning=semver extractVersion=^(?<version>.*)-upstream$
-	udsCoreCRDsPackageVersion = "1.16.0"
+	udsCoreCRDsPackageVersion = "1.17.1"
 
 	// renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/nginx versioning=semver extractVersion=^(?<version>.*)-upstream$
 	udsNginxPackageVersion = "1.31.1-uds.1"
