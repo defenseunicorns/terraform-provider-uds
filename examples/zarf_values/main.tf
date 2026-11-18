@@ -24,7 +24,7 @@ locals {
   zarf_init_version = "v1.0.1"
 
   # renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/core-crds versioning=semver extractVersion=^(?<version>.*)-upstream$
-  uds_core_crds_version = "1.17.1"
+  uds_core_crds_version = "1.17.2"
 
   # renovate: datasource=docker depName=ghcr.io/defenseunicorns/packages/uds/nginx versioning=semver extractVersion=^(?<version>.*)-upstream$
   uds_nginx_version = "1.31.1-uds.1"
