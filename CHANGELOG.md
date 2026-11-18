@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.9.0](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.8.1...v0.9.0) (2026-11-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* Zarf v1 now stores deployment records in compressed form. Redeploying or updating an existing package with this provider rewrites its deployment record in the new format, making it unreadable by older provider versions and pre-v1 Zarf clients. Downgrading the provider alone does not restore compatibility.
+
+### Miscellaneous
+
+* **deps:** update application-deps ([#399](https://github.com/defenseunicorns/terraform-provider-uds/issues/399)) ([84e5822](https://github.com/defenseunicorns/terraform-provider-uds/commit/84e5822121bcfe0b14b2f7554468fd9074c0adb8))
+* **deps:** update support dependencies to v2026.11.9 ([#403](https://github.com/defenseunicorns/terraform-provider-uds/issues/403)) ([1bbf861](https://github.com/defenseunicorns/terraform-provider-uds/commit/1bbf86197c2706cc9b149e1539a19c9171dad62a))
+* **deps:** update support-deps ([#405](https://github.com/defenseunicorns/terraform-provider-uds/issues/405)) ([5889b2b](https://github.com/defenseunicorns/terraform-provider-uds/commit/5889b2b63535af4ac80336ced702be4b298d2a1a))
+* **deps:** update zarf to v1 ([#397](https://github.com/defenseunicorns/terraform-provider-uds/issues/397)) ([bc1345e](https://github.com/defenseunicorns/terraform-provider-uds/commit/bc1345e98c9be2bb1a472ce4f5a3238f76e17477))
+* upgrade zarf to v1.0.1 ([#400](https://github.com/defenseunicorns/terraform-provider-uds/issues/400)) ([424e11b](https://github.com/defenseunicorns/terraform-provider-uds/commit/424e11b73fc587b26cdeee893b7b6dc17f1d42da))
+
 ## [0.8.1](https://github.com/defenseunicorns/terraform-provider-uds/compare/v0.8.0...v0.8.1) (2026-11-04)
 
 
