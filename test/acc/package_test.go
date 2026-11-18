@@ -28,7 +28,7 @@ import (
 
 const (
 	// renovate: datasource=github-tags depName=zarf-dev/zarf
-	initPackageVersion = "v0.89.0"
+	initPackageVersion = "v1.0.1"
 
 	// renovate: datasource=github-tags depName=zarf-dev/zarf
 	betaInitPackageVersion = "v1.0.1"
