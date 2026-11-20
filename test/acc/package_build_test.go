@@ -53,11 +53,11 @@ func renderJITConfig(source, archive, revision, marker string, onPlan bool, time
 	return fmt.Sprintf(`
 provider "uds" { validate_packages_on_plan = false }
 resource "uds_package" "init" {
-  source = "oci://ghcr.io/zarf-dev/packages/init:%s"
+  source = "oci://ghcr.io/zarf-dev/packages/v1beta1/init:%s"
   architecture = %q
   signature_verification = {
     keyless = {
-      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/publish-v1beta1-init-package\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
       certificate_oidc_issuer = "https://token.actions.githubusercontent.com"
     }
   }
@@ -69,7 +69,7 @@ resource "uds_package" "jit" {
   values = { marker = %q }
   timeouts = { create = %q, update = %q }
 }
-`, initPackageVersion, runtime.GOARCH, runtime.GOARCH, input, marker, timeout, timeout)
+`, betaInitPackageVersion, runtime.GOARCH, runtime.GOARCH, input, marker, timeout, timeout)
 }
 
 func checkJITDeployment(source, marker string, generation, builds int) resource.TestCheckFunc {

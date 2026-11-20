@@ -38,12 +38,13 @@ provider "uds" {
 }
 
 resource "uds_package" "init" {
-  source       = "oci://ghcr.io/zarf-dev/packages/init:v0.89.0"
+  # renovate: datasource=docker depName=ghcr.io/zarf-dev/packages/v1beta1/init versioning=semver
+  source       = "oci://ghcr.io/zarf-dev/packages/v1beta1/init:v1.0.1"
   architecture = var.architecture
 
   signature_verification = {
     keyless = {
-      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/release\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
+      certificate_identity_regexp = "https://github\\.com/zarf-dev/zarf/\\.github/workflows/publish-v1beta1-init-package\\.yml@refs/tags/v\\d+\\.\\d+\\.\\d+"
       certificate_oidc_issuer     = "https://token.actions.githubusercontent.com"
     }
   }
