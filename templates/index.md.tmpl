@@ -16,6 +16,8 @@ convenience for small, environment-specific packages alongside OpenTofu configur
 you track input changes through an explicit revision. They do not provide automatic
 change detection, retained release artifacts, or a replacement for Zarf/CI release
 pipelines. See the
+[Local Package Builds guide](https://registry.terraform.io/providers/defenseunicorns/uds/latest/docs/guides/local-package-builds)
+for behavior and operational requirements, and the
 [local package build example](https://github.com/defenseunicorns/terraform-provider-uds/tree/main/examples/package_build)
 for a complete runnable configuration.
 

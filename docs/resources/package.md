@@ -160,18 +160,7 @@ resource "uds_package" "init_with_git_server" {
 
 ### Local Package Builds
 
-Use `build` for small, environment-specific packages kept alongside your OpenTofu configuration—for example, a “glue” package containing manifests and configuration for an environment. It provides a native build-and-deploy workflow without prerequisite build scripts or `local-exec`. The provider handles building and deploying; you decide when package inputs have changed.
-
-This is a deployment convenience, not an artifact build or release system:
-
-- **Explicit change tracking:** files and remote dependencies can change without triggering deployment. Reflect relevant changes in `build.revision`; it is your trigger, not a content digest or Zarf package version. A package version such as `dev` can remain unchanged.
-- **Fresh, temporary builds:** deployment-affecting updates, including values, architecture, and optional components, rebuild even when package content is unchanged. Archives are temporary, not retained or reusable release artifacts.
-- **Optional plan validation:** builds are disabled during planning by default, so build-dependent validation waits until apply. Enabling `build_on_plan` can build during both plan and apply; it does not enable automatic change detection or artifact reuse.
-- **Runner prerequisites:** provide registry credentials, network access, temporary disk, and host commands required by package `onCreate` actions. Flavor selection and additional provider-configured create-time templating are not supported.
-
-Use normal Zarf/CI workflows for artifact testing, retention, OCI publication, signing, and reuse across deployments. Deploy those artifacts with `source` when release provenance matters; `build` cannot be combined with `signature_verification`.
-
-The [local package build example](https://github.com/defenseunicorns/terraform-provider-uds/tree/main/examples/package_build) contains a complete runnable Podinfo configuration, including Zarf init, deployment values, and a manual revision trigger.
+Use `build` for small, environment-specific packages kept alongside your Terraform or OpenTofu configuration. The provider handles building and deploying; you track changes through `build.revision`. Files and remote dependencies are not monitored automatically.
 
 Specify exactly one of `source` or `build`. In build mode omit `signature_verification`, including `verify = false`. Revision is an opaque, required user-owned trigger; a constant/manual revision is valid and no package-version bump is required.
 
@@ -185,43 +174,11 @@ resource "uds_package" "local" {
 }
 ```
 
-Create and deployment-affecting updates build fresh archives in temporary storage outside the source directory. Changes only to `build_on_plan` or timeouts are state-only at apply. Refresh/delete never require the local directory. Source/build transitions preserve identity only when the new package-defined name matches the verified deployment. Confirmed remote absence permits recreation on the next normal apply even with unchanged revision; lookup/identity failures do not.
+Create and deployment-affecting updates build fresh, temporary archives. Plan builds are disabled by default; `build_on_plan = true` adds validation builds during every normal plan without retaining an artifact for apply or enabling automatic change detection. The runner must provide credentials, network access, temporary disk, and any host commands required by build actions.
 
-`build_on_plan` defaults to false. When true, every normal plan with known build inputs builds and validates, including unchanged resources, independently of provider `validate_packages_on_plan`. Unknown build inputs defer execution; unknown deployment-value leaves defer only dependent checks. Validation metadata does not schedule deployment. Plan artifacts are discarded and apply builds separately when deployment is scheduled. Refresh-only operations and saved no-op apply execution do not build; an unsaved-plan `tofu apply` normally includes a normal planning phase that still honors the opt-in.
+This is a deployment convenience, not an artifact build or release system. Use Zarf/CI workflows and signed `source` packages for release provenance and reusable artifacts.
 
-Plan builds may run package actions and fetch dependencies. Supply required registry credentials, network access, temporary disk, potentially significant time, and host commands used by `onCreate` actions. The provider does not install missing commands or sandbox action side effects. Existing Zarf logging/error wrapping is retained; package command output may reach logs or diagnostics. Resource variables/values, including sensitive variants, are not build inputs. Alpha packages retain deployment variables; beta packages reject them and use values instead. Values remain available during deployment and removal.
-
-Builds receive the operation's cancellation context and create/update deadline, but these are not hard limits on subprocess lifetime. A known [upstream Zarf limitation](https://github.com/zarf-dev/zarf/issues/1461) allows action child processes holding output pipes open to delay the build's return and temporary-file cleanup after cancellation or timeout.
-
-Flavor selection and provider-configured create-time templating interfaces are deferred. Prefer signed OCI release pipelines when provenance matters. See the [build guide](https://github.com/defenseunicorns/terraform-provider-uds/blob/main/examples/resources/uds_package/BUILD.md) for operational and migration details.
-
-Alternatively, author a revision hash for the inputs you want to track. This example covers only its listed files and architecture; the provider does not infer completeness.
-
-```terraform
-locals {
-  package_dir          = "${path.module}/package"
-  package_architecture = "amd64"
-  package_files        = sort(tolist(fileset(local.package_dir, "**")))
-  package_revision = sha256(jsonencode({
-    files = {
-      for file in local.package_files :
-      file => filesha256("${local.package_dir}/${file}")
-    }
-    architecture = local.package_architecture
-  }))
-}
-
-# Alternative to a manual revision. This hash covers only the listed inputs;
-# include any other inputs that should request deployment in your own expression.
-resource "uds_package" "hashed" {
-  architecture = local.package_architecture
-  build = {
-    source_dir    = local.package_dir
-    revision      = local.package_revision
-    build_on_plan = true
-  }
-}
-```
+See the [Local Package Builds guide](https://registry.terraform.io/providers/defenseunicorns/uds/latest/docs/guides/local-package-builds) for revision hashing, lifecycle and migration behavior, runner requirements, and operational limitations. The [Podinfo example](https://github.com/defenseunicorns/terraform-provider-uds/tree/main/examples/package_build) provides a complete runnable configuration.
 
 <!-- schema generated by tfplugindocs -->
 ## Schema

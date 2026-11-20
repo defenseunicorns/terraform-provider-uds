@@ -1,9 +1,15 @@
-# Local package builds
+---
+page_title: "Local Package Builds"
+description: |-
+  Build and deploy local Zarf packages with explicit revision tracking, temporary artifacts, and optional plan-time validation.
+---
+
+# Local Package Builds
 
 ## When to use local builds
 
 Use local builds for small, environment-specific packages kept alongside your
-OpenTofu configuration, such as a “glue” package of manifests and environment
+Terraform or OpenTofu configuration, such as a “glue” package of manifests and environment
 configuration. The provider handles building and deploying without prerequisite
 scripts or `local-exec`; you decide when package inputs have changed.
 
@@ -14,12 +20,12 @@ workflows for artifact testing, retention, OCI publication, signing, and reuse
 across deployments, then deploy the resulting artifacts with `source`.
 
 For a complete runnable configuration, see the
-[package build example](../../package_build/).
+[package build example](https://github.com/defenseunicorns/terraform-provider-uds/tree/main/examples/package_build).
 
 ## Configure a build
 
-Use `resource-build.tf` as an alternative to the source-mode examples. Supply a
-local Zarf package directory and a required, opaque `revision` string. Specify
+Use the [`uds_package` resource](https://registry.terraform.io/providers/defenseunicorns/uds/latest/docs/resources/package)
+with a local Zarf package directory and a required, opaque `revision` string. Specify
 exactly one of `source` or `build`; omit `signature_verification` in build mode,
 even `verify = false`. Source-mode signature verification remains unchanged.
 
@@ -27,6 +33,8 @@ The provider preserves the configured directory and revision. A constant or
 manually incremented revision is valid: it is a user-declared deployment trigger,
 not a package version or provider-generated content hash. `build_on_plan` is
 optional and defaults to `false`.
+
+{{ tffile "examples/resources/uds_package/resource-build.tf" }}
 
 Files, remote dependencies, and other build inputs can change without triggering
 deployment. Reflect relevant changes in `build.revision`, either manually or with
@@ -57,7 +65,7 @@ published, signed, or made available for reuse across deployments.
 Builds use the existing Zarf logging and error-wrapping behavior. Package authors
 and Zarf control command output; command text and stdout/stderr can reach provider
 logs or captured-output diagnostics according to action and logging settings.
-There is no new secret-suppression guarantee. Resource variables and values,
+Do not rely on build output being redacted. Resource variables and values,
 including sensitive variants, are not supplied to builds.
 
 Built alpha (`v1alpha1`) packages retain the existing deployment-variable
@@ -66,6 +74,10 @@ those inputs; use `values` and `sensitive_values` instead. Values are merged for
 deployment and component/package removal. Deletion uses the verified deployed
 definition and stored removal values, without rebuilding or accessing the local
 source directory.
+
+~> Zarf persists deployment inputs, including sensitive values, in package
+metadata Secrets. Marking a value sensitive controls Terraform/OpenTofu display;
+it does not prevent storage or encrypt the value.
 
 ## Deployment and migration
 
@@ -105,18 +117,21 @@ and package metadata are not content-change detection and do not request deploym
 Plan artifacts are discarded. Apply builds independently only when deployment is
 scheduled; there is no guarantee that mutable inputs are identical between plan
 and apply. Refresh-only plan/apply never build. Applying a saved no-op plan does
-not build; `tofu apply` without a saved plan normally includes a normal planning
+not build; `terraform apply` or `tofu apply` without a saved plan normally includes a normal planning
 phase, which still performs opted-in validation builds.
 
 Opted-in plans require registry credentials where dependencies need authentication,
 package-required network access, temporary disk, runner-provided action commands,
 and potentially significant time. Builds may execute actions or fetch mutable
 dependencies during planning. Flavor selection and provider-configured create-time
-templating interfaces are deferred; resource variables/values remain deployment
+templating options are not supported; resource variables/values remain deployment
 inputs. Prefer signed OCI release pipelines when artifact provenance matters.
 
-`resource-build-hash.tf` shows a user-authored hash of selected files and
-architecture as an alternative to the constant/manual revision in
-`resource-build.tf`. The provider does not infer whether a hash expression covers
+### Track selected inputs with a revision hash
+
+The following example uses a user-authored hash of selected files and architecture
+as an alternative to a manual revision. The provider does not infer whether a hash expression covers
 all dependencies or build inputs. Exclude action-generated files from your own
 hash expression if they should not trigger deployment.
+
+{{ tffile "examples/resources/uds_package/resource-build-hash.tf" }}

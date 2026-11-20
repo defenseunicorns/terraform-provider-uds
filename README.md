@@ -80,6 +80,7 @@ Failed non-muted Zarf output is included in the normal Terraform diagnostic rega
 
 - [Provider configuration](./docs/index.md)
 - [`uds_package` resource](./docs/resources/package.md)
+- [Local package builds guide](./docs/guides/local-package-builds.md)
 - [Signed package examples](./examples/resources/uds_package/resource.tf)
 - [Local package build example](./examples/package_build/)
 

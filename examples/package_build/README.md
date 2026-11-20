@@ -11,6 +11,9 @@ The provider handles building and deploying; you track relevant input changes
 through `build.revision`. Use a Zarf/CI release pipeline and `source` for tested,
 retained, published, signed artifacts intended for reuse across deployments.
 
+See the [Local Package Builds guide](https://registry.terraform.io/providers/defenseunicorns/uds/latest/docs/guides/local-package-builds)
+for lifecycle behavior, revision hashing, migration, and operational limitations.
+
 ## Prerequisites
 
 - OpenTofu installed.
