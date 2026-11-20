@@ -36,6 +36,20 @@ The [Zarf values example](https://github.com/defenseunicorns/terraform-provider-
 Use `optional_components` to select optional components declared by the package. Component names are validated against the package metadata.
 
 {{ tffile "examples/resources/uds_package/resource-optional-components.tf" }}
+
+### Local Package Builds
+
+Use `build` for small, environment-specific packages kept alongside your Terraform or OpenTofu configuration. The provider handles building and deploying; you track changes through `build.revision`. Files and remote dependencies are not monitored automatically.
+
+Specify exactly one of `source` or `build`. In build mode omit `signature_verification`, including `verify = false`. Revision is an opaque, required user-owned trigger; a constant/manual revision is valid and no package-version bump is required.
+
+{{ tffile "examples/resources/uds_package/resource-build.tf" }}
+
+Create and deployment-affecting updates build fresh, temporary archives. Plan builds are disabled by default; `build_on_plan = true` adds validation builds during every normal plan without retaining an artifact for apply or enabling automatic change detection. The runner must provide credentials, network access, temporary disk, and any host commands required by build actions.
+
+This is a deployment convenience, not an artifact build or release system. Use Zarf/CI workflows and signed `source` packages for release provenance and reusable artifacts.
+
+See the [Local Package Builds guide](https://registry.terraform.io/providers/defenseunicorns/uds/latest/docs/guides/local-package-builds) for revision hashing, lifecycle and migration behavior, runner requirements, and operational limitations. The [Podinfo example](https://github.com/defenseunicorns/terraform-provider-uds/tree/main/examples/package_build) provides a complete runnable configuration.
 {{- end }}
 
 {{ .SchemaMarkdown | trimspace }}

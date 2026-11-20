@@ -265,6 +265,7 @@ func TestZarfPackagerConfiguresConcurrently(t *testing.T) {
 }
 
 type testZarfPackagerOptions struct {
+	createPackage createFunc
 	loadPackage   loadPackageFunc
 	deployPackage deployFunc
 	getPackage    getPackageFunc
@@ -273,6 +274,7 @@ type testZarfPackagerOptions struct {
 
 func newTestZarfPackager(options testZarfPackagerOptions) *zarfPackager {
 	return &zarfPackager{
+		createPackage: options.createPackage,
 		loadPackage:   options.loadPackage,
 		deployPackage: options.deployPackage,
 		getPackage:    options.getPackage,

@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "description": "Schema for the Podinfo Zarf values example",
+  "additionalProperties": false,
+  "properties": {
+    "logLevel": {
+      "type": "string",
+      "description": "Podinfo log level"
+    },
+    "service": {
+      "type": "object",
+      "description": "Podinfo service configuration",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the Podinfo service is enabled"
+        }
+      },
+      "required": ["enabled"]
+    },
+    "pod": {
+      "type": "object",
+      "description": "Podinfo pod configuration",
+      "additionalProperties": false,
+      "properties": {
+        "annotations": {
+          "type": "object",
+          "description": "Pod annotations",
+          "additionalProperties": true
+        },
+        "replicaCount": {
+          "type": "integer",
+          "description": "Number of Podinfo replicas"
+        },
+        "tolerations": {
+          "type": "array",
+          "description": "Pod tolerations",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "operator": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              },
+              "effect": {
+                "type": "string"
+              },
+              "tolerationSeconds": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "required": ["annotations", "replicaCount", "tolerations"]
+    },
+    "ui": {
+      "type": "object",
+      "description": "Podinfo UI configuration",
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "type": "string",
+          "description": "UI color"
+        }
+      },
+      "required": ["color"]
+    }
+  },
+  "required": ["logLevel", "service", "pod", "ui"]
+}

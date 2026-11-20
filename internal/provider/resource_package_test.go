@@ -279,6 +279,11 @@ type MockPackager struct {
 	mock.Mock
 }
 
+func (m *MockPackager) Create(ctx context.Context, sourceDir, outputDir string, opts packager.CreateOptions) (string, error) {
+	args := m.Called(ctx, sourceDir, outputDir, opts)
+	return args.String(0), args.Error(1)
+}
+
 func (m *MockPackager) Deploy(ctx context.Context, pkgLayout *layout.PackageLayout, opts packager.DeployOptions) (packager.DeployResult, error) {
 	args := m.Called(ctx, pkgLayout, opts)
 	return args.Get(0).(packager.DeployResult), args.Error(1)
@@ -553,6 +558,7 @@ func testDynamicStringValues(values map[string]string) types.Dynamic {
 func NewTestPackageResourceModel(options ...PackageResourceModelDataOption) PackageResourceModel {
 	model := PackageResourceModel{
 		Source:                types.StringValue("oci://ghcr.io/defenseunicorns/packages/test:latest"),
+		Build:                 types.ObjectNull(packageBuildAttrTypes),
 		Architecture:          types.StringValue(runtime.GOARCH),
 		SignatureVerification: types.ObjectNull(signatureVerificationAttrTypes),
 		Timeouts:              nullTimeoutsValue(),
